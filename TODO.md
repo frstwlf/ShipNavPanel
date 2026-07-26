@@ -66,32 +66,39 @@ complete** — the recon build has served its purpose and does not need to ship.
 
 Three pieces, in dependency order. Piece 2 is the only real unknown.
 
-- [ ] **1. Cruise detection.** Needed to know when `SHMonocle` is free to
-      hijack (it is undisabled in normal flight too). Lead: the Papyrus native
-      `Game.IsCruiseModeActive()`; natives register by name string and are among
-      the easiest engine functions to locate.
-- [ ] **2. A set-target-to-X call.** ★ The gating unknown. Driving the vanilla
-      cycle is now definitively out — in cruise it cannot *reach* the chosen
-      planet however often it fires.
-      - [ ] Start with **`TryUpdateShipHudTarget` (old id 137012)** and
-            **`ClearShipHudTarget` (137011)**. Adjacent ids, and the names read
-            as a set/clear *pair* that takes a target — exactly the shape the
-            panel needs, and a much better fit than `ShipHud_Target`'s
-            cycle semantics. Both are `{ 0 }` placeholders needing a remap.
-      - [ ] **Verify the payload before publishing either.** CommonLibSF
-            declares both as empty structs; if the engine's payload is not
-            empty, `Notify` with an empty one is the SeamlessGravJumps bug.
-      - [ ] Fallback: `Spaceship::TargetingMode` (live RTTI/vtable ids, no
-            curated API).
-- [ ] **3. The list, from static records.** Nothing enumerable at runtime in
-      cruise covers the system, so build it from the current system's planets
-      and moons as data. Sufficient for the stated goal; ships and dynamic POIs
-      are a later problem.
+**Reshaped 2026-07-26 by the SWF decompile — see
+[PHASE1-SWF-FINDINGS.md](PHASE1-SWF-FINDINGS.md). The id-remapping approach is
+retired; the HUD's Scaleform layer is the API.**
 
-Optional instrumentation, if piece 2 needs debugging: read the live target out
-of `SpaceshipHudMenu`'s Scaleform movie (`asMovieRoot->GetVariable`) instead of
-chasing more ids — the HUD renders the target name, and SFSE already hands over
-the menu.
+- [ ] **1. Cruise detection — now cheap.** `CruiseModeHUDActive` is a public
+      getter on `ShipReticle`, alongside `STATE_CRUISE`. Read it from the movie
+      instead of hunting `Game.IsCruiseModeActive()` in a disassembler.
+- [ ] **2. Set-target — ★ test `uBodyID` first, everything depends on it.**
+      - [x] ~~`ShipHud_Target`~~ **retired**: it is dispatched as a bare
+            `Event` with no payload (`ShipReticle.as:2163`), so it means "target
+            what is hovered" and can never select an arbitrary body. Killed
+            before any Ghidra work — the point of looking at the SWF first.
+      - [ ] **`Reticle_OnCruiseLockCourse` carries `{"uBodyID": N}`** and is
+            gated on cruise being active; vanilla hardcodes **0**. If the engine
+            honours a non-zero id this *is* the panel's confirm action.
+            Cheapest probe: patch the vanilla dispatch to pass a different id
+            and see whether the ship locks course elsewhere.
+      - [ ] Bind and log the **`LockCourse`** user event — it drives the above
+            and never appeared in the Phase 0 logs.
+      - [ ] Fallback only if `uBodyID` is ignored: `Spaceship::TargetingMode`
+            plus the Ghidra route.
+- [ ] **3. The list — read it, maybe.** The engine already pushes
+      `LowFreqTargetData.targetArray` (+ `iHoverTargetIndex`,
+      `iInfoTargetIndex`, `uTargetType`, `bLandingAllowed`) into the HUD data
+      model. Readable via `asMovieRoot->GetVariable`, no ids.
+      - [ ] **Check in cruise whether it holds the whole system or just the
+            cone.** Decides between "read the data model" and "build from static
+            records".
+
+Payload note now evidenced, not just suspected: UI→engine events use
+`new CustomEvent(name, {…})`, so they genuinely do carry structured data, and
+CommonLibSF's empty `ShipHud_*` structs would have reproduced the
+SeamlessGravJumps bug exactly.
 - [ ] Map the `ShipHud_*` event ids. All are `{ 0 }` placeholders in
       CommonLibSF `include/RE/IDs.h`; the old-database ids survive in the
       comments (137011–137033) as Ghidra anchors. They sit in one tight cluster,
