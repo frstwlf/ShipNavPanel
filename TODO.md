@@ -70,6 +70,17 @@ Three pieces, in dependency order. Piece 2 is the only real unknown.
 [PHASE1-SWF-FINDINGS.md](PHASE1-SWF-FINDINGS.md). The id-remapping approach is
 retired; the HUD's Scaleform layer is the API.**
 
+- [x] **Scaleform reader built (v0.0.2).** Scanner key dumps the ship HUD's
+      ActionScript data model to the log. All ids it needs are mapped:
+      `Value::ObjectInterface::*` are live, and `ASMovieRootBase`'s methods are
+      pure virtuals called through the object's own vtable, so they need none.
+      - [ ] **RUN IT: dump once in normal flight and once in cruise, same spot,
+            and compare `targetArray` lengths.** The gating question.
+      - [ ] Capture `CruiseModeHUDActive` (piece 1) and some `uniqueID` values
+            (the ids confirm will pass as `uBodyID`) from the same dump.
+      - [ ] If every candidate path reports "not available", the path guesses
+            are wrong, not the approach — the resolved/unresolved lines say
+            which. Widen `uScaleformDepth` / `uScaleformMaxChildren` first.
 - [ ] **1. Cruise detection — now cheap.** `CruiseModeHUDActive` is a public
       getter on `ShipReticle`, alongside `STATE_CRUISE`. Read it from the movie
       instead of hunting `Game.IsCruiseModeActive()` in a disassembler.

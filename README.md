@@ -56,6 +56,7 @@ CommonLibSF or the SFSE source:
 | `[menu]` | `MenuOpenCloseEvent` sink | menus opening and closing, by real name |
 | `[menu-movie]` | SFSE menu interface callback | which menus have a Scaleform movie loaded |
 | `[state]` | 5-second heartbeat | ship form id, in-space/docked/landed, current planet, open menus |
+| `[sf]` | ship HUD Scaleform data model, on demand | the HUD's target list, cruise state — **press the scanner key** |
 
 The input tap takes the vtable address from the live `UI` singleton rather than
 from an Address Library id, so it does not depend on any of the ids CommonLibSF
@@ -79,6 +80,26 @@ C:\Users\<you>\Documents\My Games\Starfield\SFSE\Logs\ShipNavPanel.log
 Settings live in `Data\SFSE\Plugins\ShipNavPanel.ini` — override them in
 `ShipNavPanelCustom.ini` rather than editing the shipped file. Input logging is
 capped at 20,000 lines per session so a stuck key cannot fill the disk.
+
+## Scaleform reader (v0.0.2) — the current question
+
+Press the **scanner key** (`SHMonocle`) while the ship HUD is up and the plugin
+walks the HUD's ActionScript data model into the log as `[sf]` lines. Press once
+per sample; it is read-only, but there is no reason to spam it.
+
+It exists to answer one question: **in cruise, does the HUD's `targetArray` hold
+the whole system, or only what is near the ship's heading?** That decides
+whether the panel can list a planet the player cannot currently see.
+
+Do it twice — once in normal flight, once in cruise, from the same spot — and
+compare the number of entries. Also worth capturing from the same dump:
+`CruiseModeHUDActive` (cruise detection, piece 1) and any `uniqueID` values,
+which are the ids the panel's confirm action will pass as `uBodyID`.
+
+If the walk finds nothing, the object path is wrong rather than the idea:
+the reader probes a handful of candidate paths and logs which resolve, so the
+`path '…' - not available` lines are the useful part. Raise `uScaleformDepth`
+to 4 and `uScaleformMaxChildren` if the tree looks truncated.
 
 ## Test protocol
 

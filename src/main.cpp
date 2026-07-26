@@ -8,6 +8,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <utility>
 
 namespace
 {
@@ -43,6 +47,12 @@ namespace
 	REX::TIniSetting<float>         fHeartbeatSeconds{ "Recon", "fHeartbeatSeconds", 5.0f };
 	REX::TIniSetting<bool>          bVerifyVTableID{ "Recon", "bVerifyVTableID", false };
 
+	// Scaleform reader: dumps the ship HUD's ActionScript data model on demand.
+	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", true };
+	REX::TIniSetting<std::uint32_t> uScaleformDepth{ "Scaleform", "uScaleformDepth", 3 };
+	REX::TIniSetting<std::uint32_t> uScaleformMaxLines{ "Scaleform", "uScaleformMaxLines", 3000 };
+	REX::TIniSetting<std::uint32_t> uScaleformMaxChildren{ "Scaleform", "uScaleformMaxChildren", 60 };
+
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
 	// hit costs nothing and a miss teaches nothing. The authoritative list of
@@ -76,6 +86,15 @@ namespace
 	std::atomic<PerformInputProcessing_t> g_origPerformInputProcessing{ nullptr };
 	std::atomic<std::uint32_t>            g_inputLinesLogged{ 0 };
 	std::atomic<bool>                     g_inputTapClaimed{ false };
+
+	// Set from the input hook, consumed by the per-frame task (see tap 4). The
+	// hook must not touch the movie itself - it runs on whichever thread the
+	// input queue is being drained on.
+	std::atomic<bool> g_dumpRequested{ false };
+
+	// The user event that requests a data-model dump: the scanner key, i.e. the
+	// same trigger the finished panel will use.
+	constexpr const char* kDumpTriggerEvent = "SHMonocle";
 
 	const char* DeviceName(RE::InputEvent::DeviceType a_type)
 	{
@@ -155,6 +174,14 @@ namespace
 
 			if (down && !firstFrame && !logHeld)
 				continue;  // held-down repeat
+
+			// Request a data-model dump on the trigger key's initial press. Only
+			// a flag is set here - the movie is read from the per-frame task.
+			if (down && firstFrame && bScaleformReader.GetValue()) {
+				const char* userEvent = button->strUserEvent.c_str();
+				if (userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0)
+					g_dumpRequested.store(true, std::memory_order_release);
+			}
 
 			if (!InputBudgetOk())
 				return;
@@ -269,6 +296,197 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
+	// Tap 4: the ship HUD's ActionScript data model.
+	//
+	// The decompiled SWF shows the engine pushing the whole target list into the
+	// HUD (`LowFreqTargetData.targetArray`, with `iHoverTargetIndex`,
+	// `iInfoTargetIndex`, per-entry `uniqueID` and `uTargetType`), and cruise
+	// state alongside it (`CruiseModeHUDActive`). `uniqueID` is the id the mod
+	// will need: vanilla's own `FarTravelIconBase.OnLockCourse()` dispatches
+	// `Reticle_OnCruiseLockCourse` with `{uBodyID: TargetOnlyData.uniqueID}`.
+	//
+	// The question this answers: in cruise, does `targetArray` hold the whole
+	// system or only the forward cone? That decides whether the panel can list
+	// a planet it cannot currently see.
+	//
+	// Every id needed here is mapped: `Value::ObjectInterface::*` are live in
+	// CommonLibSF, and `ASMovieRootBase`'s own methods are pure virtuals called
+	// through the object's vtable, so they need no ids at all.
+	// ---------------------------------------------------------------------------
+
+	std::atomic<std::uint32_t> g_scaleformLines{ 0 };
+
+	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
+
+	bool ScaleformBudgetOk()
+	{
+		const auto cap = uScaleformMaxLines.GetValue();
+		if (cap == 0)
+			return true;
+		const auto used = g_scaleformLines.fetch_add(1, std::memory_order_relaxed);
+		if (used < cap)
+			return true;
+		if (used == cap)
+			REX::WARN("[sf] line cap ({}) reached - raise uScaleformMaxLines to see more", cap);
+		return false;
+	}
+
+	std::string DescribeValue(const RE::Scaleform::GFx::Value& a_value)
+	{
+		// Order matters: IsObject() is also true for arrays and display objects.
+		if (a_value.IsUndefined())
+			return "undefined";
+		if (a_value.IsBoolean())
+			return a_value.GetBoolean() ? "true" : "false";
+		if (a_value.IsInt())
+			return std::to_string(a_value.GetInt());
+		if (a_value.IsUInt())
+			return std::to_string(a_value.GetUInt());
+		if (a_value.IsNumber()) {
+			char buf[32]{};
+			std::snprintf(buf, sizeof(buf), "%g", a_value.GetNumber());
+			return buf;
+		}
+		if (a_value.IsString()) {
+			const char* str = a_value.GetString();
+			return std::string{ "\"" } + (str ? str : "") + "\"";
+		}
+		if (a_value.IsArray())
+			return "[array]";
+		if (a_value.IsDisplayObject())
+			return "{display}";
+		if (a_value.IsObject())
+			return "{object}";
+		return "<other>";
+	}
+
+	void DumpValue(const std::string& a_path, const RE::Scaleform::GFx::Value& a_value, std::uint32_t a_depth);
+
+	class MemberDumper : public RE::Scaleform::GFx::Value::ObjectVisitor
+	{
+	public:
+		MemberDumper(std::string a_path, std::uint32_t a_depth) :
+			_path(std::move(a_path)), _depth(a_depth)
+		{}
+
+		// Without this the visitor sees nothing on an AS3 object - the base
+		// returns false and AS3 members are all "public".
+		bool IncludeAS3PublicMembers() const override { return true; }
+
+		void Visit(const char* a_name, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			if (_seen++ >= uScaleformMaxChildren.GetValue())
+				return;
+			DumpValue(_path + "." + (a_name ? a_name : "?"), a_value, _depth);
+		}
+
+	private:
+		std::string   _path;
+		std::uint32_t _depth;
+		std::uint32_t _seen{ 0 };
+	};
+
+	class ElementDumper : public RE::Scaleform::GFx::Value::ArrayVisitor
+	{
+	public:
+		ElementDumper(std::string a_path, std::uint32_t a_depth) :
+			_path(std::move(a_path)), _depth(a_depth)
+		{}
+
+		void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			if (_seen++ >= uScaleformMaxChildren.GetValue())
+				return;
+			DumpValue(_path + "[" + std::to_string(a_index) + "]", a_value, _depth);
+		}
+
+	private:
+		std::string   _path;
+		std::uint32_t _depth;
+		std::uint32_t _seen{ 0 };
+	};
+
+	void DumpValue(const std::string& a_path, const RE::Scaleform::GFx::Value& a_value, std::uint32_t a_depth)
+	{
+		if (!ScaleformBudgetOk())
+			return;
+
+		REX::INFO("[sf] {} = {}", a_path, DescribeValue(a_value));
+
+		if (a_depth == 0)
+			return;
+
+		// The visitors are non-const, and Value is refcounted, so copy.
+		RE::Scaleform::GFx::Value value = a_value;
+		if (value.IsArray()) {
+			ElementDumper visitor{ a_path, a_depth - 1 };
+			value.VisitElements(&visitor);
+		} else if (value.IsObject() || value.IsDisplayObject()) {
+			MemberDumper visitor{ a_path, a_depth - 1 };
+			value.VisitMembers(&visitor);
+		}
+	}
+
+	// Runs from the per-frame task, never from the input hook: the movie is not
+	// ours to touch from an arbitrary thread, and a user-triggered dump keeps
+	// the exposure to a few frames a session rather than every frame.
+	void DumpShipHudDataModel()
+	{
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud)) {
+			REX::INFO("[sf] {} is not open - dump skipped", kShipHudMenu);
+			return;
+		}
+
+		const auto menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot) {
+			REX::WARN("[sf] {} has no movie root - dump skipped", kShipHudMenu);
+			return;
+		}
+
+		g_scaleformLines.store(0, std::memory_order_relaxed);
+		const auto depth = uScaleformDepth.GetValue();
+		auto*      root = menu->uiMovie->asMovieRoot.get();
+
+		const char* rootPath = menu->GetRootPath();
+		REX::INFO("[sf] ==== dump begin (root path '{}', depth {}) ====", rootPath ? rootPath : "-", depth);
+
+		// The exact path to the reticle's data model is unknown, so probe the
+		// plausible ones and dump whichever resolve. `IsAvailable` is cheap and
+		// non-destructive, so a miss costs nothing.
+		const char* candidates[]{
+			rootPath ? rootPath : "root",
+			"root",
+			"root.Menu_mc",
+			"root.ShipReticle_mc",
+			"root.Menu_mc.ShipReticle_mc",
+			"root.ShipHudMenu_mc",
+		};
+
+		for (const auto* path : candidates) {
+			if (!path || !path[0])
+				continue;
+			if (!root->IsAvailable(path)) {
+				REX::INFO("[sf] path '{}' - not available", path);
+				continue;
+			}
+			RE::Scaleform::GFx::Value value;
+			if (root->GetVariable(&value, path)) {
+				REX::INFO("[sf] path '{}' - resolved, walking:", path);
+				DumpValue(path, value, depth);
+			} else {
+				REX::INFO("[sf] path '{}' - available but GetVariable failed", path);
+			}
+		}
+
+		REX::INFO("[sf] ==== dump end ({} lines) ====", g_scaleformLines.load(std::memory_order_relaxed));
+	}
+
+	// ---------------------------------------------------------------------------
 	// Tap 3: context heartbeat, for correlating with the input log.
 	// ---------------------------------------------------------------------------
 
@@ -326,6 +544,16 @@ namespace
 	void OnFrame()
 	{
 		TryInstallInputTap();
+
+		// Single-winner exchange: the dump is expensive and must not run twice
+		// concurrently if this task lands on two threads in the same frame.
+		if (g_dumpRequested.exchange(false, std::memory_order_acq_rel)) {
+			static const RE::BSFixedString s_loadingMenu{ "LoadingMenu" };
+			static const RE::BSFixedString s_mainMenu{ "MainMenu" };
+			const auto ui = RE::UI::GetSingleton();
+			if (ui && !ui->IsMenuOpen(s_loadingMenu) && !ui->IsMenuOpen(s_mainMenu))
+				DumpShipHudDataModel();
+		}
 
 		if (bLogHeartbeat.GetValue())
 			LogHeartbeat();
