@@ -56,22 +56,42 @@ complete** — the recon build has served its purpose and does not need to ship.
             not ships or dynamic POIs.
       - [ ] Fallback B: reverse `Spaceship::TargetingMode` (live RTTI/vtable
             ids, no curated API).
-- [ ] **★ NEXT, and free: does a target survive entering cruise?** The one test
-      that decides whether this mod is feasible at all (PHASE0-FINDINGS §6d).
-      Acquire a distant target in normal flight, then engage cruise.
-      - **Survives** → only *acquisition* is cone-restricted; setting a target
-        directly works and the panel is viable. Good case.
-      - **Dropped** → targeting itself is restricted in cruise, and a panel
-        would be fighting the engine. Worth knowing before writing any code.
-- [ ] ~~Try the route subsystem~~ **withdrawn** — `SetRouteDestination` and the
-      `StarMapMenu_*` events are galaxy-map/grav-jump machinery; a full cruise
-      session with no grav jump shows no route activity at all. The *pointing*
-      diagnosis survives, the route prescription does not.
-- [ ] Only if instrumentation is still needed after the test above: read the
-      current target out of `SpaceshipHudMenu`'s Scaleform movie
-      (`asMovieRoot->GetVariable`) rather than chasing the unmapped `ShipHud_*`
-      ids. The HUD renders the target name, so the value is in that data model,
-      and SFSE already hands over the menu.
+- [x] **Does a target survive entering cruise? YES** (2026-07-26). The cone
+      restricts *acquisition*, not *possession* — the engine will hold a target
+      the cruise cycle could never reach. **The mod is viable**, it is not
+      fighting the engine. See PHASE0-FINDINGS §6d.
+- [x] ~~Try the route subsystem~~ withdrawn — galaxy-map/grav-jump machinery.
+
+### Phase 1, as it now stands
+
+Three pieces, in dependency order. Piece 2 is the only real unknown.
+
+- [ ] **1. Cruise detection.** Needed to know when `SHMonocle` is free to
+      hijack (it is undisabled in normal flight too). Lead: the Papyrus native
+      `Game.IsCruiseModeActive()`; natives register by name string and are among
+      the easiest engine functions to locate.
+- [ ] **2. A set-target-to-X call.** ★ The gating unknown. Driving the vanilla
+      cycle is now definitively out — in cruise it cannot *reach* the chosen
+      planet however often it fires.
+      - [ ] Start with **`TryUpdateShipHudTarget` (old id 137012)** and
+            **`ClearShipHudTarget` (137011)**. Adjacent ids, and the names read
+            as a set/clear *pair* that takes a target — exactly the shape the
+            panel needs, and a much better fit than `ShipHud_Target`'s
+            cycle semantics. Both are `{ 0 }` placeholders needing a remap.
+      - [ ] **Verify the payload before publishing either.** CommonLibSF
+            declares both as empty structs; if the engine's payload is not
+            empty, `Notify` with an empty one is the SeamlessGravJumps bug.
+      - [ ] Fallback: `Spaceship::TargetingMode` (live RTTI/vtable ids, no
+            curated API).
+- [ ] **3. The list, from static records.** Nothing enumerable at runtime in
+      cruise covers the system, so build it from the current system's planets
+      and moons as data. Sufficient for the stated goal; ships and dynamic POIs
+      are a later problem.
+
+Optional instrumentation, if piece 2 needs debugging: read the live target out
+of `SpaceshipHudMenu`'s Scaleform movie (`asMovieRoot->GetVariable`) instead of
+chasing more ids — the HUD renders the target name, and SFSE already hands over
+the menu.
 - [ ] Map the `ShipHud_*` event ids. All are `{ 0 }` placeholders in
       CommonLibSF `include/RE/IDs.h`; the old-database ids survive in the
       comments (137011–137033) as Ghidra anchors. They sit in one tight cluster,

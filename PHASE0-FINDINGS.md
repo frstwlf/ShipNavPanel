@@ -281,16 +281,27 @@ gameplay test answers the question that decides everything:
 **Acquire a distant target *before* entering cruise (where cycling reaches the
 whole system), then engage cruise and watch what happens to it.**
 
-- **Target survives** → the engine will hold a target outside the cone, and only
-  *acquisition* is restricted. A mod that sets the target directly is viable and
-  the panel works. This is the good case.
-- **Target is dropped or cleared on entering cruise** → targeting itself is
-  cone-restricted in cruise, and any panel would be fighting the engine rather
-  than presenting it. That is a much harder mod and worth knowing before a line
-  of code is written.
+### ✅ RESULT (2026-07-26): the target survives engaging cruise. The mod is viable.
 
-Follow-up if it survives: does the HUD still track it, and does cruise still
-fly toward it?
+This is the good case, and it settles the question §6b left open. **The cone
+restricts *acquisition*, not *possession*.** The engine is perfectly willing to
+hold — and presumably fly toward — a target that the cruise cycle would never
+have reached. Nothing about cruise forbids the end state the panel wants; only
+the vanilla path to it is narrow.
+
+Consequences, and they are the whole design:
+
+1. **The panel is feasible.** Selecting a distant planet from a list and having
+   the ship hold it as a target is a state the engine already supports in
+   cruise. The mod is not fighting the engine, it is providing a second route to
+   a legal state.
+2. **Driving the vanilla cycle is finally, definitively out** — not because of
+   ids or payloads, but because in cruise the cycle cannot *reach* the planet
+   the user picked, however many times it is fired. The mod needs a
+   **set-target-to-X** call, not a next-target one.
+3. **The list must come from static data**, since nothing enumerable at runtime
+   in cruise covers the system. Planets and moons are records; that is enough
+   for the stated goal.
 
 If instrumentation is wanted afterwards, the cheap route is **not** the unmapped
 `ShipHud_*` ids — it is to read the target straight out of the ship HUD's

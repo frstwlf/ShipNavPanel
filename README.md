@@ -21,8 +21,15 @@ to answer them before any effort is spent on Scaleform.
 > movie, confirming the Phase 2 injection target.
 >
 > One new requirement fell out: the key is *also* undisabled in normal flight,
-> so the mod must detect cruise state before consuming it. That is now the first
-> Phase 1 task.
+> so the mod must detect cruise state before consuming it.
+>
+> **And the feasibility question is settled.** In cruise the vanilla target
+> cycle only reaches targets near the ship's heading — but a target acquired
+> beforehand **survives entering cruise**. The cone restricts *acquisition*, not
+> *possession*: the engine will happily hold a target the cycle could never
+> reach. The panel is therefore providing a second route to a state the game
+> already supports, not fighting it. What Phase 1 needs is a *set-target-to-X*
+> call, not the vanilla cycle.
 
 ---
 
