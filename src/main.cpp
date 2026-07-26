@@ -49,7 +49,8 @@ namespace
 	REX::TIniSetting<bool>          bVerifyVTableID{ "Recon", "bVerifyVTableID", false };
 
 	// Scaleform reader: dumps the ship HUD's ActionScript data model on demand.
-	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", true };
+	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", false };
+	REX::TIniSetting<bool>          bInterposeTargetData{ "Scaleform", "bInterposeTargetData", true };
 	REX::TIniSetting<bool>          bScaleformSkipBoilerplate{ "Scaleform", "bScaleformSkipBoilerplate", true };
 	REX::TIniSetting<std::uint32_t> uScaleformDepth{ "Scaleform", "uScaleformDepth", 8 };
 	REX::TIniSetting<std::uint32_t> uScaleformMaxLines{ "Scaleform", "uScaleformMaxLines", 3000 };
@@ -89,10 +90,15 @@ namespace
 	std::atomic<std::uint32_t>            g_inputLinesLogged{ 0 };
 	std::atomic<bool>                     g_inputTapClaimed{ false };
 
-	// Set from the input hook, consumed by the per-frame task (see tap 4). The
+	// Set from the input hook, consumed elsewhere: the tree dump by the per-frame
+	// task (tap 4), the capture by the interposer on the UI thread (tap 5). The
 	// hook must not touch the movie itself - it runs on whichever thread the
 	// input queue is being drained on.
 	std::atomic<bool> g_dumpRequested{ false };
+	std::atomic<bool> g_captureRequested{ false };
+	std::atomic<bool> g_interposeInstalled{ false };
+
+	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
 
 	// The user event that requests a data-model dump: the scanner key, i.e. the
 	// same trigger the finished panel will use.
@@ -177,12 +183,17 @@ namespace
 			if (down && !firstFrame && !logHeld)
 				continue;  // held-down repeat
 
-			// Request a data-model dump on the trigger key's initial press. Only
-			// a flag is set here - the movie is read from the per-frame task.
-			if (down && firstFrame && bScaleformReader.GetValue()) {
+			// Request a dump/capture on the trigger key's initial press. Only
+			// flags are set here - the movie is touched from the per-frame task,
+			// and the captured data is read on the UI thread by the interposer.
+			if (down && firstFrame) {
 				const char* userEvent = button->strUserEvent.c_str();
-				if (userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0)
-					g_dumpRequested.store(true, std::memory_order_release);
+				if (userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
+					if (bScaleformReader.GetValue())
+						g_dumpRequested.store(true, std::memory_order_release);
+					if (bInterposeTargetData.GetValue())
+						g_captureRequested.store(true, std::memory_order_release);
+				}
 			}
 
 			if (!InputBudgetOk())
@@ -288,7 +299,17 @@ namespace
 	// into later. Only plain members are read here - no virtual calls.
 	void OnMenuMovieCreated(RE::IMenu* a_menu)
 	{
-		if (!bLogMenus.GetValue() || !a_menu)
+		if (!a_menu)
+			return;
+
+		// A new movie means our replaced function went with the old one, so the
+		// interposer has to be reinstalled. Cheaper and far more reliable than
+		// comparing movie pointers, which an allocator is free to recycle.
+		const char* name = a_menu->menuName.c_str();
+		if (name && std::strcmp(name, kShipHudMenu) == 0)
+			g_interposeInstalled.store(false, std::memory_order_release);
+
+		if (!bLogMenus.GetValue())
 			return;
 
 		REX::INFO("[menu-movie] {:<28} movie={} vtable={:016X}",
@@ -317,8 +338,6 @@ namespace
 	// ---------------------------------------------------------------------------
 
 	std::atomic<std::uint32_t> g_scaleformLines{ 0 };
-
-	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
 
 	// Standard AS3 DisplayObject / MovieClip / loader properties. The first run
 	// of this reader spent its entire budget on these and never reached a single
@@ -598,6 +617,168 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
+	// Tap 5: interposing on the HUD's data-model entry point.
+	//
+	// The target list cannot be read from outside - `LowFreqTargetData` is a
+	// private member of ShipReticle - and `uniqueID`, which the panel's confirm
+	// action needs as `uBodyID`, is only ever the *key* of a private array, so
+	// it is not on the icon clips either.
+	//
+	// But the engine hands the data in through a PUBLIC function, and public
+	// members can be replaced. Stash the original under another name, put a
+	// native function in its place, read the argument on the way past, then call
+	// the original so the HUD behaves exactly as before. This is the same
+	// CreateFunction/SetMember pattern CommonLibSF already uses for
+	// `GameMenuBase::RegisterNativeFunction`, and it needs no SWF patch.
+	//
+	// The handler runs on the UI thread every time the engine refreshes the
+	// list, so it does nothing at all unless a capture has been requested.
+	// ---------------------------------------------------------------------------
+
+	constexpr const char* kInterposeFunc = "UpdateLowFrequencyData";
+	constexpr const char* kOriginalStash = "ShipNavPanel_OrigUpdateLowFreq";
+
+	class TargetRowVisitor : public RE::Scaleform::GFx::Value::ArrayVisitor
+	{
+	public:
+		void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			RE::Scaleform::GFx::Value entry = a_value;
+			const auto                field = [&](const char* a_name) -> std::string {
+                RE::Scaleform::GFx::Value member;
+                return entry.GetMember(a_name, &member) ? DescribeValue(member) : "-";
+			};
+
+			REX::INFO("[nav] [{:>2}] uniqueID={} uTargetType={} name={} landing={}",
+				a_index, field("uniqueID"), field("uTargetType"),
+				field("sTargetName"), field("bLandingAllowed"));
+
+			// The entry schema is not documented anywhere, so spell the first
+			// one out in full - that is how the remaining field names are found.
+			if (a_index == 0) {
+				REX::INFO("[nav] --- full schema of entry 0 ---");
+				LevelCollector visitor{ "[nav] entry0", nullptr };
+				entry.VisitMembers(&visitor);
+				REX::INFO("[nav] --- end schema ---");
+			}
+		}
+	};
+
+	void CaptureTargetData(const RE::Scaleform::GFx::Value& a_data)
+	{
+		RE::Scaleform::GFx::Value data = a_data;
+		if (!data.IsObject()) {
+			REX::WARN("[nav] capture: argument is {}, not an object", DescribeValue(data));
+			return;
+		}
+
+		g_scaleformLines.store(0, std::memory_order_relaxed);
+		REX::INFO("[nav] ==== target data capture ====");
+
+		for (const auto* name : { "iInfoTargetIndex", "iHoverTargetIndex" }) {
+			RE::Scaleform::GFx::Value value;
+			if (data.GetMember(name, &value))
+				REX::INFO("[nav] {} = {}", name, DescribeValue(value));
+		}
+
+		RE::Scaleform::GFx::Value targetArray;
+		if (!data.GetMember("targetArray", &targetArray)) {
+			REX::WARN("[nav] no 'targetArray' member - dumping what the argument does have:");
+			LevelCollector visitor{ "[nav] arg", nullptr };
+			data.VisitMembers(&visitor);
+			return;
+		}
+
+		// LowFreq wraps the entries in `.dataA`; other feeds pass a bare array.
+		RE::Scaleform::GFx::Value entries;
+		if (!targetArray.GetMember("dataA", &entries) || !entries.IsArray())
+			entries = targetArray;
+
+		if (!entries.IsArray()) {
+			REX::WARN("[nav] targetArray is {} - expected an array", DescribeValue(entries));
+			return;
+		}
+
+		TargetRowVisitor visitor;
+		entries.VisitElements(&visitor);
+		REX::INFO("[nav] ==== capture end ====");
+	}
+
+	class TargetDataInterposer : public RE::Scaleform::GFx::FunctionHandler
+	{
+	public:
+		void Call(const Params& a_params) override
+		{
+			if (g_captureRequested.exchange(false, std::memory_order_acq_rel) && a_params.argCount > 0 && a_params.args)
+				CaptureTargetData(a_params.args[0]);
+
+			// Always hand off to the original, whatever happened above - if this
+			// stops running, the HUD's target display freezes.
+			if (a_params.self) {
+				RE::Scaleform::GFx::Value self = *a_params.self;
+				self.Invoke(kOriginalStash, nullptr, a_params.args, a_params.argCount);
+			}
+		}
+	};
+
+	// Static: FunctionHandler is refcounted starting at 1, so Scaleform's
+	// AddRef/Release around the created function never drops it to zero.
+	TargetDataInterposer g_interposer;
+
+	void TryInstallInterposer()
+	{
+		if (!bInterposeTargetData.GetValue() || g_interposeInstalled.load(std::memory_order_acquire))
+			return;
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud))
+			return;
+
+		const auto menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return;
+
+		auto*             root = menu->uiMovie->asMovieRoot.get();
+		const char*       rootPath = menu->GetRootPath();
+		const std::string reticlePath = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc";
+
+		RE::Scaleform::GFx::Value reticle;
+		if (!root->GetVariable(&reticle, reticlePath.c_str()))
+			return;  // menu up but not built yet - try again next frame
+
+		if (reticle.HasMember(kOriginalStash)) {
+			g_interposeInstalled.store(true, std::memory_order_release);
+			REX::INFO("[nav] already interposed on this movie");
+			return;
+		}
+
+		RE::Scaleform::GFx::Value original;
+		if (!reticle.GetMember(kInterposeFunc, &original)) {
+			REX::WARN("[nav] '{}' has no member '{}' - not interposing", reticlePath, kInterposeFunc);
+			return;
+		}
+
+		if (!reticle.SetMember(kOriginalStash, original)) {
+			REX::WARN("[nav] could not stash the original - not interposing");
+			return;
+		}
+
+		RE::Scaleform::GFx::Value replacement;
+		root->CreateFunction(&replacement, &g_interposer);
+		if (!reticle.SetMember(kInterposeFunc, replacement)) {
+			REX::WARN("[nav] could not install the replacement - HUD untouched");
+			return;
+		}
+
+		g_interposeInstalled.store(true, std::memory_order_release);
+		REX::INFO("[nav] interposed on {}.{} (original stashed as '{}')",
+			reticlePath, kInterposeFunc, kOriginalStash);
+	}
+
+	// ---------------------------------------------------------------------------
 	// Tap 3: context heartbeat, for correlating with the input log.
 	// ---------------------------------------------------------------------------
 
@@ -655,6 +836,7 @@ namespace
 	void OnFrame()
 	{
 		TryInstallInputTap();
+		TryInstallInterposer();
 
 		// Single-winner exchange: the dump is expensive and must not run twice
 		// concurrently if this task lands on two threads in the same frame.
