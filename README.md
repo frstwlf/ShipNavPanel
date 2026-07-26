@@ -64,14 +64,29 @@ currently leaves unmapped.
 
 ## Install and run
 
-Build output is a Vortex-ready archive:
+**While iterating on recon builds, deploy straight into the game** — an archive
+per build is pure bloat when the loop is build, fly, read log, repeat.
 
 ```bash
-xmake -y && xmake package -y
+xmake -y
 ```
 
-`build\packages\ShipNavPanel-0.0.1.zip` installs through Vortex like any other
-mod. Log lands at:
+With `XSE_SF_GAME_PATH` set to the game root, the `commonlibsf.plugin` rule
+installs the dll/pdb/ini to `<game>\Data\SFSE\Plugins` as part of the build. No
+archive, no Vortex round-trip. Unset that variable and the rule falls back to
+`build\deploy\Data` instead.
+
+**Confirm which build actually loaded** — the plugin logs its own version on the
+first line, e.g. `ShipNavPanel v0.0.5.0`. That is the reliable check against
+testing a stale binary, and it costs nothing to glance at.
+
+Only build the Vortex archive for something meant to be handed to someone:
+
+```bash
+xmake package -y
+```
+
+Log lands at:
 
 ```
 C:\Users\<you>\Documents\My Games\Starfield\SFSE\Logs\ShipNavPanel.log
