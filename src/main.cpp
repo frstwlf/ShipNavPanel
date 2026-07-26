@@ -97,6 +97,7 @@ namespace
 	std::atomic<bool> g_dumpRequested{ false };
 	std::atomic<bool> g_captureRequested{ false };
 	std::atomic<bool> g_interposeInstalled{ false };
+	std::atomic<bool> g_interposeFailed{ false };
 
 	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
 
@@ -306,8 +307,10 @@ namespace
 		// interposer has to be reinstalled. Cheaper and far more reliable than
 		// comparing movie pointers, which an allocator is free to recycle.
 		const char* name = a_menu->menuName.c_str();
-		if (name && std::strcmp(name, kShipHudMenu) == 0)
+		if (name && std::strcmp(name, kShipHudMenu) == 0) {
 			g_interposeInstalled.store(false, std::memory_order_release);
+			g_interposeFailed.store(false, std::memory_order_release);
+		}
 
 		if (!bLogMenus.GetValue())
 			return;
@@ -704,6 +707,14 @@ namespace
 		REX::INFO("[nav] ==== capture end ====");
 	}
 
+	// The original method, parked on a plain AS3 Object. `ShipReticle` is a
+	// sealed class (`public class ShipReticle extends BSDisplayObject`, no
+	// `dynamic`), so it rejects new members - which is exactly why stashing the
+	// original *on the reticle itself* failed. A bare Object is dynamic and
+	// accepts them. An AS3 method reference is a bound closure, so it keeps the
+	// reticle as its `this` and still behaves correctly when called from here.
+	RE::Scaleform::GFx::Value g_originalHolder;
+
 	class TargetDataInterposer : public RE::Scaleform::GFx::FunctionHandler
 	{
 	public:
@@ -714,10 +725,8 @@ namespace
 
 			// Always hand off to the original, whatever happened above - if this
 			// stops running, the HUD's target display freezes.
-			if (a_params.self) {
-				RE::Scaleform::GFx::Value self = *a_params.self;
-				self.Invoke(kOriginalStash, nullptr, a_params.args, a_params.argCount);
-			}
+			if (g_originalHolder.IsObject())
+				g_originalHolder.Invoke(kOriginalStash, nullptr, a_params.args, a_params.argCount);
 		}
 	};
 
@@ -727,7 +736,11 @@ namespace
 
 	void TryInstallInterposer()
 	{
-		if (!bInterposeTargetData.GetValue() || g_interposeInstalled.load(std::memory_order_acquire))
+		// Give up permanently after a real failure. v0.0.6 retried every frame
+		// and wrote the same warning ~60 times a second.
+		if (!bInterposeTargetData.GetValue() ||
+			g_interposeInstalled.load(std::memory_order_acquire) ||
+			g_interposeFailed.load(std::memory_order_acquire))
 			return;
 
 		const auto ui = RE::UI::GetSingleton();
@@ -749,33 +762,44 @@ namespace
 		if (!root->GetVariable(&reticle, reticlePath.c_str()))
 			return;  // menu up but not built yet - try again next frame
 
-		if (reticle.HasMember(kOriginalStash)) {
-			g_interposeInstalled.store(true, std::memory_order_release);
-			REX::INFO("[nav] already interposed on this movie");
-			return;
-		}
+		// Each step is reported separately. The previous build bundled the stash
+		// and the replacement into one failure path, so when the stash failed it
+		// never learned whether the replacement - the step that actually decides
+		// whether this approach can work at all - would have succeeded.
+		const auto giveUp = [&](const char* a_why) {
+			REX::WARN("[nav] not interposing: {}", a_why);
+			g_interposeFailed.store(true, std::memory_order_release);
+		};
 
 		RE::Scaleform::GFx::Value original;
 		if (!reticle.GetMember(kInterposeFunc, &original)) {
-			REX::WARN("[nav] '{}' has no member '{}' - not interposing", reticlePath, kInterposeFunc);
+			giveUp("the reticle has no such member");
 			return;
 		}
+		REX::INFO("[nav] step 1 OK: original '{}' is {}", kInterposeFunc, DescribeValue(original));
 
-		if (!reticle.SetMember(kOriginalStash, original)) {
-			REX::WARN("[nav] could not stash the original - not interposing");
+		// A plain Object is dynamic, unlike the sealed ShipReticle class.
+		root->CreateObject(&g_originalHolder);
+		if (!g_originalHolder.IsObject() || !g_originalHolder.SetMember(kOriginalStash, original)) {
+			giveUp("could not park the original on a plain Object");
 			return;
 		}
+		REX::INFO("[nav] step 2 OK: original parked on a dynamic holder");
 
+		// The decisive step. AS3 sealed classes expose their methods as fixed
+		// traits, which are normally read-only - if this fails, replacing the
+		// method is impossible and the approach is dead rather than mistuned.
 		RE::Scaleform::GFx::Value replacement;
 		root->CreateFunction(&replacement, &g_interposer);
 		if (!reticle.SetMember(kInterposeFunc, replacement)) {
-			REX::WARN("[nav] could not install the replacement - HUD untouched");
+			giveUp("could not replace the method on the sealed class - "
+				   "AS3 fixed traits are read-only, so interposition is out; "
+				   "next route is hooking Value::ObjectInterface::Invoke in C++");
 			return;
 		}
 
 		g_interposeInstalled.store(true, std::memory_order_release);
-		REX::INFO("[nav] interposed on {}.{} (original stashed as '{}')",
-			reticlePath, kInterposeFunc, kOriginalStash);
+		REX::INFO("[nav] step 3 OK: interposed on {}.{}", reticlePath, kInterposeFunc);
 	}
 
 	// ---------------------------------------------------------------------------
