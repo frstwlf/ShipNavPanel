@@ -12,6 +12,7 @@
 #include <cstring>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -342,6 +343,14 @@ namespace
 	{
 		if (!a_name)
 			return true;
+
+		// Adobe Animate motion-tween artifacts: `__animFactory_*` / `__animArray_*`
+		// carry keyframe lists with colour transforms and matrices per frame, and
+		// they buried the second run exactly as the display properties buried the
+		// first. Nothing authored by the game lives behind a `__` prefix.
+		if (a_name[0] == '_' && a_name[1] == '_')
+			return true;
+
 		for (const auto* skip : kBoilerplateMembers) {
 			if (std::strcmp(a_name, skip) == 0)
 				return true;
@@ -409,55 +418,18 @@ namespace
 		return "<other>";
 	}
 
-	void DumpValue(const std::string& a_path, const RE::Scaleform::GFx::Value& a_value, std::uint32_t a_depth, bool a_interesting = false);
-
-	class MemberDumper : public RE::Scaleform::GFx::Value::ObjectVisitor
+	struct SfNode
 	{
-	public:
-		MemberDumper(std::string a_path, std::uint32_t a_depth) :
-			_path(std::move(a_path)), _depth(a_depth)
-		{}
-
-		// Without this the visitor sees nothing on an AS3 object - the base
-		// returns false and AS3 members are all "public".
-		bool IncludeAS3PublicMembers() const override { return true; }
-
-		void Visit(const char* a_name, const RE::Scaleform::GFx::Value& a_value) override
-		{
-			if (bScaleformSkipBoilerplate.GetValue() && IsBoilerplateMember(a_name))
-				return;
-			if (_seen++ >= uScaleformMaxChildren.GetValue())
-				return;
-			DumpValue(_path + "." + (a_name ? a_name : "?"), a_value, _depth, IsInterestingMember(a_name));
-		}
-
-	private:
-		std::string   _path;
-		std::uint32_t _depth;
-		std::uint32_t _seen{ 0 };
+		std::string               path;
+		RE::Scaleform::GFx::Value value;
 	};
 
-	class ElementDumper : public RE::Scaleform::GFx::Value::ArrayVisitor
+	bool SkipMember(const char* a_name)
 	{
-	public:
-		ElementDumper(std::string a_path, std::uint32_t a_depth) :
-			_path(std::move(a_path)), _depth(a_depth)
-		{}
+		return bScaleformSkipBoilerplate.GetValue() && IsBoilerplateMember(a_name);
+	}
 
-		void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
-		{
-			if (_seen++ >= uScaleformMaxChildren.GetValue())
-				return;
-			DumpValue(_path + "[" + std::to_string(a_index) + "]", a_value, _depth);
-		}
-
-	private:
-		std::string   _path;
-		std::uint32_t _depth;
-		std::uint32_t _seen{ 0 };
-	};
-
-	void DumpValue(const std::string& a_path, const RE::Scaleform::GFx::Value& a_value, std::uint32_t a_depth, bool a_interesting)
+	void EmitNode(std::string a_path, const RE::Scaleform::GFx::Value& a_value, bool a_interesting, std::vector<SfNode>* a_next)
 	{
 		if (!ScaleformBudgetOk())
 			return;
@@ -466,17 +438,83 @@ namespace
 		// greppable however large the dump gets.
 		REX::INFO("{} {} = {}", a_interesting ? "[sf*]" : "[sf] ", a_path, DescribeValue(a_value));
 
-		if (a_depth == 0)
-			return;
+		if (a_next && (a_value.IsArray() || a_value.IsObject() || a_value.IsDisplayObject()))
+			a_next->push_back(SfNode{ std::move(a_path), a_value });
+	}
 
-		// The visitors are non-const, and Value is refcounted, so copy.
-		RE::Scaleform::GFx::Value value = a_value;
-		if (value.IsArray()) {
-			ElementDumper visitor{ a_path, a_depth - 1 };
-			value.VisitElements(&visitor);
-		} else if (value.IsObject() || value.IsDisplayObject()) {
-			MemberDumper visitor{ a_path, a_depth - 1 };
-			value.VisitMembers(&visitor);
+	class LevelCollector : public RE::Scaleform::GFx::Value::ObjectVisitor
+	{
+	public:
+		LevelCollector(std::string a_base, std::vector<SfNode>* a_next) :
+			_base(std::move(a_base)), _next(a_next)
+		{}
+
+		// Without this the visitor sees nothing on an AS3 object - the base
+		// returns false and AS3 members are all "public".
+		bool IncludeAS3PublicMembers() const override { return true; }
+
+		void Visit(const char* a_name, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			if (SkipMember(a_name))
+				return;
+			if (_seen++ >= uScaleformMaxChildren.GetValue())
+				return;
+			EmitNode(_base + "." + (a_name ? a_name : "?"), a_value, IsInterestingMember(a_name), _next);
+		}
+
+	private:
+		std::string          _base;
+		std::vector<SfNode>* _next;
+		std::uint32_t        _seen{ 0 };
+	};
+
+	class ElementCollector : public RE::Scaleform::GFx::Value::ArrayVisitor
+	{
+	public:
+		ElementCollector(std::string a_base, std::vector<SfNode>* a_next) :
+			_base(std::move(a_base)), _next(a_next)
+		{}
+
+		void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			if (_seen++ >= uScaleformMaxChildren.GetValue())
+				return;
+			EmitNode(_base + "[" + std::to_string(a_index) + "]", a_value, false, _next);
+		}
+
+	private:
+		std::string          _base;
+		std::vector<SfNode>* _next;
+		std::uint32_t        _seen{ 0 };
+	};
+
+	// Breadth-first. The depth-first version spent its whole budget inside the
+	// first child it descended into, so nothing at the top level after that
+	// child was ever seen. Level order guarantees every member of a level is
+	// logged before anything below it - which is what discovery needs.
+	void WalkBreadthFirst(const std::string& a_rootPath, const RE::Scaleform::GFx::Value& a_root, std::uint32_t a_maxDepth)
+	{
+		std::vector<SfNode> current;
+		EmitNode(a_rootPath, a_root, false, &current);
+
+		const auto cap = uScaleformMaxLines.GetValue();
+		for (std::uint32_t level = 0; level < a_maxDepth && !current.empty(); ++level) {
+			std::vector<SfNode> next;
+			for (auto& node : current) {
+				if (cap != 0 && g_scaleformLines.load(std::memory_order_relaxed) > cap)
+					break;
+				// The visitors are non-const, and Value is refcounted, so copy.
+				RE::Scaleform::GFx::Value value = node.value;
+				if (value.IsArray()) {
+					ElementCollector visitor{ node.path, &next };
+					value.VisitElements(&visitor);
+				} else {
+					LevelCollector visitor{ node.path, &next };
+					value.VisitMembers(&visitor);
+				}
+			}
+			REX::INFO("[sf] ---- level {} done, {} nodes queued ----", level + 1, next.size());
+			current = std::move(next);
 		}
 	}
 
@@ -526,9 +564,9 @@ namespace
 			}
 			RE::Scaleform::GFx::Value value;
 			if (root->GetVariable(&value, path)) {
-				REX::INFO("[sf] path '{}' - resolved, walking (boilerplate {})",
+				REX::INFO("[sf] path '{}' - resolved, walking breadth-first (boilerplate {})",
 					path, bScaleformSkipBoilerplate.GetValue() ? "skipped" : "included");
-				DumpValue(path, value, depth);
+				WalkBreadthFirst(path, value, depth);
 				break;
 			}
 			REX::INFO("[sf] path '{}' - available but GetVariable failed", path);
