@@ -1,0 +1,5 @@
+build/
+vsxmake*/
+.xmake/
+.vs/
+compile_commands.json
