@@ -38,12 +38,18 @@ complete** — the recon build has served its purpose and does not need to ship.
       mode the panel is for. Determine whether the cone filters *enumeration* or
       also *setting* a target: if the latter, the panel needs a bypass, not just
       a nicer UI.
-      - [ ] Cheapest probe, no code: **search GMSTs in xEdit** for
-            cruise/target/angle settings. If the cone is a tunable, it can be
-            read and widened at runtime — `RE::INISettingCollection` has a live
-            singleton with `GetSetting<T>` and `SetSetting<T>` by name.
-            (That collection is INI settings; GMSTs live in
-            `GameSettingCollection`, RTTI 843296, no CommonLibSF header yet.)
+      - [x] GMST sweep done 2026-07-26 (`..\tools\Dump-Gmst.ps1`, all 2426 in
+            the load order): **no cruise targeting-cone setting exists.** The
+            cruise update's 26 GMSTs never touch targeting, and the only
+            target-cycle setting in the game is
+            `fShipHudTargetCycleRangeUpperBounds` = 1.5, a range bound.
+      - [ ] **Next, and cheap — a throwaway plugin, no code:** override
+            `fShipHudTargetCycleRangeUpperBounds` to something absurd, cruise,
+            and cycle. Widens → the restriction is *range*, not angle, and the
+            whole mod may reduce to a GMST edit. Unchanged → hardcoded in the
+            cruise path, so the `Spaceship::TargetingMode` route is required.
+            Add `fCruiseOutsidePlanetMapMarkerRangeMult` (2000) to the same test
+            if the cycle turns out to walk map markers.
       - [ ] Fallback A: enumerate the system's bodies from **static records**
             rather than from the targeting system — covers planets and moons,
             not ships or dynamic POIs.

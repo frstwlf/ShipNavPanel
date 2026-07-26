@@ -177,14 +177,28 @@ answer decides whether Phase 1 is a UI problem or a bypass problem.
 
 Three routes, cheapest first:
 
-1. **Look for a tunable.** Bethesda exposes a lot of this as settings, and
-   `RE::INISettingCollection` has a live singleton with `GetSetting<T>` **and
-   `SetSetting<T>` by name** — so if the cone is an `f…` setting it can simply
-   be read and widened at runtime, and the whole problem evaporates. The fastest
-   probe costs no code at all: **search GMSTs in xEdit** for cruise/target/angle
-   names. That plays to existing strengths and needs no Creation Kit. Note
-   `INISettingCollection` covers INI settings; gameplay tuning often lives in
-   GMSTs instead, whose collection has RTTI (843296) but no CommonLibSF header.
+1. ~~**Look for a tunable.**~~ **Done 2026-07-26 — mostly closed, one lead
+   left.** All 2426 GMSTs in the load order were dumped and swept
+   (`..\tools\Dump-Gmst.ps1`). **There is no cruise targeting-cone setting.**
+   SFBGS00D.esm — the cruise update — defines 26 GMSTs and none of them touches
+   targeting; they are magnetism, acceleration, stage distances, marker range
+   and spawn offsets. Game-wide, the only setting mentioning the ship target
+   cycle is `fShipHudTargetCycleRangeUpperBounds` = **1.5**, a *range* bound
+   with no angular counterpart anywhere. (Two red herrings cleared: the
+   `fTargetingMode*` family is the slow-mo Targeting Control Systems skill, and
+   its `TargetLockTargetAngle` is 180°, wide open; `fSpaceshipInner/OuterCone\
+   AngleDegrees` are audio attenuation.)
+
+   **The lead that survives — and the cheapest remaining experiment:** what
+   reads as an angular restriction may actually be a *range* one. Cruise moves
+   the ship across tens of thousands of km, so anything off your course may
+   simply fall out of cycle range and present as "only what's ahead". Override
+   `fShipHudTargetCycleRangeUpperBounds` to something absurd in a throwaway
+   plugin, cruise, and cycle. **Widens → range-gated, and the fix is a GMST
+   edit rather than a plugin.** Unchanged → the cone is hardcoded in the cruise
+   targeting path, and route 3 is required. Worth overriding
+   `fCruiseOutsidePlanetMapMarkerRangeMult` (2000) in the same test if the cycle
+   turns out to walk map markers.
 2. **Enumerate from data, not from targeting.** For planets and moons — the
    user's stated primary want — the current system's bodies are static records,
    not runtime targeting state. A data-driven list sidesteps the cone entirely
