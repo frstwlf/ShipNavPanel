@@ -32,6 +32,23 @@ complete** — the recon build has served its purpose and does not need to ship.
 - [ ] Reset any held-key state on focus loss: a key held during an alt-tab never
       reports its release.
 
+- [ ] **★ Settle the cruise targeting cone first — it decides the whole shape of
+      Phase 1.** In cruise the vanilla cycle only reaches targets near the ship's
+      heading, so building the list by driving the cycle does not work in the one
+      mode the panel is for. Determine whether the cone filters *enumeration* or
+      also *setting* a target: if the latter, the panel needs a bypass, not just
+      a nicer UI.
+      - [ ] Cheapest probe, no code: **search GMSTs in xEdit** for
+            cruise/target/angle settings. If the cone is a tunable, it can be
+            read and widened at runtime — `RE::INISettingCollection` has a live
+            singleton with `GetSetting<T>` and `SetSetting<T>` by name.
+            (That collection is INI settings; GMSTs live in
+            `GameSettingCollection`, RTTI 843296, no CommonLibSF header yet.)
+      - [ ] Fallback A: enumerate the system's bodies from **static records**
+            rather than from the targeting system — covers planets and moons,
+            not ships or dynamic POIs.
+      - [ ] Fallback B: reverse `Spaceship::TargetingMode` (live RTTI/vtable
+            ids, no curated API).
 - [ ] Map the `ShipHud_*` event ids. All are `{ 0 }` placeholders in
       CommonLibSF `include/RE/IDs.h`; the old-database ids survive in the
       comments (137011–137033) as Ghidra anchors. They sit in one tight cluster,

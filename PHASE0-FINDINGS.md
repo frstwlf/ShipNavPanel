@@ -7,6 +7,12 @@ engagements, and the console. 545 log lines, no crash, no instability.
 **Verdict: the mod is buildable, and every question came back the favourable
 way.** The scanner key is fully visible during cruise mode.
 
+**But a late gameplay observation moved the hard part.** In cruise mode the
+vanilla target cycle only walks targets near the ship's heading, in the centre of
+the screen — it does not enumerate the system. Outside cruise it cycles normally.
+That kills the cheap plan of building the panel's list by driving the vanilla
+cycle, exactly where the panel is meant to be used. See §6.
+
 ---
 
 ## 1. The decisive result
@@ -68,6 +74,12 @@ and `Cruise`/`ExecuteJump`/`SetRouteDestination` all share id 70. The name is
 resolved against the active context, which is precisely why the name is the
 right thing to match.
 
+> ⚠️ **The id column is this tester's own bindings and includes deliberate
+> rebinds** (`Cancel` moved from Escape to Tab; `ExitShip` and `StarbornPower`
+> share C). They are not defaults and **must never be baked into the mod** —
+> they are recorded only so the log reads sensibly. Everything the mod matches
+> on has to be the user-event name.
+
 ## 3. Menus
 
 `SpaceshipHudMenu` is confirmed as the injection target: `movie=yes`, vtable
@@ -82,9 +94,9 @@ they do not exist.
 
 ## 4. Three implementation traps found along the way
 
-**The user-event name can differ between a key's press and its release.** It is
-resolved against the control context at the moment each event is generated, so a
-menu opening mid-press changes the name:
+**One physical key carries several user events, and the name an event reports is
+resolved against the active context — so a press and its own release can arrive
+under different names.**
 
 ```
 18:32:00.335  ExecuteJump  id=70  PRESS      ->  18:32:01.223  R3            id=70  RELEASE
@@ -92,8 +104,21 @@ menu opening mid-press changes the name:
 18:32:40.011  Cancel       id=9   PRESS      ->  18:32:40.874  DataMenu      id=9   RELEASE
 ```
 
-→ **Act on the press, match the name there, and pair press/release by `idCode`.**
-Never assume the release carries the same name.
+Two of those three are explained by **this tester's custom bindings** rather than
+by the engine reinterpreting anything: `ExitShip` and `StarbornPower` are both
+bound to C, and `Cancel` was rebound from Escape to Tab, which already carries
+`DataMenu`. (Neither collides in play — a Starborn power is unusable from the
+pilot seat, and one key opening and closing the data menu is the point.) The
+`ExecuteJump` → `R3` pair is *not* a rebind: id 70 carries `Cruise`,
+`ExecuteJump`, `SetRouteDestination` and `R3` in vanilla, and the star map
+closing mid-press is what changes which one is reported.
+
+So the mechanism is context resolution over a many-to-one key→action mapping,
+and rebinding makes it denser. The conclusion is unchanged and, if anything,
+firmer:
+
+→ **`idCode` is not an action identifier — never match on it alone.** Match the
+user-event name, act on the **press**, and pair press/release by `idCode`.
 
 **A key held when the window loses focus never reports its release.** Every
 alt-tab in the session left `Unmapped id=164` pressed with no matching release.
@@ -117,16 +142,56 @@ least six different thread ids. Consistent with the BSJobs findings in
 
 ## 6. What this changes for Phase 1
 
-One new requirement falls out of the results. Because `SHMonocle` arrives
-undisabled in **normal flight too**, opening the panel on every press would
-break the vanilla ship scanner. The mod needs to know when cruise is active
-before it consumes the key.
+### 6a. Cruise detection is now the first task
 
-Cruise detection is therefore the first Phase 1 task, ahead of the `ShipHud_*`
-id work. Cheapest lead: Papyrus's `Game.IsCruiseModeActive()` native — Papyrus
-natives are registered by name string, which makes them among the easiest engine
-functions to locate. Failing that, the `SpaceCruise::*` classes and the
+Because `SHMonocle` arrives undisabled in **normal flight too**, opening the
+panel on every press would break the vanilla ship scanner. The mod has to know
+when cruise is active before it consumes the key.
+
+Cheapest lead: Papyrus's `Game.IsCruiseModeActive()` native — Papyrus natives
+register by name string, which makes them among the easiest engine functions to
+locate. Failing that, the `SpaceCruise::*` classes and the
 `Reticle_OnCruiseActivate` / `OnCruiseLockCourse` UI events are the anchors.
 
-A `Cruise` press is a *hold* of roughly 1.5 s, so watching for the key alone is
-not a reliable state proxy — the engagement can also end on its own.
+A `Cruise` press is a *hold* of roughly 1.5 s and the state can end on its own,
+so watching the key is not a valid proxy for the state.
+
+### 6b. ★ The cruise targeting cone invalidates the "populate by cycling" plan
+
+Observed in play: **in cruise mode the target cycle only reaches targets near
+the ship's heading, centred on screen.** Outside cruise it cycles the system
+normally.
+
+The original Phase 1 shortcut was to build the panel's list by firing the
+vanilla cycle and recording each result until it wrapped. In cruise that would
+enumerate only the forward cone — a handful of entries, in the one mode the
+panel exists to serve. The shortcut is dead where it matters.
+
+Worse, the same restriction may apply to *setting* a target, not just to
+enumerating: if the engine refuses to target something outside the cone while
+cruising, then no amount of nice UI can select the planet behind you, and the
+mod's value proposition shrinks to "a tidier way to pick among the forward
+targets". **Establishing which of those two it is — an enumeration filter or a
+targeting filter — is the single highest-value next experiment**, because the
+answer decides whether Phase 1 is a UI problem or a bypass problem.
+
+Three routes, cheapest first:
+
+1. **Look for a tunable.** Bethesda exposes a lot of this as settings, and
+   `RE::INISettingCollection` has a live singleton with `GetSetting<T>` **and
+   `SetSetting<T>` by name** — so if the cone is an `f…` setting it can simply
+   be read and widened at runtime, and the whole problem evaporates. The fastest
+   probe costs no code at all: **search GMSTs in xEdit** for cruise/target/angle
+   names. That plays to existing strengths and needs no Creation Kit. Note
+   `INISettingCollection` covers INI settings; gameplay tuning often lives in
+   GMSTs instead, whose collection has RTTI (843296) but no CommonLibSF header.
+2. **Enumerate from data, not from targeting.** For planets and moons — the
+   user's stated primary want — the current system's bodies are static records,
+   not runtime targeting state. A data-driven list sidesteps the cone entirely
+   for enumeration, though confirming a selection still has to reach the
+   targeting system. Does not cover ships or dynamic POIs.
+3. **Reverse `Spaceship::TargetingMode`.** Live RTTI and vtable ids, zero
+   curated API. This was always the "real R&D" path; the cone finding makes it
+   likelier to be necessary rather than optional.
+
+Route 1 should be attempted before anything else is planned around 2 or 3.
