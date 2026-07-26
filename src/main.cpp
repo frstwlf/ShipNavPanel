@@ -98,6 +98,8 @@ namespace
 	std::atomic<bool> g_captureRequested{ false };
 	std::atomic<bool> g_interposeInstalled{ false };
 	std::atomic<bool> g_interposeFailed{ false };
+	std::atomic<bool> g_subscribed{ false };
+	std::atomic<bool> g_subscribeFailed{ false };
 
 	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
 
@@ -310,6 +312,8 @@ namespace
 		if (name && std::strcmp(name, kShipHudMenu) == 0) {
 			g_interposeInstalled.store(false, std::memory_order_release);
 			g_interposeFailed.store(false, std::memory_order_release);
+			g_subscribed.store(false, std::memory_order_release);
+			g_subscribeFailed.store(false, std::memory_order_release);
 		}
 
 		if (!bLogMenus.GetValue())
@@ -734,6 +738,116 @@ namespace
 	// AddRef/Release around the created function never drops it to zero.
 	TargetDataInterposer g_interposer;
 
+	// ---------------------------------------------------------------------------
+	// The engine publishes NAMED DATA FEEDS and the SWF subscribes to them:
+	//
+	//   BSUIDataManager.Subscribe("TargetLowFrequencyProvider",
+	//       function(e:FromClientDataEvent):* { TargetsLowFreqDataPayload = e.data; ... });
+	//
+	// `Subscribe` is a public static, so subscribing a native function to the
+	// same feed gets the payload handed to us the way the game intends -
+	// no interposition (blocked by the sealed class), no hooking, no patching.
+	// The catch is reaching a *class* object from C++, which is not in the
+	// display tree, so the path has to be found by probing.
+	// ---------------------------------------------------------------------------
+
+	constexpr const char* kTargetFeed = "TargetLowFrequencyProvider";
+
+	constexpr const char* kDataManagerPaths[]{
+		"BSUIDataManager",
+		"Shared.AS3.Data.BSUIDataManager",
+		"_global.BSUIDataManager",
+		"root1.BSUIDataManager",
+		"root.BSUIDataManager",
+	};
+
+	class DataFeedHandler : public RE::Scaleform::GFx::FunctionHandler
+	{
+	public:
+		void Call(const Params& a_params) override
+		{
+			if (!g_captureRequested.exchange(false, std::memory_order_acq_rel))
+				return;
+			if (a_params.argCount < 1 || !a_params.args)
+				return;
+
+			// The callback receives a FromClientDataEvent; the payload is `.data`.
+			RE::Scaleform::GFx::Value event = a_params.args[0];
+			RE::Scaleform::GFx::Value data;
+			if (event.IsObject() && event.GetMember("data", &data))
+				CaptureTargetData(data);
+			else
+				CaptureTargetData(event);
+		}
+	};
+
+	DataFeedHandler g_feedHandler;
+
+	std::atomic<std::uint32_t> g_subscribeAttempts{ 0 };
+
+	void TryInstallSubscriber()
+	{
+		if (!bInterposeTargetData.GetValue() ||
+			g_subscribed.load(std::memory_order_acquire) ||
+			g_subscribeFailed.load(std::memory_order_acquire))
+			return;
+
+		// The menu can be open before its objects exist, so allow a couple of
+		// seconds of frames before declaring the route exhausted.
+		if (g_subscribeAttempts.fetch_add(1, std::memory_order_relaxed) > 120) {
+			g_subscribeFailed.store(true, std::memory_order_release);
+			REX::WARN("[nav] gave up looking for BSUIDataManager after 120 frames");
+			return;
+		}
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud))
+			return;
+		const auto menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return;
+		auto* a_root = menu->uiMovie->asMovieRoot.get();
+
+		bool anyResolved = false;
+		for (const auto* path : kDataManagerPaths) {
+			RE::Scaleform::GFx::Value manager;
+			if (!a_root->GetVariable(&manager, path))
+				continue;  // logged once at give-up time, not every frame
+
+			anyResolved = true;
+			REX::INFO("[nav] found something at '{}': {}", path, DescribeValue(manager));
+			if (!manager.HasMember("Subscribe")) {
+				REX::INFO("[nav]   ... but it has no 'Subscribe' member; its members follow:");
+				LevelCollector visitor{ std::string{ "[nav] " } + path, nullptr };
+				RE::Scaleform::GFx::Value copy = manager;
+				copy.VisitMembers(&visitor);
+				continue;
+			}
+
+			RE::Scaleform::GFx::Value args[2];
+			a_root->CreateString(&args[0], kTargetFeed);
+			a_root->CreateFunction(&args[1], &g_feedHandler);
+
+			if (manager.Invoke("Subscribe", nullptr, args, 2)) {
+				g_subscribed.store(true, std::memory_order_release);
+				REX::INFO("[nav] SUBSCRIBED to '{}' via {}.Subscribe - press the scanner key to capture",
+					kTargetFeed, path);
+				return;
+			}
+			REX::WARN("[nav] '{}.Subscribe' rejected the call", path);
+		}
+
+		// A path that resolved but could not be used is a real answer; nothing
+		// resolving at all just means the menu may still be building.
+		if (anyResolved) {
+			g_subscribeFailed.store(true, std::memory_order_release);
+			REX::WARN("[nav] reached a data manager but could not subscribe - route exhausted");
+		}
+	}
+
 	void TryInstallInterposer()
 	{
 		// Give up permanently after a real failure. v0.0.6 retried every frame
@@ -860,6 +974,10 @@ namespace
 	void OnFrame()
 	{
 		TryInstallInputTap();
+		// The subscription is the route the game itself uses and does not depend
+		// on anything the sealed class permits, so it runs independently of the
+		// interposer rather than behind its give-up flag.
+		TryInstallSubscriber();
 		TryInstallInterposer();
 
 		// Single-winner exchange: the dump is expensive and must not run twice
