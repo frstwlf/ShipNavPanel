@@ -108,10 +108,8 @@ Entries carry `uTargetType` (`TT_PLANET`, `TT_SHIP`, `TT_LANDING_MARKER`…),
 `bLandingAllowed`, `bLandingDisabled`, `isInfoTarget`, `HasQuestTarget`.
 
 **Consequences:** the candidate list and the current target are both *already in
-the HUD's data model*, readable from C++ via `asMovieRoot->GetVariable` with no
-ids to remap. That is piece 3, and the instrumentation problem, both solved — if
-the array turns out to hold the whole system in cruise rather than just the cone.
-That is a runtime question and the second thing to test.
+the HUD's data model* — but see §7: they are **private**, so they cannot be read
+from outside. The icons rendered from them can.
 
 ## 5. Cruise state is in the SWF too — piece 1 without Ghidra
 
@@ -133,6 +131,59 @@ Cruise also limits display, not just targeting:
 remembering when interpreting what the HUD *shows* versus what it *knows* —
 the `outOfCenter` test at `ShipReticle.as:1499` is icon placement, **not** target
 filtering.
+
+## 7. Runtime results from the Scaleform reader (2026-07-27)
+
+Three iterations of the reader, each blocked by a different thing, each fixed:
+
+1. **Display-object boilerplate + cycles.** Every clip carries ~40 standard
+   properties, and `loaderInfo.content` loops back to the root
+   (`content.name == "root1"`). Budget gone before any game data. → denylist.
+2. **Adobe Animate tween data.** `__animFactory_*` / `__animArray_*` carry a
+   colour transform and matrix per keyframe. → skip anything `__`-prefixed.
+3. **Depth-first traversal.** The walk descended into the first child and never
+   returned; nothing after it at the top level was ever reachable, at any
+   budget. → breadth-first, which is what discovery needs.
+
+### ✅ Cruise detection solved — piece 1, no Ghidra
+
+```
+root1.Menu_mc.Reticle_mc.CruiseModeHUDActive = true      (read while cruising)
+root1.Menu_mc.Reticle_mc.CanActivateCruiseMode = true
+```
+
+The ship HUD's root path is **`root1.Menu_mc`** (from `IMenu::GetRootPath()`),
+and the reticle is `Reticle_mc` — `ShipReticle_mc` is a *child* of it, which is
+why the earlier path guesses missed.
+
+### ✖ The target data model is `private` and cannot be read from outside
+
+```actionscript
+private var HighFreqTargetData:Object;   // ShipReticle.as:210
+private var LowFreqTargetData:Object;    // 212
+private var CombatValuesData:Object;     // 214
+private var TargetOnlyData:Object;       // 216
+```
+
+AS3 private members are not enumerable, and `ObjVisitor::IncludeAS3PublicMembers`
+does what its name says. That is exactly why `CruiseModeHUDActive` — a
+`public function get` — appeared in the dump and `targetArray` never did. The
+engine delivers the data through *public* entry points
+(`UpdateLowFrequencyData`, `UpdateHighFrequencyData`, `UpdateCombatValuesData`,
+`UpdateTargetOnlyData`) and the class stores it privately, so there is no
+outside read path to the array itself.
+
+**But the icons rendered from it are display children with public members** —
+`TargetIconBase` exposes `Name_tf:TextField`, `Distance_tf`, `Icon_mc`,
+`POITarget_mc` — and display children *are* enumerable, which is how
+`Reticle_mc` and `ShipReticle_mc` were found. So the reachable question becomes
+"which target icons exist right now, and what are they called", which answers
+the cone question just as well: **count and name the icons in cruise versus
+normal flight.**
+
+Failing that, the remaining route is to intercept the engine→SWF call and read
+the argument — i.e. hook the movie's `Invoke`, or `UpdateLowFrequencyData` on
+the way in.
 
 ## 6. Events the SWF knows that CommonLibSF does not declare
 

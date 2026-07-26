@@ -74,16 +74,22 @@ retired; the HUD's Scaleform layer is the API.**
       ActionScript data model to the log. All ids it needs are mapped:
       `Value::ObjectInterface::*` are live, and `ASMovieRootBase`'s methods are
       pure virtuals called through the object's own vtable, so they need none.
-      - [ ] **RUN IT: dump once in normal flight and once in cruise, same spot,
-            and compare `targetArray` lengths.** The gating question.
-      - [ ] Capture `CruiseModeHUDActive` (piece 1) and some `uniqueID` values
-            (the ids confirm will pass as `uBodyID`) from the same dump.
-      - [ ] If every candidate path reports "not available", the path guesses
-            are wrong, not the approach — the resolved/unresolved lines say
-            which. Widen `uScaleformDepth` / `uScaleformMaxChildren` first.
-- [ ] **1. Cruise detection — now cheap.** `CruiseModeHUDActive` is a public
-      getter on `ShipReticle`, alongside `STATE_CRUISE`. Read it from the movie
-      instead of hunting `Game.IsCruiseModeActive()` in a disassembler.
+      - [x] Reader works; three noise sources fixed (boilerplate, `__anim*`
+            tween data, depth-first traversal). See PHASE1-SWF-FINDINGS §7.
+      - [x] `targetArray` is **not readable** — `LowFreqTargetData` and friends
+            are `private` in `ShipReticle`, and AS3 private members are not
+            enumerable. Do not keep trying to read the model directly.
+      - [ ] **RUN v0.0.5 in cruise and in normal flight: count and name the
+            target ICONS** under `root1.Menu_mc.Reticle_mc`. `TargetIconBase`
+            exposes `Name_tf`/`Distance_tf` publicly, and display children are
+            enumerable — so the icons answer the cone question even though the
+            model behind them cannot be read.
+      - [ ] If the icons are also insufficient, intercept the engine→SWF call
+            instead: hook the movie's `Invoke` (or `UpdateLowFrequencyData` on
+            the way in) and read the argument.
+- [x] **1. Cruise detection — SOLVED 2026-07-27, no Ghidra.** Reads `true` while
+      cruising at `root1.Menu_mc.Reticle_mc.CruiseModeHUDActive` (public getter);
+      `CanActivateCruiseMode` sits beside it.
 - [ ] **2. Set-target — ★ test `uBodyID` first, everything depends on it.**
       - [x] ~~`ShipHud_Target`~~ **retired**: it is dispatched as a bare
             `Event` with no payload (`ShipReticle.as:2163`), so it means "target

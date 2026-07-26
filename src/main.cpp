@@ -359,10 +359,17 @@ namespace
 	}
 
 	// Names worth shouting about, so the answer is greppable in a large dump.
+	// The data model itself turned out to be unreachable - LowFreqTargetData and
+	// friends are declared `private` in ShipReticle, and AS3 private members are
+	// not enumerable (which is precisely why the public `CruiseModeHUDActive`
+	// getter showed up and they did not). The target *icons* are display
+	// children with public members though, so `Name_tf` / `text` is the way to
+	// see which targets the HUD actually knows about.
 	constexpr const char* kInterestingMembers[]{
 		"targetArray", "uniqueID", "uBodyID", "iInfoTargetIndex", "iHoverTargetIndex",
 		"uTargetType", "CruiseMode", "bIsCruiseTargetLock", "LowFreq", "HighFreq",
-		"TargetData", "TargetOnly", "Reticle",
+		"TargetData", "TargetOnly", "Reticle", "Name_tf", "Distance_tf", "text",
+		"Indicator", "TargetIcon", "OffScreen", "OnScreen",
 	};
 
 	bool IsInterestingMember(const char* a_name)
@@ -546,11 +553,26 @@ namespace
 		const char* rootPath = menu->GetRootPath();
 		REX::INFO("[sf] ==== dump begin (root path '{}', depth {}) ====", rootPath ? rootPath : "-", depth);
 
-		// Walk only the FIRST path that resolves. The first version walked every
-		// candidate, and since 'root1.Menu_mc', 'root' and 'root.Menu_mc' are
-		// overlapping views of one tree, it spent two thirds of its budget
-		// re-dumping the same objects.
+		// Cruise state is a public getter and reads straight off the reticle -
+		// this is piece 1, and it costs one lookup.
+		const std::string reticlePath = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc";
+		for (const auto* name : { "CruiseModeHUDActive", "CanActivateCruiseMode" }) {
+			const std::string path = reticlePath + "." + name;
+			RE::Scaleform::GFx::Value flag;
+			if (root->GetVariable(&flag, path.c_str()))
+				REX::INFO("[sf*] {} = {}", path, DescribeValue(flag));
+			else
+				REX::WARN("[sf] {} - unreadable", path);
+		}
+
+		// Walk only the FIRST path that resolves, starting at the reticle. The
+		// whole-menu walk spent its budget on sibling components; the target
+		// icons all hang off the reticle, so start there. (An earlier version
+		// walked every candidate, and since 'root1.Menu_mc', 'root' and
+		// 'root.Menu_mc' are overlapping views of one tree, two thirds of the
+		// budget went on re-dumping the same objects.)
 		const char* candidates[]{
+			reticlePath.c_str(),
 			rootPath ? rootPath : "root",
 			"root",
 		};
