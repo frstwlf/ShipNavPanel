@@ -43,31 +43,32 @@ complete** — the recon build has served its purpose and does not need to ship.
             cruise update's 26 GMSTs never touch targeting, and the only
             target-cycle setting in the game is
             `fShipHudTargetCycleRangeUpperBounds` = 1.5, a range bound.
-      - [ ] **Next, and free — console `setgs`, no plugin at all** (it does not
-            bake into the save, so it is a clean experiment tool; re-apply after
-            every load).
-            1. Baseline: from one fixed spot, count the cycle in normal flight
-               and in cruise.
-            2. **Negative control first** —
-               `setgs fShipHudTargetCycleRangeUpperBounds 0.01`, then cycle in
-               *normal* flight. It must visibly shrink. **If it does not, stop:**
-               the setting is inert or `setgs` is not applying, and no
-               large-value result would mean anything.
-            3. `setgs fShipHudTargetCycleRangeUpperBounds 1000`, cruise, cycle.
-               Widens → range-gated, and the mod may reduce to a GMST edit.
-               Unchanged at 1000 and 100000 → hardcoded in the cruise path, so
-               the `Spaceship::TargetingMode` route is required.
-            4. Second candidate: `setgs fCruiseOutsidePlanetMapMarkerRangeMult
-               0.01` in cruise. If the cycle shrinks, the cycle walks map
-               markers and that is the real lever.
-            Avoid `0` (often means "unlimited" and would read as a false
-            positive) and avoid 1e30-scale values (float precision in distance
-            maths).
+      - [x] **Tested 2026-07-26 via console `setgs` — null result.** Neither
+            `fShipHudTargetCycleRangeUpperBounds` nor
+            `fCruiseOutsidePlanetMapMarkerRangeMult` changed cycling at any
+            value. Route 1 (find a tunable) is dead.
+      - [ ] One-minute cleanup: confirm `setgs` reaches GMSTs at all with a
+            canary — `setgs fSpaceshipMaxAngularVelocityScale 10` (default 1.5)
+            makes the ship turn wildly and immediately. If the canary does
+            nothing, the null result above is about `setgs`, not the settings.
       - [ ] Fallback A: enumerate the system's bodies from **static records**
             rather than from the targeting system — covers planets and moons,
             not ships or dynamic POIs.
       - [ ] Fallback B: reverse `Spaceship::TargetingMode` (live RTTI/vtable
             ids, no curated API).
+- [ ] **★ Try the route subsystem before the targeting one.** Working
+      hypothesis (see PHASE0-FINDINGS §6c): cruise acquires by *pointing*
+      (`Reticle_OnCruiseLockCourse`, heavy magnetism settings, a 1.5° turning
+      slowdown angle), so there is no list to widen — and what a nav panel
+      actually wants is "set a course", not "acquire a weapons target".
+      - [ ] Confirm a route destination can be set while cruising at all. If it
+            can, this sidesteps the cone completely and becomes the main path.
+      - [ ] `StarMap::RefreshPanelData` (93988) and `ScanHandler` (94011) are
+            **live** ids — start there.
+      - [ ] The `StarMapMenu_*` events (`ExecuteRoute`, `OnClearRoute`,
+            `MarkerGroupEntryClicked`, `Galaxy_FocusSystem`, `QuickSelectChange`)
+            are `{ 0 }` placeholders with old ids clustered at 142xxx — same
+            remapping job as the `ShipHud_*` cluster, no worse.
 - [ ] Map the `ShipHud_*` event ids. All are `{ 0 }` placeholders in
       CommonLibSF `include/RE/IDs.h`; the old-database ids survive in the
       comments (137011–137033) as Ghidra anchors. They sit in one tight cluster,

@@ -189,16 +189,20 @@ Three routes, cheapest first:
    its `TargetLockTargetAngle` is 180°, wide open; `fSpaceshipInner/OuterCone\
    AngleDegrees` are audio attenuation.)
 
-   **The lead that survives — and the cheapest remaining experiment:** what
-   reads as an angular restriction may actually be a *range* one. Cruise moves
-   the ship across tens of thousands of km, so anything off your course may
-   simply fall out of cycle range and present as "only what's ahead". Override
-   `fShipHudTargetCycleRangeUpperBounds` to something absurd in a throwaway
-   plugin, cruise, and cycle. **Widens → range-gated, and the fix is a GMST
-   edit rather than a plugin.** Unchanged → the cone is hardcoded in the cruise
-   targeting path, and route 3 is required. Worth overriding
-   `fCruiseOutsidePlanetMapMarkerRangeMult` (2000) in the same test if the cycle
-   turns out to walk map markers.
+   **Tested and closed 2026-07-26.** `fShipHudTargetCycleRangeUpperBounds` and
+   `fCruiseOutsidePlanetMapMarkerRangeMult` were both driven to extremes with
+   the console's `setgs` (which does not persist into the save, making it the
+   right tool for settings experiments). **Neither changed cycling behaviour in
+   any direction.** Route 1 is dead: there is no cone setting, and the one range
+   setting does not govern this.
+
+   *Caveat worth one minute to close:* if the `0.01` negative control did not
+   visibly shrink the cycle in **normal** flight either, then `setgs` may simply
+   not be reaching these settings, and the range hypothesis is untested rather
+   than disproved. Validate with a canary that has an unmistakable effect —
+   `setgs fSpaceshipMaxAngularVelocityScale 10` (default 1.5) makes the ship
+   turn wildly, immediately, without leaving the cockpit. If the canary works,
+   the null result above is real.
 2. **Enumerate from data, not from targeting.** For planets and moons — the
    user's stated primary want — the current system's bodies are static records,
    not runtime targeting state. A data-driven list sidesteps the cone entirely
@@ -208,4 +212,41 @@ Three routes, cheapest first:
    curated API. This was always the "real R&D" path; the cone finding makes it
    likelier to be necessary rather than optional.
 
-Route 1 should be attempted before anything else is planned around 2 or 3.
+### 6c. ★ Reframe: there may be no list to widen, and route is the better verb
+
+With route 1 dead, the naming evidence is worth taking seriously as a whole,
+because it suggests the premise was wrong rather than the settings.
+
+Cruise appears to acquire targets by **pointing**, not by filtering a list:
+`Reticle_OnCruiseActivate`, **`Reticle_OnCruiseLockCourse`**,
+`Reticle_OnCruiseExitAnimFinished` are cruise-specific *reticle* events, and the
+cruise settings are dominated by steering assistance — `fCruiseMagnetismStrength\
+Mult` 3.5, `fCruiseCelestialMagnetismDeflectionMult` 3, and
+`fCruseMagnetismTurningSlowdownAngle` at a very narrow **1.5°**. If cruise
+targeting is heading-based by design, then no setting narrows a list because
+**there is no list** — which explains the null result better than a hidden cone
+does, and means "drive the vanilla cycle to enumerate" was never going to work
+in cruise regardless of tuning.
+
+That points somewhere better. What the player actually wants from a nav panel is
+*"take me to that planet"* — which is the **route/destination** system, not
+combat targeting. Supporting evidence, all present in the current data:
+- `StarMapMenu_ExecuteRoute`, `StarMapMenu_OnClearRoute`,
+  `StarMapMenu_MarkerGroupEntryClicked`, `StarMapMenu_Galaxy_FocusSystem`,
+  `StarMapMenu_QuickSelectChange` — a real event-driven route subsystem (all
+  `{ 0 }` placeholders, old ids clustered at 142xxx, same situation as the
+  `ShipHud_*` cluster).
+- `StarMap::RefreshPanelData` (93988) and `StarMap::ScanHandler` (94011) are
+  **live ids**, not placeholders.
+- `SetRouteDestination` is a real user event — it was logged on the star map
+  during the Phase 0 run.
+- Cruise itself has destination semantics: `fCruisePOIArrivalThresholdKM` 900,
+  `fSpaceCruiseTravelPingTimeSeconds` 20, and "LockCourse" in the reticle event
+  name.
+
+**Proposed Phase 1 direction:** build the panel's list from the star map's
+system entries and make *confirm* set a route destination, rather than fighting
+the combat-targeting cone. Semantically it is what an Elite nav panel does, it
+sidesteps the cone entirely, and its id cluster is no worse than the one already
+planned for. This is a hypothesis from naming and behaviour, not yet proven —
+the first task is to confirm a route can be set while cruising at all.
