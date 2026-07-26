@@ -1,4 +1,4 @@
--- enable commonlib-shared's REX::INI settings support (pulls simpleini)
+﻿-- enable commonlib-shared's REX::INI settings support (pulls simpleini)
 set_config("commonlib_ini", true)
 
 -- pull in CommonLibSF (and its commonlib-shared submodule) from the shared
@@ -10,7 +10,7 @@ set_xmakever("3.0.0")
 
 -- set project constants
 set_project("ShipNavPanel")
-set_version("0.0.2")
+set_version("0.0.3")
 set_license("GPL-3.0-or-later")
 
 set_arch("x64")

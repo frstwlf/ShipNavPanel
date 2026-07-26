@@ -49,7 +49,8 @@ namespace
 
 	// Scaleform reader: dumps the ship HUD's ActionScript data model on demand.
 	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", true };
-	REX::TIniSetting<std::uint32_t> uScaleformDepth{ "Scaleform", "uScaleformDepth", 3 };
+	REX::TIniSetting<bool>          bScaleformSkipBoilerplate{ "Scaleform", "bScaleformSkipBoilerplate", true };
+	REX::TIniSetting<std::uint32_t> uScaleformDepth{ "Scaleform", "uScaleformDepth", 8 };
 	REX::TIniSetting<std::uint32_t> uScaleformMaxLines{ "Scaleform", "uScaleformMaxLines", 3000 };
 	REX::TIniSetting<std::uint32_t> uScaleformMaxChildren{ "Scaleform", "uScaleformMaxChildren", 60 };
 
@@ -318,6 +319,54 @@ namespace
 
 	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
 
+	// Standard AS3 DisplayObject / MovieClip / loader properties. The first run
+	// of this reader spent its entire budget on these and never reached a single
+	// custom member: every display object carries ~40 of them, and `loaderInfo`,
+	// `parent`, `root` and `stage` are cycles straight back up the tree
+	// (`loaderInfo.content.name` came back as "root1", the root itself).
+	// Skipping them is what makes the walk reach the game's own data.
+	constexpr const char* kBoilerplateMembers[]{
+		"accessibilityProperties", "alpha", "blendMode", "blendShader", "buttonMode",
+		"cacheAsBitmap", "constructor", "contextMenu", "currentFrame", "currentFrameLabel",
+		"currentLabel", "currentLabels", "currentScene", "doubleClickEnabled", "dropTarget",
+		"filters", "focusRect", "framesLoaded", "graphics", "height", "hitArea",
+		"loaderInfo", "mask", "metaData", "mouseChildren", "mouseEnabled", "mouseX",
+		"mouseY", "name", "numChildren", "opaqueBackground", "parent", "prototype",
+		"root", "rotation", "rotationX", "rotationY", "rotationZ", "scale9Grid",
+		"scaleX", "scaleY", "scaleZ", "scenes", "scrollRect", "soundTransform",
+		"stage", "tabChildren", "tabEnabled", "tabIndex", "textSnapshot", "totalFrames",
+		"trackAsMenu", "transform", "useHandCursor", "visible", "width", "x", "y", "z",
+	};
+
+	bool IsBoilerplateMember(const char* a_name)
+	{
+		if (!a_name)
+			return true;
+		for (const auto* skip : kBoilerplateMembers) {
+			if (std::strcmp(a_name, skip) == 0)
+				return true;
+		}
+		return false;
+	}
+
+	// Names worth shouting about, so the answer is greppable in a large dump.
+	constexpr const char* kInterestingMembers[]{
+		"targetArray", "uniqueID", "uBodyID", "iInfoTargetIndex", "iHoverTargetIndex",
+		"uTargetType", "CruiseMode", "bIsCruiseTargetLock", "LowFreq", "HighFreq",
+		"TargetData", "TargetOnly", "Reticle",
+	};
+
+	bool IsInterestingMember(const char* a_name)
+	{
+		if (!a_name)
+			return false;
+		for (const auto* want : kInterestingMembers) {
+			if (std::strstr(a_name, want) != nullptr)
+				return true;
+		}
+		return false;
+	}
+
 	bool ScaleformBudgetOk()
 	{
 		const auto cap = uScaleformMaxLines.GetValue();
@@ -360,7 +409,7 @@ namespace
 		return "<other>";
 	}
 
-	void DumpValue(const std::string& a_path, const RE::Scaleform::GFx::Value& a_value, std::uint32_t a_depth);
+	void DumpValue(const std::string& a_path, const RE::Scaleform::GFx::Value& a_value, std::uint32_t a_depth, bool a_interesting = false);
 
 	class MemberDumper : public RE::Scaleform::GFx::Value::ObjectVisitor
 	{
@@ -375,9 +424,11 @@ namespace
 
 		void Visit(const char* a_name, const RE::Scaleform::GFx::Value& a_value) override
 		{
+			if (bScaleformSkipBoilerplate.GetValue() && IsBoilerplateMember(a_name))
+				return;
 			if (_seen++ >= uScaleformMaxChildren.GetValue())
 				return;
-			DumpValue(_path + "." + (a_name ? a_name : "?"), a_value, _depth);
+			DumpValue(_path + "." + (a_name ? a_name : "?"), a_value, _depth, IsInterestingMember(a_name));
 		}
 
 	private:
@@ -406,12 +457,14 @@ namespace
 		std::uint32_t _seen{ 0 };
 	};
 
-	void DumpValue(const std::string& a_path, const RE::Scaleform::GFx::Value& a_value, std::uint32_t a_depth)
+	void DumpValue(const std::string& a_path, const RE::Scaleform::GFx::Value& a_value, std::uint32_t a_depth, bool a_interesting)
 	{
 		if (!ScaleformBudgetOk())
 			return;
 
-		REX::INFO("[sf] {} = {}", a_path, DescribeValue(a_value));
+		// "[sf*]" marks a hit on a name we are hunting for, so the answer stays
+		// greppable however large the dump gets.
+		REX::INFO("{} {} = {}", a_interesting ? "[sf*]" : "[sf] ", a_path, DescribeValue(a_value));
 
 		if (a_depth == 0)
 			return;
@@ -455,16 +508,13 @@ namespace
 		const char* rootPath = menu->GetRootPath();
 		REX::INFO("[sf] ==== dump begin (root path '{}', depth {}) ====", rootPath ? rootPath : "-", depth);
 
-		// The exact path to the reticle's data model is unknown, so probe the
-		// plausible ones and dump whichever resolve. `IsAvailable` is cheap and
-		// non-destructive, so a miss costs nothing.
+		// Walk only the FIRST path that resolves. The first version walked every
+		// candidate, and since 'root1.Menu_mc', 'root' and 'root.Menu_mc' are
+		// overlapping views of one tree, it spent two thirds of its budget
+		// re-dumping the same objects.
 		const char* candidates[]{
 			rootPath ? rootPath : "root",
 			"root",
-			"root.Menu_mc",
-			"root.ShipReticle_mc",
-			"root.Menu_mc.ShipReticle_mc",
-			"root.ShipHudMenu_mc",
 		};
 
 		for (const auto* path : candidates) {
@@ -476,11 +526,12 @@ namespace
 			}
 			RE::Scaleform::GFx::Value value;
 			if (root->GetVariable(&value, path)) {
-				REX::INFO("[sf] path '{}' - resolved, walking:", path);
+				REX::INFO("[sf] path '{}' - resolved, walking (boilerplate {})",
+					path, bScaleformSkipBoilerplate.GetValue() ? "skipped" : "included");
 				DumpValue(path, value, depth);
-			} else {
-				REX::INFO("[sf] path '{}' - available but GetVariable failed", path);
+				break;
 			}
+			REX::INFO("[sf] path '{}' - available but GetVariable failed", path);
 		}
 
 		REX::INFO("[sf] ==== dump end ({} lines) ====", g_scaleformLines.load(std::memory_order_relaxed));
