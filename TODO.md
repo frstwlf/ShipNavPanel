@@ -79,14 +79,24 @@ retired; the HUD's Scaleform layer is the API.**
       - [x] `targetArray` is **not readable** — `LowFreqTargetData` and friends
             are `private` in `ShipReticle`, and AS3 private members are not
             enumerable. Do not keep trying to read the model directly.
-      - [ ] **RUN v0.0.5 in cruise and in normal flight: count and name the
-            target ICONS** under `root1.Menu_mc.Reticle_mc`. `TargetIconBase`
-            exposes `Name_tf`/`Distance_tf` publicly, and display children are
-            enumerable — so the icons answer the cone question even though the
-            model behind them cannot be read.
-      - [ ] If the icons are also insufficient, intercept the engine→SWF call
-            instead: hook the movie's `Invoke` (or `UpdateLowFrequencyData` on
-            the way in) and read the argument.
+      - [x] **Icon census done 2026-07-27 — the cone question is ANSWERED.**
+            Planets persist into cruise at 300–800 LS (Bondar, Gagarin) while
+            nearby ships drop out. The HUD holds distant planets while cruising;
+            the cone only limits what the vanilla *cycle* walks. **A panel can
+            list them.**
+      - [x] `uniqueID` is **not** on the icon clips — it is the key of a private
+            array (`GetClip` does `param1[uniqueID]`). Names and types are
+            readable; the id is not.
+      - [ ] **NEXT: interpose on `Reticle_mc.UpdateLowFrequencyData`.** It is a
+            *public* function, so `asMovieRoot->CreateFunction` +
+            `Value::SetMember` can replace it with a native handler that
+            captures `args[0].targetArray` (uniqueIDs included) and then calls
+            the saved original. Same pattern as
+            `GameMenuBase::RegisterNativeFunction`, all live ids, no SWF patch.
+            Yields the list *and* the ids in one step.
+      - [ ] Raise the line cap or start the walk at
+            `ShipReticle_mc.OffScreenIndicatorParent_mc` — the census only
+            reached `OnScreenIcon` clips, so off-screen planets were missed.
 - [x] **1. Cruise detection — SOLVED 2026-07-27, no Ghidra.** Reads `true` while
       cruising at `root1.Menu_mc.Reticle_mc.CruiseModeHUDActive` (public getter);
       `CanActivateCruiseMode` sits beside it.

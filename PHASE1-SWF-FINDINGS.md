@@ -181,9 +181,51 @@ outside read path to the array itself.
 the cone question just as well: **count and name the icons in cruise versus
 normal flight.**
 
-Failing that, the remaining route is to intercept the engine→SWF call and read
-the argument — i.e. hook the movie's `Invoke`, or `UpdateLowFrequencyData` on
-the way in.
+### ✅ The icons confirm it: planets survive cruise, ships do not (2026-07-27)
+
+Icon clips are display children of the reticle, named `OnScreenIcon: <target>`,
+each carrying `Name_tf.text` and `Distance_tf.text`. Same spot, same session:
+
+| | targets |
+|---|---|
+| **normal flight** | Bondar (793.6 LS), Gagarin (308.5 LS), Freestar Transpo III (3007 M), UC Discovery (5868 M) |
+| **cruise** | Bondar (793.6 LS), Gagarin (308.5 LS), Deimos Armored Transport (794.5 LS) |
+
+Both **planets persist into cruise at 300–800 light-seconds** — nowhere near the
+ship's heading — while the two nearby ships (metres, not light-seconds) drop
+out. That matches the in-play report exactly: out of cruise the reticle shows
+blips for ships in the vicinity, a dozen or more in busy areas; in cruise those
+vanish and what remains is dynamically spawning POIs and the system's planets.
+
+**So the HUD does know about distant planets while cruising.** The cone
+restricts what the vanilla *cycle* will walk, not what the HUD holds. A panel
+can list them.
+
+*Caveat on the numbers:* both dumps hit the 6000-line cap at level 4 and only
+`OnScreenIcon` clips were reached — no `OffScreenIcon` ones, which live deeper
+under `ShipReticle_mc.OffScreenIndicatorParent_mc`. With more planets in the
+system than the two captured, the census is a floor, not a total.
+
+### ✖ `uniqueID` is not on the icons — the confirm action still needs a source
+
+`TargetIconBase` and `TargetIconFrameContainer` expose plenty (`Name_tf`,
+`Distance_tf`, `Icon_mc`, the `TT_*` type constants) but **no target id**.
+`GetClip(param1, …, param4:uint /* uniqueID */, …)` looks the clip up as
+`param1[param4]` — the id is the *key of a private array*, never stored on the
+clip. So the display list gives names and types but not the id that
+`Reticle_OnCruiseLockCourse` needs.
+
+### → Next: interpose on `UpdateLowFrequencyData`
+
+The engine hands the data in through **public** functions on `ShipReticle`
+(`UpdateLowFrequencyData`, `UpdateHighFrequencyData`, `UpdateCombatValuesData`,
+`UpdateTargetOnlyData`). Public means replaceable: create a native function with
+`asMovieRoot->CreateFunction` and `SetMember` it over
+`Reticle_mc.UpdateLowFrequencyData`, capture `args[0].targetArray` — uniqueIDs
+included — then invoke the saved original so the HUD behaves normally. Same
+pattern CommonLibSF's `GameMenuBase::RegisterNativeFunction` already uses, all
+on live ids, and no SWF patching. That yields the list *and* the ids in one
+step.
 
 ## 6. Events the SWF knows that CommonLibSF does not declare
 
