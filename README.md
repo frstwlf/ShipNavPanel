@@ -11,6 +11,19 @@ drawn, no input is consumed. The panel itself does not exist yet, by design —
 Phase 0 exists to answer the questions that decide whether it can be built, and
 to answer them before any effort is spent on Scaleform.
 
+> ### ✅ Phase 0 is answered — see [PHASE0-FINDINGS.md](PHASE0-FINDINGS.md)
+>
+> Test run 2026-07-26. **The mod is buildable.** The ship scanner key
+> (`SHMonocle`, id 84) reaches the input chain during cruise mode with
+> `disabled=false`, so the panel can be opened straight from the input tap and
+> matched by user-event name — rebinding- and layout-safe. `SelectTarget`
+> (id 69) is live while piloting, and `SpaceshipHudMenu` loads a Scaleform
+> movie, confirming the Phase 2 injection target.
+>
+> One new requirement fell out: the key is *also* undisabled in normal flight,
+> so the mod must detect cruise state before consuming it. That is now the first
+> Phase 1 task.
+
 ---
 
 ## Why a recon build first

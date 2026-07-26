@@ -7,17 +7,30 @@
       singleton (no Address Library id needed)
 - [x] `MenuOpenCloseEvent` sink + SFSE movie-created callback
 - [x] Context heartbeat (ship state, planet, open menus)
-- [ ] **Run the test protocol in README.md and read the log**
-- [ ] Record the scanner key's user-event name and id code
-- [ ] Record whether it arrives during cruise, and its `disabled` flag
-- [ ] Record the ship HUD's exact menu name and whether its movie loads
-- [ ] Fold the findings into `..\STARFIELD-NOTES.md`
+- [x] **Run the test protocol in README.md and read the log** (2026-07-26)
+- [x] Scanner key = `SHMonocle`, id 84
+- [x] Arrives during cruise, `disabled=false` — best-case outcome
+- [x] Ship HUD = `SpaceshipHudMenu`, movie loads
+- [x] Fold the findings into `..\STARFIELD-NOTES.md`
 
-If `[input]` is empty in every step, the tap is on the wrong class: try
-`MenuControls` (RTTI 864851, vtable ids 460734/460736) before concluding
-anything about whether the key is reachable.
+Full write-up in [PHASE0-FINDINGS.md](PHASE0-FINDINGS.md). **Phase 0 is
+complete** — the recon build has served its purpose and does not need to ship.
 
 ## Phase 1 — targeting
+
+- [ ] **Cruise-mode detection, first.** `SHMonocle` is undisabled in normal
+      flight too, so consuming it unconditionally would break the vanilla ship
+      scanner. Cheapest lead: the Papyrus native `Game.IsCruiseModeActive()`
+      (Papyrus natives register by name string, so they are easy to locate).
+      Fallbacks: the `SpaceCruise::*` classes, or the `Reticle_OnCruiseActivate`
+      / `OnCruiseLockCourse` UI events. Note a `Cruise` press is a ~1.5 s
+      **hold** and the state can also end on its own, so watching the key is not
+      a valid proxy for the state.
+- [ ] Act on **press**, and pair press/release by `idCode` — the user-event name
+      is context-resolved and can differ between a key's press and its release
+      (`ExecuteJump` → `R3`, `ExitShip` → `StarbornPower` were both observed).
+- [ ] Reset any held-key state on focus loss: a key held during an alt-tab never
+      reports its release.
 
 - [ ] Map the `ShipHud_*` event ids. All are `{ 0 }` placeholders in
       CommonLibSF `include/RE/IDs.h`; the old-database ids survive in the
