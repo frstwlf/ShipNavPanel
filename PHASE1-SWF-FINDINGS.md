@@ -64,8 +64,35 @@ This is the most promising lead in the whole investigation:
 
 If the engine honours a non-zero `uBodyID`, this is the panel's *confirm*
 action: "lock course to that body", cruise-native, no heading requirement.
-**Unproven** — 0 may be a sentinel meaning "the hovered body", and the handler
-may ignore the field entirely. Testing it is the next task.
+
+### ✅ Already proven — by vanilla itself (2026-07-27)
+
+No test needed. A second dispatch site passes a **real** body id:
+
+```actionscript
+// FarTravelIconBase.as:99
+private function OnLockCourse() : void
+{
+   BSUIDataManager.dispatchEvent(new CustomEvent("Reticle_OnCruiseLockCourse", {"uBodyID": TargetOnlyData.uniqueID}));
+}
+```
+
+So `uBodyID` is honoured, and the id space is **`uniqueID`** — the same
+per-target id used as the icon-clip key throughout `ShipReticle`
+(`GetClip(..., param1.uniqueID, ...)`), and present on `targetArray` entries.
+The `0` in `ShipReticle` is the "no specific body" case, not evidence the field
+is ignored.
+
+Vanilla context: in cruise, a targeted celestial body shows a **`CruiseLockButton`**
+whose label toggles `CRUISE_LOCK_COURSE` / `CRUISE_CLEAR_COURSE` off
+`TargetLow.bIsCruiseTargetLock`. So "lock course to a body id" is an ordinary,
+supported operation with a visible state flag we can also read.
+
+**The mod's confirm action is therefore fully specified:** dispatch
+`Reticle_OnCruiseLockCourse` with `{uBodyID: <chosen entry's uniqueID>}`.
+The one remaining unknown is whether `targetArray` in cruise holds the whole
+system or only the cone — i.e. whether the panel can even *name* an out-of-cone
+body's uniqueID.
 
 ## 4. The engine pushes the whole target list into the HUD
 
@@ -131,14 +158,47 @@ The SWF layer replaces the id-remapping approach. Two ways in, and they compose:
    invokes with a body id, letting ActionScript do the dispatch it already knows
    how to do.
 
-### Order of work
+### ⚠️ Do NOT patch the SWF by replacing a whole class — it silently drops code
 
-1. Confirm `uBodyID` is honoured for non-zero values. Everything else depends on
-   this. Cheapest probe: patch the vanilla dispatch to pass a different id and
-   see whether the ship locks course to a different body.
-2. Read `targetArray` in cruise and check whether it holds the whole system or
-   only the cone. Decides whether piece 3 is "read the data model" or "build
-   from static records".
+The plan was to patch `ShipReticle` to probe `uBodyID`. Before writing the
+patch I ran a **no-op round-trip** — decompile the class, replace it with its
+own unmodified source, re-decompile, diff. It does not survive:
+
+```
+ffdec -replace spaceshiphudmenu.swf out.swf ShipReticle ShipReticle.as
+```
+
+| symbol | original | after round-trip |
+|---|---|---|
+| `Playing` (uses) | 26 | **18** |
+| `ON_LONG_ANIM_FINISHED_EVENT` | 2 | **1** |
+| line count | 2261 | 2109 |
+
+Field initializers are dropped (`private var Playing:Boolean = true` → no
+initializer), and an entire `switch(ShipReticle_mc.currentFrameLabel)` block
+disappears — **including a `BSUIDataManager.dispatchEvent(...)` of
+`Reticle_OnLongAnimFinished` to the engine.** A patch built this way would ship
+a subtly broken HUD whose open/close animations never report completion, and
+nothing in the tool's output says so — it prints only
+`Warning: This feature is EXPERIMENTAL` and writes a plausible-looking file.
+
+**Safe technique if a SWF patch is ever needed:** P-code replacement of a single
+method body (`-format script:pcode -export script …` then `-replace … <format>
+<methodBodyIndex>`). It never recompiles the class, so it cannot lose unrelated
+code. Verified that P-code export works on this SWF.
+
+**Better still for this mod: don't patch vanilla SWFs at all.** Doing the work
+from C++ through the Scaleform API keeps `spaceshiphudmenu.swf` untouched, which
+means no conflict with StarUI or any other HUD replacer — a real compatibility
+win for something intended to ship.
+
+### Order of work (revised 2026-07-27)
+
+1. ~~Confirm `uBodyID`~~ — **done, vanilla proves it** (§3).
+2. **Read `targetArray` in cruise from the plugin** and check whether it holds
+   the whole system or only the cone. This is now the gating question, and the
+   reader is code the mod needs anyway. Also read `CruiseModeHUDActive` (piece 1)
+   and `bIsCruiseTargetLock` in the same pass.
 3. Bind the `LockCourse` user event and log it — it never appeared in Phase 0.
-4. Only if 1 and 2 both fail: fall back to `Spaceship::TargetingMode` and the
-   Ghidra route.
+4. Only if the data model turns out to be unreachable from C++: fall back to a
+   **P-code** SWF patch, never a whole-class replacement.

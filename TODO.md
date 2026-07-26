@@ -78,11 +78,15 @@ retired; the HUD's Scaleform layer is the API.**
             `Event` with no payload (`ShipReticle.as:2163`), so it means "target
             what is hovered" and can never select an arbitrary body. Killed
             before any Ghidra work — the point of looking at the SWF first.
-      - [ ] **`Reticle_OnCruiseLockCourse` carries `{"uBodyID": N}`** and is
-            gated on cruise being active; vanilla hardcodes **0**. If the engine
-            honours a non-zero id this *is* the panel's confirm action.
-            Cheapest probe: patch the vanilla dispatch to pass a different id
-            and see whether the ship locks course elsewhere.
+      - [x] **`Reticle_OnCruiseLockCourse` carries `{"uBodyID": N}` — PROVEN by
+            vanilla**, no test needed: `FarTravelIconBase.OnLockCourse()` passes
+            `TargetOnlyData.uniqueID`. The id space is `uniqueID`, the same key
+            used for target icon clips and present on `targetArray` entries.
+            **The confirm action is fully specified.**
+      - [x] ~~Patch the SWF to probe `uBodyID`~~ — unnecessary (above), *and*
+            the technique is unsafe: whole-class AS3 replacement silently drops
+            code (see PHASE1-SWF-FINDINGS). If a patch is ever needed, use
+            P-code on a single method body.
       - [ ] Bind and log the **`LockCourse`** user event — it drives the above
             and never appeared in the Phase 0 logs.
       - [ ] Fallback only if `uBodyID` is ignored: `Spaceship::TargetingMode`
