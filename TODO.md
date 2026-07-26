@@ -43,13 +43,26 @@ complete** — the recon build has served its purpose and does not need to ship.
             cruise update's 26 GMSTs never touch targeting, and the only
             target-cycle setting in the game is
             `fShipHudTargetCycleRangeUpperBounds` = 1.5, a range bound.
-      - [ ] **Next, and cheap — a throwaway plugin, no code:** override
-            `fShipHudTargetCycleRangeUpperBounds` to something absurd, cruise,
-            and cycle. Widens → the restriction is *range*, not angle, and the
-            whole mod may reduce to a GMST edit. Unchanged → hardcoded in the
-            cruise path, so the `Spaceship::TargetingMode` route is required.
-            Add `fCruiseOutsidePlanetMapMarkerRangeMult` (2000) to the same test
-            if the cycle turns out to walk map markers.
+      - [ ] **Next, and free — console `setgs`, no plugin at all** (it does not
+            bake into the save, so it is a clean experiment tool; re-apply after
+            every load).
+            1. Baseline: from one fixed spot, count the cycle in normal flight
+               and in cruise.
+            2. **Negative control first** —
+               `setgs fShipHudTargetCycleRangeUpperBounds 0.01`, then cycle in
+               *normal* flight. It must visibly shrink. **If it does not, stop:**
+               the setting is inert or `setgs` is not applying, and no
+               large-value result would mean anything.
+            3. `setgs fShipHudTargetCycleRangeUpperBounds 1000`, cruise, cycle.
+               Widens → range-gated, and the mod may reduce to a GMST edit.
+               Unchanged at 1000 and 100000 → hardcoded in the cruise path, so
+               the `Spaceship::TargetingMode` route is required.
+            4. Second candidate: `setgs fCruiseOutsidePlanetMapMarkerRangeMult
+               0.01` in cruise. If the cycle shrinks, the cycle walks map
+               markers and that is the real lever.
+            Avoid `0` (often means "unlimited" and would read as a false
+            positive) and avoid 1e30-scale values (float precision in distance
+            maths).
       - [ ] Fallback A: enumerate the system's bodies from **static records**
             rather than from the targeting system — covers planets and moons,
             not ships or dynamic POIs.
