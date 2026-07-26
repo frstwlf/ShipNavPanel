@@ -88,9 +88,13 @@ right thing to match.
 
 Real names observed: `SpaceshipHudMenu`, `HUDMenu`, `HUDMessagesMenu`,
 `GalaxyStarMapMenu`, `MonocleMenu`, `DataMenu`, `TakeoffMenu`, `LoadingMenu`,
-`FaderMenu`, `CursorMenu`, `MessageBoxMenu`, `Console`. My guessed probe names
-`ScannerMenu`, `StarMapMenu`, `PauseMenu` and `DialogueMenu` never appeared —
-they do not exist.
+`FaderMenu`, `CursorMenu`, `MessageBoxMenu`, `Console`, `PauseMenu`.
+
+*Corrected 2026-07-26:* I first wrote that the guessed names `ScannerMenu`,
+`StarMapMenu`, `PauseMenu` and `DialogueMenu` "do not exist". **`PauseMenu` does
+exist** — it simply was not opened during the first session, and it appeared in
+the second (movie=yes). Absence from one session's log is not absence from the
+game; the remaining three are still unobserved rather than disproved.
 
 ## 4. Three implementation traps found along the way
 
@@ -120,9 +124,13 @@ firmer:
 → **`idCode` is not an action identifier — never match on it alone.** Match the
 user-event name, act on the **press**, and pair press/release by `idCode`.
 
-**A key held when the window loses focus never reports its release.** Every
-alt-tab in the session left `Unmapped id=164` pressed with no matching release.
-→ Any held-key state must be reset on focus loss, not driven purely by events.
+**A key held when the window loses focus often fails to report its release.**
+Every alt-tab in the first session left `Unmapped id=164` pressed with no
+matching release. *Softened 2026-07-26:* the second session shows it is not
+absolute — one of five such presses did report a release (1.729 s). So the
+failure is common but not guaranteed, which if anything makes it worse to rely
+on. → Reset held-key state on focus loss rather than driving it purely from
+events.
 
 **Input events are not delivered on one thread.** `[input]` lines came from at
 least six different thread ids. Consistent with the BSJobs findings in
@@ -244,9 +252,50 @@ combat targeting. Supporting evidence, all present in the current data:
   `fSpaceCruiseTravelPingTimeSeconds` 20, and "LockCourse" in the reticle event
   name.
 
-**Proposed Phase 1 direction:** build the panel's list from the star map's
-system entries and make *confirm* set a route destination, rather than fighting
-the combat-targeting cone. Semantically it is what an Elite nav panel does, it
-sidesteps the cone entirely, and its id cluster is no worse than the one already
-planned for. This is a hypothesis from naming and behaviour, not yet proven —
-the first task is to confirm a route can be set while cruising at all.
+**~~Proposed Phase 1 direction:~~ withdrawn 2026-07-26 — the route half of this
+was overreach.** I proposed building the panel on the star map's route system.
+The tester pushed back that `SetRouteDestination` and the `StarMapMenu_*` events
+look like galaxy-map/grav-jump machinery with no connection to cruise, and the
+second session supports them: it contains **no star map activity whatsoever**
+(no grav jump was performed), and nothing route-shaped appears anywhere near
+cruise. Every observation of `SetRouteDestination` in the first session happened
+with `GalaxyStarMapMenu` open. On re-reading, `Reticle_OnCruiseLockCourse` most
+likely means *locking the flight heading* toward what you are pointed at, not
+planning a star-map route — which is evidence for the pointing model, not for
+the route model.
+
+**What survives:** the diagnosis — cruise appears to acquire by pointing, so
+there is probably no list to widen, and enumeration-by-cycling will not work in
+cruise. **What does not:** the prescription. Route-setting is not established as
+part of the cruise flow and should not be planned around until something
+demonstrates otherwise.
+
+### 6d. The decisive experiment is free, and needs no code
+
+The build is **blind to what is actually targeted** — it logs keypresses, not
+targets — so the second session cannot distinguish "the cycle skipped that
+planet" from "the cycle selected it and the HUD did not show it". Both target
+bursts look identical from the input side. Before any more instrumentation, one
+gameplay test answers the question that decides everything:
+
+**Acquire a distant target *before* entering cruise (where cycling reaches the
+whole system), then engage cruise and watch what happens to it.**
+
+- **Target survives** → the engine will hold a target outside the cone, and only
+  *acquisition* is restricted. A mod that sets the target directly is viable and
+  the panel works. This is the good case.
+- **Target is dropped or cleared on entering cruise** → targeting itself is
+  cone-restricted in cruise, and any panel would be fighting the engine rather
+  than presenting it. That is a much harder mod and worth knowing before a line
+  of code is written.
+
+Follow-up if it survives: does the HUD still track it, and does cruise still
+fly toward it?
+
+If instrumentation is wanted afterwards, the cheap route is **not** the unmapped
+`ShipHud_*` ids — it is to read the target straight out of the ship HUD's
+Scaleform movie. `SpaceshipHudMenu` reports `movie=yes` in every session, SFSE's
+menu interface already hands over the `IMenu*`, and CommonLibSF exposes
+`asMovieRoot->GetVariable(...)`. The HUD displays the target name, so the value
+is in that movie's data model somewhere and can be read without any Address
+Library work.

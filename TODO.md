@@ -56,19 +56,22 @@ complete** — the recon build has served its purpose and does not need to ship.
             not ships or dynamic POIs.
       - [ ] Fallback B: reverse `Spaceship::TargetingMode` (live RTTI/vtable
             ids, no curated API).
-- [ ] **★ Try the route subsystem before the targeting one.** Working
-      hypothesis (see PHASE0-FINDINGS §6c): cruise acquires by *pointing*
-      (`Reticle_OnCruiseLockCourse`, heavy magnetism settings, a 1.5° turning
-      slowdown angle), so there is no list to widen — and what a nav panel
-      actually wants is "set a course", not "acquire a weapons target".
-      - [ ] Confirm a route destination can be set while cruising at all. If it
-            can, this sidesteps the cone completely and becomes the main path.
-      - [ ] `StarMap::RefreshPanelData` (93988) and `ScanHandler` (94011) are
-            **live** ids — start there.
-      - [ ] The `StarMapMenu_*` events (`ExecuteRoute`, `OnClearRoute`,
-            `MarkerGroupEntryClicked`, `Galaxy_FocusSystem`, `QuickSelectChange`)
-            are `{ 0 }` placeholders with old ids clustered at 142xxx — same
-            remapping job as the `ShipHud_*` cluster, no worse.
+- [ ] **★ NEXT, and free: does a target survive entering cruise?** The one test
+      that decides whether this mod is feasible at all (PHASE0-FINDINGS §6d).
+      Acquire a distant target in normal flight, then engage cruise.
+      - **Survives** → only *acquisition* is cone-restricted; setting a target
+        directly works and the panel is viable. Good case.
+      - **Dropped** → targeting itself is restricted in cruise, and a panel
+        would be fighting the engine. Worth knowing before writing any code.
+- [ ] ~~Try the route subsystem~~ **withdrawn** — `SetRouteDestination` and the
+      `StarMapMenu_*` events are galaxy-map/grav-jump machinery; a full cruise
+      session with no grav jump shows no route activity at all. The *pointing*
+      diagnosis survives, the route prescription does not.
+- [ ] Only if instrumentation is still needed after the test above: read the
+      current target out of `SpaceshipHudMenu`'s Scaleform movie
+      (`asMovieRoot->GetVariable`) rather than chasing the unmapped `ShipHud_*`
+      ids. The HUD renders the target name, so the value is in that data model,
+      and SFSE already hands over the menu.
 - [ ] Map the `ShipHud_*` event ids. All are `{ 0 }` placeholders in
       CommonLibSF `include/RE/IDs.h`; the old-database ids survive in the
       comments (137011–137033) as Ghidra anchors. They sit in one tight cluster,
