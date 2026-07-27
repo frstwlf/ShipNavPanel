@@ -4,6 +4,12 @@
 
 #include "RE/Starfield.h"
 
+// For VirtualQuery: the GNAM scan reads past a declared struct, so it checks
+// the page is committed and readable before touching it.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -213,33 +219,80 @@ namespace
 		bool isMoon{ false };
 	};
 
-	// CommonLibSF maps `BGSPlanet::PlanetData` only as far as 0x4C but asserts
-	// the record is 0x58 - and three uint32s is exactly the 12 bytes left over,
-	// which is what GNAM holds. So they are read there. Both the offset and the
-	// order of the three are inferred, so the values are logged once per system
-	// and checked for self-consistency below rather than simply trusted.
+	// Where GNAM sits is FOUND, not assumed. v0.3.5 assumed 0x4C, on the reading
+	// that CommonLibSF maps PlanetData to 0x4C and asserts 0x58, leaving twelve
+	// spare bytes. That was wrong twice over:
 	//
-	// The read stays inside the asserted size of the object, so a wrong guess
-	// yields nonsense, not a fault.
-	constexpr std::size_t kGalaxyDataOffset = 0x4C;
+	//   * PlanetData's member comments say 0x30 onwards, but they were written
+	//     against a 0x30-byte TESForm and TESForm is 0x38. The compiler places
+	//     the members eight bytes later than documented, so 0x4C is actually
+	//     `periAngleInDegrees` - which is why the "system id" came back as
+	//     186.0, 77.0, 151.0, 218.0 and 209.0 reinterpreted as integers.
+	//   * With that shift the declared members reach 0x54 and the assert is
+	//     satisfied by padding, so the struct is not merely mis-commented, it is
+	//     INCOMPLETE. GNAM lies past the declared end of the record.
+	//
+	// So the offset is discovered by scanning the record's tail for a triple
+	// that behaves like GNAM, using what the tester established: every body in a
+	// system shares a system id, planet ids are small and distinct, planets
+	// carry parent 0, and a moon's parent equals its planet's id (Luna 3 -> Earth
+	// 3). That last one is the clincher and is required before an offset is
+	// accepted.
+	//
+	// Reading past a declared struct means reading memory the type system is not
+	// vouching for, so the scan is bounded by VirtualQuery: it never leaves the
+	// committed, readable region the form itself sits in.
+	std::atomic<std::size_t> g_galaxyOffset{ 0 };  // 0 = not yet found
+	std::atomic<bool>        g_galaxyScanFailed{ false };
 
-	bool ReadGalaxyData(std::uint32_t a_formID, GalaxyData& a_out)
+	constexpr std::size_t kGalaxyScanFirst = 0x38;
+	constexpr std::size_t kGalaxyScanLast = 0x140;
+
+	std::size_t ReadableBytesFrom(const void* a_base, std::size_t a_want)
+	{
+		::MEMORY_BASIC_INFORMATION info{};
+		if (::VirtualQuery(a_base, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT)
+			return 0;
+
+		constexpr DWORD kReadable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+		                            PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+		if ((info.Protect & kReadable) == 0 || (info.Protect & PAGE_GUARD) != 0)
+			return 0;
+
+		const auto regionEnd = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
+		const auto available = regionEnd - reinterpret_cast<std::uintptr_t>(a_base);
+		return static_cast<std::size_t>(std::min<std::uintptr_t>(available, a_want));
+	}
+
+	const RE::TESForm* LookupPlanet(std::uint32_t a_formID)
 	{
 		const auto form = RE::TESForm::LookupByID(a_formID);
 		if (!form || form->GetFormType() != RE::FormType::kPNDT)
+			return nullptr;
+		return form;
+	}
+
+	bool ReadTripleAt(const RE::TESForm* a_form, std::size_t a_offset, GalaxyData& a_out)
+	{
+		const auto* base = reinterpret_cast<const std::byte*>(a_form);
+		if (ReadableBytesFrom(base, a_offset + 12) < a_offset + 12)
 			return false;
 
-		const auto* base = reinterpret_cast<const std::byte*>(form);
-		const auto  at = [&](std::size_t a_offset) {
-            std::uint32_t value{};
-            std::memcpy(&value, base + a_offset, sizeof(value));
-            return value;
-		};
-
-		a_out.systemID = at(kGalaxyDataOffset);
-		a_out.parentPlanetID = at(kGalaxyDataOffset + 4);
-		a_out.planetID = at(kGalaxyDataOffset + 8);
+		std::uint32_t values[3]{};
+		std::memcpy(values, base + a_offset, sizeof(values));
+		a_out.systemID = values[0];
+		a_out.parentPlanetID = values[1];
+		a_out.planetID = values[2];
 		return true;
+	}
+
+	bool ReadGalaxyData(std::uint32_t a_formID, GalaxyData& a_out)
+	{
+		const auto offset = g_galaxyOffset.load(std::memory_order_acquire);
+		if (offset == 0)
+			return false;
+		const auto form = LookupPlanet(a_formID);
+		return form && ReadTripleAt(form, offset, a_out);
 	}
 
 	std::mutex             g_candidateMutex;
@@ -1595,28 +1648,128 @@ namespace
 			}
 			if (entry.GetMember("bIsCelestialParentBody", &member))
 				row.isParentBody = member.IsBoolean() && member.GetBoolean();
-			if (row.id)
-				row.haveGalaxy = ReadGalaxyData(row.id, row.galaxy);
+			// Galaxy data is filled after collection, not here: the offset may
+			// still be being worked out, and it needs the whole set to do it.
 			if (rows.size() <= a_index)
 				rows.resize(a_index + 1);
 			rows[a_index] = std::move(row);
 		}
 	};
 
-	// The GNAM offset and the order of its three values are both inferred, so
-	// they get checked rather than trusted. Every body in a system must share a
-	// system id, planet ids must be distinct, and at least one body must be a
-	// planet (parent 0). If that does not hold, the fields are not where or what
-	// they are assumed to be, and saying so beats silently mis-nesting the list.
-	//
-	// Logged once per system, on the low-frequency feed, so it costs nothing in
-	// normal play but is there in any bug report.
+	// Scores one candidate offset against a set of planets. Returns true only if
+	// the triple behaves the way GNAM must: one system shared by all, small
+	// distinct planet ids, at least one body with no parent, and - the part that
+	// makes it unambiguous - at least one body whose parent is another body's
+	// planet id. Random floats and pointers do not do that.
+	bool TripleLooksLikeGalaxyData(const std::vector<const RE::TESForm*>& a_forms, std::size_t a_offset,
+		std::uint32_t& a_system, bool& a_sawRelation)
+	{
+		constexpr std::uint32_t kMaxPlausibleID = 4096;
+
+		std::vector<GalaxyData> read;
+		read.reserve(a_forms.size());
+		for (const auto* form : a_forms) {
+			GalaxyData data;
+			if (!ReadTripleAt(form, a_offset, data))
+				return false;
+			read.push_back(data);
+		}
+		if (read.size() < 2)
+			return false;
+
+		a_system = read.front().systemID;
+		bool anyRoot = false;
+		for (std::size_t i = 0; i < read.size(); ++i) {
+			if (read[i].systemID != a_system)
+				return false;
+			if (read[i].planetID == 0 || read[i].planetID > kMaxPlausibleID)
+				return false;
+			if (read[i].parentPlanetID > kMaxPlausibleID)
+				return false;
+			if (read[i].parentPlanetID == 0)
+				anyRoot = true;
+			for (std::size_t j = i + 1; j < read.size(); ++j) {
+				if (read[j].planetID == read[i].planetID)
+					return false;  // planet ids are unique within a system
+			}
+		}
+		if (!anyRoot)
+			return false;
+
+		a_sawRelation = false;
+		for (const auto& child : read) {
+			if (child.parentPlanetID == 0)
+				continue;
+			for (const auto& parent : read) {
+				if (parent.planetID == child.parentPlanetID) {
+					a_sawRelation = true;
+					break;
+				}
+			}
+		}
+		return true;
+	}
+
+	// Runs until it finds the offset, then never again. Every planet the feed
+	// offers is used as evidence, so a system with no moons present simply does
+	// not settle it and the next one will.
+	void DetectGalaxyOffset(const std::vector<Candidate>& a_rows)
+	{
+		if (g_galaxyOffset.load(std::memory_order_acquire) != 0 ||
+			g_galaxyScanFailed.load(std::memory_order_acquire))
+			return;
+
+		std::vector<const RE::TESForm*> forms;
+		for (const auto& row : a_rows) {
+			if (row.type != kTargetTypePlanet)
+				continue;
+			if (const auto* form = LookupPlanet(row.id))
+				forms.push_back(form);
+		}
+		if (forms.size() < 2)
+			return;  // not enough to prove anything; wait for a fuller system
+
+		std::size_t   best = 0;
+		std::uint32_t bestSystem = 0;
+		for (std::size_t offset = kGalaxyScanFirst; offset + 12 <= kGalaxyScanLast; offset += 4) {
+			std::uint32_t system = 0;
+			bool          related = false;
+			if (!TripleLooksLikeGalaxyData(forms, offset, system, related))
+				continue;
+
+			REX::INFO("[galaxy] candidate offset +0x{:X} (system {}{})", offset, system,
+				related ? ", parent/planet relation present" : "");
+			// A relation seen is proof; without one the offset is only plausible,
+			// so keep the first and carry on looking for something better.
+			if (related) {
+				best = offset;
+				bestSystem = system;
+				break;
+			}
+			if (best == 0) {
+				best = offset;
+				bestSystem = system;
+			}
+		}
+
+		if (best == 0)
+			return;  // this system taught nothing; try again in the next one
+
+		g_galaxyOffset.store(best, std::memory_order_release);
+		REX::INFO("[galaxy] GNAM located at +0x{:X} (system {}) - moon nesting is live", best, bestSystem);
+	}
+
+	// Logged once per system so any bug report carries the hierarchy the mod
+	// believes in, without costing anything in normal play.
 	void ReportGalaxyData(const std::vector<Candidate>& a_rows)
 	{
-		static std::atomic<std::uint32_t> s_lastSystem{ 0xFFFFFFFF };
+		const auto offset = g_galaxyOffset.load(std::memory_order_acquire);
+		if (offset == 0)
+			return;
 
-		std::uint32_t system = 0;
-		bool          haveSystem = false;
+		static std::atomic<std::uint32_t> s_lastSystem{ 0xFFFFFFFF };
+		std::uint32_t                     system = 0;
+		bool                              haveSystem = false;
 		for (const auto& row : a_rows) {
 			if (row.haveGalaxy) {
 				system = row.galaxy.systemID;
@@ -1627,37 +1780,12 @@ namespace
 		if (!haveSystem || s_lastSystem.exchange(system, std::memory_order_acq_rel) == system)
 			return;
 
-		bool mixedSystems = false;
-		bool anyPlanet = false;
-		bool duplicateIDs = false;
-		for (std::size_t i = 0; i < a_rows.size(); ++i) {
-			if (!a_rows[i].haveGalaxy)
-				continue;
-			if (a_rows[i].galaxy.systemID != system)
-				mixedSystems = true;
-			if (a_rows[i].galaxy.parentPlanetID == 0)
-				anyPlanet = true;
-			for (std::size_t j = i + 1; j < a_rows.size(); ++j) {
-				if (a_rows[j].haveGalaxy && a_rows[j].galaxy.systemID == a_rows[i].galaxy.systemID &&
-					a_rows[j].galaxy.planetID == a_rows[i].galaxy.planetID)
-					duplicateIDs = true;
-			}
-		}
-
-		REX::INFO("[galaxy] system {} - GNAM read at +0x{:X}", system, kGalaxyDataOffset);
+		REX::INFO("[galaxy] system {} - GNAM at +0x{:X}", system, offset);
 		for (const auto& row : a_rows) {
 			if (row.haveGalaxy)
 				REX::INFO("[galaxy]   {:<28} system={} parent={} planet={}",
 					row.name, row.galaxy.systemID, row.galaxy.parentPlanetID, row.galaxy.planetID);
 		}
-
-		// `mixedSystems` alone is legitimate - a quest star from elsewhere shows
-		// up in this feed - so it is not on its own a sign of a bad read.
-		if (duplicateIDs || !anyPlanet)
-			REX::WARN("[galaxy] these values look wrong ({}{}) - the GNAM offset or field order is "
-					  "probably not what was assumed, and moon nesting should not be trusted",
-				duplicateIDs ? "duplicate planet ids" : "",
-				!anyPlanet ? (duplicateIDs ? ", no body without a parent" : "no body without a parent") : "");
 	}
 
 	class DataFeedHandler : public RE::Scaleform::GFx::FunctionHandler
@@ -1691,7 +1819,16 @@ namespace
 			if (GetEntryArray(data, entries)) {
 				CandidateCollector collector;
 				entries.VisitElements(&collector);
+
+				// Find GNAM if it is not yet known, then read it - in that
+				// order, since the search needs the whole set as evidence.
+				DetectGalaxyOffset(collector.rows);
+				for (auto& row : collector.rows) {
+					if (row.id)
+						row.haveGalaxy = ReadGalaxyData(row.id, row.galaxy);
+				}
 				ReportGalaxyData(collector.rows);
+
 				std::lock_guard lock{ g_candidateMutex };
 				const auto      previous = std::move(g_candidates);
 				g_candidates = std::move(collector.rows);

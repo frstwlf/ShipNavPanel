@@ -70,10 +70,12 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Confirm the GNAM read in game (v0.3.5).** Nesting now comes from the
-      PNDT record, but the offset and field order are inferred — check the
-      `[galaxy]` block in the log shows Kurtz's parent equal to Jemison's planet
-      id, and that no `look wrong` warning appears. Worth a second system too.
+- [ ] **Confirm the GNAM scan finds the offset (v0.3.6).** Look for
+      `[galaxy] GNAM located at +0x…` in the log, then check Kurtz's parent
+      equals Jemison's planet id and that Kurtz is indented under Jemison. If
+      nothing is located, the log's `candidate offset` lines say what the scan
+      considered, and the window (`kGalaxyScanFirst`/`kGalaxyScanLast`) may need
+      widening past `0x140`.
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
@@ -126,11 +128,23 @@ Each of these cost real time; the reasoning is in the findings docs.
   - **★ The hierarchy is in the PNDT record: GNAM "Galaxy Data" = star system
     id, PARENT planet id, planet id.** Found in xEdit by the tester. Earth =
     (Sol 0, parent 0, planet 3); Luna = (Sol 0, parent 3, planet 11) — a planet
-    carries parent 0, a moon carries its planet's id. Read at **+0x4C** on the
-    form: CommonLibSF maps `BGSPlanet::PlanetData` only to 0x4C yet asserts the
-    record is 0x58, and three `uint32`s is exactly the 12 bytes left over. Both
-    the offset and the field order are inferred, so `ReportGalaxyData()`
-    sanity-checks them each system and warns rather than silently mis-nesting.
+    carries parent 0, a moon carries its planet's id.
+  - **`BGSPlanet::PlanetData`'s member comments are stale AND the struct is
+    incomplete.** The comments start at `0x30`, but they were written against a
+    `0x30`-byte `TESForm` and `TESForm` is now `0x38` — so the compiler places
+    every member eight bytes later than documented (`surfaceTree` 0x38 …
+    `resourceCreationSpeed` 0x50), and `static_assert(sizeof == 0x58)` is
+    satisfied by padding. Reading `0x4C` as GNAM therefore returned
+    `periAngleInDegrees`: v0.3.5 logged "system ids" of 186.0, 77.0, 151.0,
+    218.0, 209.0 reinterpreted as integers, and `0x54` returned each body's own
+    form id. **GNAM lies past the declared end of the record**, so no offset
+    derived from that struct can ever be right. Another instance of the stale
+    CommonLibSF layout hazard in `STARFIELD-NOTES.md`.
+  - **The offset is now discovered at runtime, not hardcoded** — the record's
+    tail is scanned for a triple that behaves like GNAM (one shared system id,
+    small distinct planet ids, at least one body with parent 0, and at least one
+    body whose parent equals another's planet id). The scan is bounded by
+    `VirtualQuery`, since it deliberately reads past a declared struct.
   - **The star map providers are a dead end from the ship HUD.**
     `StarmapSystemBodyInfoProvider` subscribes fine but never fires with the map
     closed — zero callbacks in a full cruise. Its `uBodyType`
