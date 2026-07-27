@@ -446,8 +446,156 @@ namespace
 		return std::string{ a_editorID };
 	}
 
+	// ---------------------------------------------------------------------------
+	// Proper names, out of the archives.
+	//
+	// A record's FULL is a localised string id, and the strings themselves are
+	// not loose - they live in "<Plugin> - Localization.ba2". So the name comes
+	// from reading that archive and its string table. Both formats were pinned
+	// down offline first: the BA2 is BTDX v2 GNRL with a 32-byte header and
+	// 36-byte entries, and the table is a count, a data size, id/offset pairs,
+	// then null-terminated UTF-8. Verified against known ids before a line of
+	// this existed - 43005 is Jemison, 42692 is Kurtz.
+	// ---------------------------------------------------------------------------
+
+	constexpr std::size_t kBA2HeaderSize = 32;
+	constexpr std::size_t kBA2EntrySize = 36;
+
+	// Pulls one file out of a general-purpose BA2 by name, case-insensitively.
+	bool ExtractFromArchive(const std::string& a_archive, const std::string& a_wanted,
+		std::vector<std::byte>& a_out)
+	{
+		std::ifstream file{ a_archive, std::ios::binary };
+		if (!file)
+			return false;
+
+		char          magic[4]{};
+		std::uint32_t version = 0;
+		char          type[4]{};
+		std::uint32_t count = 0;
+		std::uint64_t nameTableOffset = 0;
+		if (!ReadExact(file, magic, 4) || !ReadExact(file, &version, 4) || !ReadExact(file, type, 4) ||
+			!ReadExact(file, &count, 4) || !ReadExact(file, &nameTableOffset, 8))
+			return false;
+		if (std::memcmp(magic, "BTDX", 4) != 0 || std::memcmp(type, "GNRL", 4) != 0 || count == 0)
+			return false;
+
+		// Names sit at the tail, in the same order as the entries.
+		file.seekg(static_cast<std::streamoff>(nameTableOffset), std::ios::beg);
+		std::size_t wantedIndex = count;
+		for (std::uint32_t i = 0; i < count; ++i) {
+			std::uint16_t length = 0;
+			if (!ReadExact(file, &length, 2))
+				return false;
+			std::string name(length, '\0');
+			if (length != 0 && !ReadExact(file, name.data(), length))
+				return false;
+			std::transform(name.begin(), name.end(), name.begin(),
+				[](unsigned char a_ch) { return static_cast<char>(std::tolower(a_ch)); });
+			if (name == a_wanted) {
+				wantedIndex = i;
+				break;
+			}
+		}
+		if (wantedIndex >= count)
+			return false;
+
+		file.seekg(static_cast<std::streamoff>(kBA2HeaderSize + wantedIndex * kBA2EntrySize), std::ios::beg);
+		std::uint32_t skip[4]{};
+		std::uint64_t offset = 0;
+		std::uint32_t packed = 0;
+		std::uint32_t unpacked = 0;
+		if (!ReadExact(file, skip, sizeof(skip)) || !ReadExact(file, &offset, 8) ||
+			!ReadExact(file, &packed, 4) || !ReadExact(file, &unpacked, 4))
+			return false;
+		if (unpacked == 0 || unpacked > 64u * 1024u * 1024u)
+			return false;
+
+		std::vector<std::byte> raw(packed != 0 ? packed : unpacked);
+		file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+		if (!ReadExact(file, raw.data(), raw.size()))
+			return false;
+
+		if (packed == 0) {
+			a_out = std::move(raw);
+			return true;
+		}
+
+		a_out.resize(unpacked);
+		uLongf produced = unpacked;
+		return ::uncompress(reinterpret_cast<Bytef*>(a_out.data()), &produced,
+				   reinterpret_cast<const Bytef*>(raw.data()), static_cast<uLong>(raw.size())) == Z_OK &&
+		       produced == unpacked;
+	}
+
+	// count, data size, then id/offset pairs, then the text.
+	void ParseStringTable(const std::vector<std::byte>& a_data,
+		std::unordered_map<std::uint32_t, std::string>&  a_out)
+	{
+		if (a_data.size() < 8)
+			return;
+		std::uint32_t count = 0;
+		std::memcpy(&count, a_data.data(), 4);
+		if (count == 0 || count > 1'000'000)
+			return;
+
+		const std::size_t directory = 8;
+		const std::size_t text = directory + static_cast<std::size_t>(count) * 8;
+		if (text > a_data.size())
+			return;
+
+		for (std::uint32_t i = 0; i < count; ++i) {
+			std::uint32_t id = 0;
+			std::uint32_t offset = 0;
+			std::memcpy(&id, a_data.data() + directory + i * 8, 4);
+			std::memcpy(&offset, a_data.data() + directory + i * 8 + 4, 4);
+
+			const std::size_t start = text + offset;
+			if (start >= a_data.size())
+				continue;
+			const auto* chars = reinterpret_cast<const char*>(a_data.data());
+			const auto  length = ::strnlen(chars + start, a_data.size() - start);
+			if (length != 0)
+				a_out.emplace(id, std::string{ chars + start, length });
+		}
+	}
+
+	// "Starfield.esm" -> the strings from "Starfield - Localization.ba2".
+	// Language follows the archive: English is tried first, and whatever the
+	// archive actually carries is used otherwise, so a non-English install gets
+	// its own names rather than nothing.
+	void LoadPluginStrings(const std::string& a_plugin,
+		std::unordered_map<std::uint32_t, std::string>& a_out)
+	{
+		auto base = a_plugin;
+		if (const auto dot = base.rfind('.'); dot != std::string::npos)
+			base.erase(dot);
+
+		const auto archive = std::format("Data/{} - Localization.ba2", base);
+		if (!std::filesystem::exists(archive))
+			return;
+
+		auto lowered = base;
+		std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+			[](unsigned char a_ch) { return static_cast<char>(std::tolower(a_ch)); });
+
+		static constexpr const char* kLanguages[]{ "en", "de", "fr", "es", "esmx", "it", "ja", "pl", "ptbr",
+			"zhhans" };
+
+		std::vector<std::byte> data;
+		for (const auto* language : kLanguages) {
+			if (ExtractFromArchive(archive, std::format("strings/{}_{}.strings", lowered, language), data)) {
+				const auto before = a_out.size();
+				ParseStringTable(data, a_out);
+				REX::INFO("[bodies] {} names from {} ({})", a_out.size() - before, archive, language);
+				return;
+			}
+		}
+	}
+
 	// Walks one record's subrecords looking for GNAM.
-	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out, std::string& a_name)
+	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out, std::string& a_name,
+		std::uint32_t& a_fullID)
 	{
 		std::size_t   offset = 0;
 		std::uint32_t pending = 0;
@@ -482,6 +630,10 @@ namespace
 			if (std::memcmp(sig, "EDID", 4) == 0 && size > 1) {
 				a_name = NameFromEditorID(
 					std::string_view{ reinterpret_cast<const char*>(a_data + offset), size - 1 });
+			} else if (std::memcmp(sig, "FULL", 4) == 0 && size == 4 && a_fullID == 0) {
+				// The localised name's id. It sits inside a component block but
+				// reads as an ordinary subrecord, and comes before GNAM.
+				std::memcpy(&a_fullID, a_data + offset, 4);
 			} else if (std::memcmp(sig, "GNAM", 4) == 0 && size >= 12) {
 				std::uint32_t values[3];
 				std::memcpy(values, a_data + offset, sizeof(values));
@@ -506,7 +658,8 @@ namespace
 	}
 
 	bool ParsePluginBodies(const std::string& a_path, const std::vector<std::uint8_t>& a_masterIndices,
-		std::uint8_t a_selfIndex, bool a_validate, std::unordered_map<std::uint32_t, BodyEntry>& a_out,
+		std::uint8_t a_selfIndex, bool a_validate, const std::unordered_map<std::uint32_t, std::string>& a_strings,
+		std::unordered_map<std::uint32_t, BodyEntry>& a_out,
 		std::vector<std::string>* a_masterNames)
 	{
 		std::ifstream file{ a_path, std::ios::binary };
@@ -607,9 +760,16 @@ namespace
 			}
 
 			GalaxyData data;
-			std::string name;
-			if (!FindGnam(body, bodySize, data, name))
+			std::string   name;
+			std::uint32_t fullID = 0;
+			if (!FindGnam(body, bodySize, data, name, fullID))
 				continue;
+
+			// A real, localised name beats one derived from the editor id.
+			if (fullID != 0) {
+				if (const auto found = a_strings.find(fullID); found != a_strings.end())
+					name = found->second;
+			}
 
 			const auto runtimeID = ResolveFormID(record.formID, a_masterIndices, a_selfIndex);
 
@@ -664,11 +824,16 @@ namespace
 		for (const auto& plugin : plugins) {
 			const auto path = std::format("Data/{}", plugin.name);
 
-			std::vector<std::string> masterNames;
-			if (!ParsePluginBodies(path, {}, plugin.index, false, a_out, &masterNames)) {
+			std::vector<std::string>                      masterNames;
+			std::unordered_map<std::uint32_t, std::string> strings;
+			if (!ParsePluginBodies(path, {}, plugin.index, false, strings, a_out, &masterNames)) {
 				REX::WARN("[bodies] could not read {}", path);
 				continue;
 			}
+
+			// Only worth opening the archive for a plugin that has planets, and
+			// only that plugin's own strings: the ids are per-file.
+			LoadPluginStrings(plugin.name, strings);
 
 			// A master this file names but the game has not loaded cannot be
 			// resolved; index 0 is a harmless placeholder because any record
@@ -680,7 +845,7 @@ namespace
 				masterIndices.push_back(found != indexByName.end() ? found->second : std::uint8_t{ 0 });
 			}
 
-			ParsePluginBodies(path, masterIndices, plugin.index, validate, a_out, nullptr);
+			ParsePluginBodies(path, masterIndices, plugin.index, validate, strings, a_out, nullptr);
 		}
 
 		REX::INFO("[bodies] read {} bodies from {} plugin(s)", a_out.size(), plugins.size());
@@ -754,15 +919,34 @@ namespace
 			if (text.find_first_not_of(" \t\r\n") == std::string::npos)
 				continue;
 
-			std::replace(text.begin(), text.end(), ',', ' ');
-			std::istringstream parse{ text };
+			// Split on the first four commas only: a real name can contain
+			// spaces ("New Atlantis") and tokenising on whitespace would cut it
+			// in half - which the editor-id names never would have shown.
+			std::string fields[4];
+			std::string name;
+			{
+				std::size_t start = 0;
+				std::size_t which = 0;
+				for (; which < 4; ++which) {
+					const auto comma = text.find(',', start);
+					if (comma == std::string::npos)
+						break;
+					fields[which] = text.substr(start, comma - start);
+					start = comma + 1;
+				}
+				if (which == 4)
+					name = text.substr(start);
+				while (!name.empty() && (name.back() == '\r' || name.back() == ' '))
+					name.pop_back();
+			}
 
-			std::string   idText;
-			std::uint32_t system = 0;
-			std::uint32_t parent = 0;
-			std::uint32_t planet = 0;
-			std::string   name;
-			if (!(parse >> idText >> system >> parent >> planet)) {
+			std::istringstream parse{ std::format("{} {} {}", fields[1], fields[2], fields[3]) };
+
+			const std::string& idText = fields[0];
+			std::uint32_t      system = 0;
+			std::uint32_t      parent = 0;
+			std::uint32_t      planet = 0;
+			if (idText.empty() || !(parse >> system >> parent >> planet)) {
 				if (++rejected <= 3)
 					REX::WARN("[bodies] {}:{} could not be read - expected "
 							  "formID,system,parent,planet",
@@ -781,7 +965,6 @@ namespace
 			if (formID == 0 || planet == 0)
 				continue;
 
-			parse >> name;  // optional; generated bodies have none
 			a_out.insert_or_assign(formID, BodyEntry{ GalaxyData{ system, parent, planet }, name });
 			++loaded;
 		}

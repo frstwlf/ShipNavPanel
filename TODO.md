@@ -119,16 +119,6 @@ These three come before release.
       `fPanelWidth` / `fPanelRowHeight` / `uPanelMaxRows` cover this without a
       rebuild; find the values in game first, then change the defaults.
 
-- [ ] **Proper names for bodies the HUD is not tracking.** They currently come
-      from the editor id with its `PlanetData` suffix removed, because the
-      record's `FULL` is a localised string id rather than text. That reads fine
-      for Jemison or Kurtz but poorly for Shattered Space's `KavnykI-a`, and it
-      changes to the real name the moment the game starts tracking the body,
-      which is a visible inconsistency. Resolving `FULL` properly means reading
-      `Data\Strings\Starfield_en.STRINGS` (and the DLC's) — a small format:
-      count, offset table, then null-terminated text. Worth doing with the icons
-      pass, since both touch the same parse.
-
 Later, and not blocking release:
 
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
@@ -222,6 +212,14 @@ Each of these cost real time; the reasoning is in the findings docs.
     id is checked with `LookupByID` → `kPNDT`, so bad arithmetic or a stale
     `TESFile` offset loses entries instead of inventing them. The cache is
     fingerprinted with the load order because it stores *runtime* ids.
+  - **Names come from the archives, not from the record.** `FULL` is a localised
+    string id and the strings are not loose — they are in
+    `<Plugin> - Localization.ba2`. That archive is **BTDX v2 `GNRL`, 32-byte
+    header, 36-byte entries**, names in a table at the tail in entry order. The
+    string table inside is count, data size, `{id, offset}` pairs, then
+    null-terminated UTF-8. Verified before implementing: 43005 → Jemison,
+    42692 → Kurtz. Editor-id names remain the fallback where a plugin ships no
+    archive.
   - **Parsing the ESM: two things that will bite.** Every PNDT record is
     zlib-compressed (1765 of 1765), the stream starting 4 bytes in, after a
     `uint32` inflated size. And **`XXXX` carries the real 32-bit length of the
