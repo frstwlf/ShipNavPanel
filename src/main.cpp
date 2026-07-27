@@ -20,6 +20,7 @@
 #include <format>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -116,6 +117,11 @@ namespace
 	// the ship HUD feed lacks. Whether it holds anything while merely flying -
 	// rather than only with the map open - is the open question, and this
 	// subscribes and logs whatever turns up.
+	// How far past the start of a planet record the GNAM scan may look. It reads
+	// beyond what CommonLibSF declares, so every read is page-checked; this only
+	// bounds how much is considered.
+	REX::TIniSetting<std::uint32_t> uGalaxyScanBytes{ "Panel", "uGalaxyScanBytes", 0x200 };
+
 	REX::TIniSetting<bool>        bProbeStarmapFeed{ "Recon", "bProbeStarmapFeed", false };
 	REX::TIniSetting<std::string> sStarmapFeed{ "Recon", "sStarmapFeed", "StarmapSystemBodyInfoProvider" };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
@@ -242,11 +248,29 @@ namespace
 	// Reading past a declared struct means reading memory the type system is not
 	// vouching for, so the scan is bounded by VirtualQuery: it never leaves the
 	// committed, readable region the form itself sits in.
-	std::atomic<std::size_t> g_galaxyOffset{ 0 };  // 0 = not yet found
-	std::atomic<bool>        g_galaxyScanFailed{ false };
+	// Which of the three slots is which is ALSO discovered: xEdit displays them
+	// as system / parent / planet, but nothing says memory keeps that order.
+	struct GalaxyLayout
+	{
+		std::size_t offset{ 0 };  // 0 = not yet found
+		int         systemSlot{ 0 };
+		int         parentSlot{ 1 };
+		int         planetSlot{ 2 };
+	};
+
+	std::mutex   g_galaxyLayoutMutex;
+	GalaxyLayout g_galaxyLayout;
+	std::atomic<bool> g_galaxyFound{ false };
+	std::atomic<bool> g_galaxyScanFailed{ false };
 
 	constexpr std::size_t kGalaxyScanFirst = 0x38;
-	constexpr std::size_t kGalaxyScanLast = 0x140;
+
+	// Every form read is cached: GNAM never changes for a given record, and the
+	// alternative - re-reading on each feed callback - is what turned v0.3.6
+	// into a slideshow.
+	std::mutex                                     g_galaxyCacheMutex;
+	std::unordered_map<std::uint32_t, GalaxyData>  g_galaxyCache;
+	std::unordered_map<std::uint32_t, char>        g_galaxyCacheMiss;
 
 	std::size_t ReadableBytesFrom(const void* a_base, std::size_t a_want)
 	{
@@ -272,27 +296,64 @@ namespace
 		return form;
 	}
 
-	bool ReadTripleAt(const RE::TESForm* a_form, std::size_t a_offset, GalaxyData& a_out)
+	// One VirtualQuery per form, then a plain memory copy. The scan works over
+	// these snapshots rather than probing the live object once per candidate
+	// offset - the difference between five page queries and several hundred.
+	std::vector<std::byte> SnapshotForm(const RE::TESForm* a_form, std::size_t a_want)
 	{
 		const auto* base = reinterpret_cast<const std::byte*>(a_form);
-		if (ReadableBytesFrom(base, a_offset + 12) < a_offset + 12)
-			return false;
-
-		std::uint32_t values[3]{};
-		std::memcpy(values, base + a_offset, sizeof(values));
-		a_out.systemID = values[0];
-		a_out.parentPlanetID = values[1];
-		a_out.planetID = values[2];
-		return true;
+		const auto  readable = ReadableBytesFrom(base, a_want);
+		std::vector<std::byte> bytes;
+		if (readable >= kGalaxyScanFirst + 12) {
+			bytes.resize(readable);
+			std::memcpy(bytes.data(), base, readable);
+		}
+		return bytes;
 	}
 
 	bool ReadGalaxyData(std::uint32_t a_formID, GalaxyData& a_out)
 	{
-		const auto offset = g_galaxyOffset.load(std::memory_order_acquire);
-		if (offset == 0)
+		if (!g_galaxyFound.load(std::memory_order_acquire))
 			return false;
-		const auto form = LookupPlanet(a_formID);
-		return form && ReadTripleAt(form, offset, a_out);
+
+		{
+			std::lock_guard lock{ g_galaxyCacheMutex };
+			if (const auto hit = g_galaxyCache.find(a_formID); hit != g_galaxyCache.end()) {
+				a_out = hit->second;
+				return true;
+			}
+			if (g_galaxyCacheMiss.contains(a_formID))
+				return false;
+		}
+
+		GalaxyLayout layout;
+		{
+			std::lock_guard lock{ g_galaxyLayoutMutex };
+			layout = g_galaxyLayout;
+		}
+
+		bool       ok = false;
+		GalaxyData data;
+		if (const auto form = LookupPlanet(a_formID)) {
+			const auto* base = reinterpret_cast<const std::byte*>(form);
+			if (ReadableBytesFrom(base, layout.offset + 12) >= layout.offset + 12) {
+				std::uint32_t values[3]{};
+				std::memcpy(values, base + layout.offset, sizeof(values));
+				data.systemID = values[layout.systemSlot];
+				data.parentPlanetID = values[layout.parentSlot];
+				data.planetID = values[layout.planetSlot];
+				ok = true;
+			}
+		}
+
+		std::lock_guard lock{ g_galaxyCacheMutex };
+		if (ok) {
+			g_galaxyCache.emplace(a_formID, data);
+			a_out = data;
+		} else {
+			g_galaxyCacheMiss.emplace(a_formID, char{ 1 });
+		}
+		return ok;
 	}
 
 	std::mutex             g_candidateMutex;
@@ -1661,18 +1722,23 @@ namespace
 	// distinct planet ids, at least one body with no parent, and - the part that
 	// makes it unambiguous - at least one body whose parent is another body's
 	// planet id. Random floats and pointers do not do that.
-	bool TripleLooksLikeGalaxyData(const std::vector<const RE::TESForm*>& a_forms, std::size_t a_offset,
-		std::uint32_t& a_system, bool& a_sawRelation)
+	// Tests one offset with one assignment of the three slots to roles. A match
+	// requires a visible parent/child relation - a body whose parent equals
+	// another body's planet id - which floats and pointers do not produce by
+	// accident. Everything else only narrows the field.
+	bool SlotsLookLikeGalaxyData(const std::vector<std::vector<std::byte>>& a_snapshots, std::size_t a_offset,
+		int a_systemSlot, int a_parentSlot, int a_planetSlot, std::uint32_t& a_system)
 	{
 		constexpr std::uint32_t kMaxPlausibleID = 4096;
 
 		std::vector<GalaxyData> read;
-		read.reserve(a_forms.size());
-		for (const auto* form : a_forms) {
-			GalaxyData data;
-			if (!ReadTripleAt(form, a_offset, data))
+		read.reserve(a_snapshots.size());
+		for (const auto& bytes : a_snapshots) {
+			if (bytes.size() < a_offset + 12)
 				return false;
-			read.push_back(data);
+			std::uint32_t values[3]{};
+			std::memcpy(values, bytes.data() + a_offset, sizeof(values));
+			read.push_back(GalaxyData{ values[a_systemSlot], values[a_parentSlot], values[a_planetSlot] });
 		}
 		if (read.size() < 2)
 			return false;
@@ -1696,76 +1762,99 @@ namespace
 		if (!anyRoot)
 			return false;
 
-		a_sawRelation = false;
 		for (const auto& child : read) {
 			if (child.parentPlanetID == 0)
 				continue;
 			for (const auto& parent : read) {
-				if (parent.planetID == child.parentPlanetID) {
-					a_sawRelation = true;
-					break;
-				}
+				if (parent.planetID == child.parentPlanetID)
+					return true;  // a real relation: this is GNAM
 			}
 		}
-		return true;
+		return false;
 	}
 
-	// Runs until it finds the offset, then never again. Every planet the feed
-	// offers is used as evidence, so a system with no moons present simply does
-	// not settle it and the next one will.
+	// Attempts are rate-limited and capped. v0.3.6 re-ran the whole scan on every
+	// feed callback because it never succeeded, and probing the page tables once
+	// per candidate offset per body on the UI thread is what made the game a
+	// slideshow. Now each attempt snapshots the forms once and scans memory.
 	void DetectGalaxyOffset(const std::vector<Candidate>& a_rows)
 	{
-		if (g_galaxyOffset.load(std::memory_order_acquire) != 0 ||
-			g_galaxyScanFailed.load(std::memory_order_acquire))
+		if (g_galaxyFound.load(std::memory_order_acquire) || g_galaxyScanFailed.load(std::memory_order_acquire))
 			return;
 
-		std::vector<const RE::TESForm*> forms;
+		using clock = std::chrono::steady_clock;
+		static clock::time_point          s_lastAttempt{};
+		static std::atomic<std::uint32_t> s_attempts{ 0 };
+
+		const auto now = clock::now();
+		if (s_lastAttempt != clock::time_point{} &&
+			std::chrono::duration<float>(now - s_lastAttempt).count() < 3.0f)
+			return;
+		s_lastAttempt = now;
+
+		const auto window = static_cast<std::size_t>(uGalaxyScanBytes.GetValue());
+
+		std::vector<std::vector<std::byte>> snapshots;
 		for (const auto& row : a_rows) {
 			if (row.type != kTargetTypePlanet)
 				continue;
-			if (const auto* form = LookupPlanet(row.id))
-				forms.push_back(form);
-		}
-		if (forms.size() < 2)
-			return;  // not enough to prove anything; wait for a fuller system
-
-		std::size_t   best = 0;
-		std::uint32_t bestSystem = 0;
-		for (std::size_t offset = kGalaxyScanFirst; offset + 12 <= kGalaxyScanLast; offset += 4) {
-			std::uint32_t system = 0;
-			bool          related = false;
-			if (!TripleLooksLikeGalaxyData(forms, offset, system, related))
+			const auto* form = LookupPlanet(row.id);
+			if (!form)
 				continue;
+			auto bytes = SnapshotForm(form, window);
+			if (!bytes.empty())
+				snapshots.push_back(std::move(bytes));
+		}
+		if (snapshots.size() < 2)
+			return;  // nothing to prove anything with; wait for a fuller system
 
-			REX::INFO("[galaxy] candidate offset +0x{:X} (system {}{})", offset, system,
-				related ? ", parent/planet relation present" : "");
-			// A relation seen is proof; without one the offset is only plausible,
-			// so keep the first and carry on looking for something better.
-			if (related) {
-				best = offset;
-				bestSystem = system;
-				break;
-			}
-			if (best == 0) {
-				best = offset;
-				bestSystem = system;
+		const auto attempt = s_attempts.fetch_add(1, std::memory_order_relaxed) + 1;
+
+		constexpr int kSlots[6][3]{ { 0, 1, 2 }, { 0, 2, 1 }, { 1, 0, 2 }, { 1, 2, 0 }, { 2, 0, 1 }, { 2, 1, 0 } };
+		std::size_t   smallest = snapshots.front().size();
+		for (const auto& bytes : snapshots)
+			smallest = std::min(smallest, bytes.size());
+
+		for (std::size_t offset = kGalaxyScanFirst; offset + 12 <= smallest; offset += 4) {
+			for (const auto& slots : kSlots) {
+				std::uint32_t system = 0;
+				if (!SlotsLookLikeGalaxyData(snapshots, offset, slots[0], slots[1], slots[2], system))
+					continue;
+
+				{
+					std::lock_guard lock{ g_galaxyLayoutMutex };
+					g_galaxyLayout = GalaxyLayout{ offset, slots[0], slots[1], slots[2] };
+				}
+				g_galaxyFound.store(true, std::memory_order_release);
+				REX::INFO("[galaxy] GNAM located at +0x{:X} (system={} parent={} planet={} of the triple, "
+						  "system id {}) - moon nesting is live",
+					offset, slots[0], slots[1], slots[2], system);
+				return;
 			}
 		}
 
-		if (best == 0)
-			return;  // this system taught nothing; try again in the next one
-
-		g_galaxyOffset.store(best, std::memory_order_release);
-		REX::INFO("[galaxy] GNAM located at +0x{:X} (system {}) - moon nesting is live", best, bestSystem);
+		constexpr std::uint32_t kMaxAttempts = 8;
+		REX::INFO("[galaxy] scan {} of {} found nothing in {} bodies over 0x{:X}..0x{:X}",
+			attempt, kMaxAttempts, snapshots.size(), kGalaxyScanFirst, smallest);
+		if (attempt >= kMaxAttempts) {
+			g_galaxyScanFailed.store(true, std::memory_order_release);
+			REX::WARN("[galaxy] giving up on locating GNAM - moons will not be nested. Raise "
+					  "uGalaxyScanBytes if the record is larger than the window searched.");
+		}
 	}
 
 	// Logged once per system so any bug report carries the hierarchy the mod
 	// believes in, without costing anything in normal play.
 	void ReportGalaxyData(const std::vector<Candidate>& a_rows)
 	{
-		const auto offset = g_galaxyOffset.load(std::memory_order_acquire);
-		if (offset == 0)
+		if (!g_galaxyFound.load(std::memory_order_acquire))
 			return;
+
+		std::size_t offset = 0;
+		{
+			std::lock_guard lock{ g_galaxyLayoutMutex };
+			offset = g_galaxyLayout.offset;
+		}
 
 		static std::atomic<std::uint32_t> s_lastSystem{ 0xFFFFFFFF };
 		std::uint32_t                     system = 0;

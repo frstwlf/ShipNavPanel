@@ -70,12 +70,12 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Confirm the GNAM scan finds the offset (v0.3.6).** Look for
-      `[galaxy] GNAM located at +0x…` in the log, then check Kurtz's parent
-      equals Jemison's planet id and that Kurtz is indented under Jemison. If
-      nothing is located, the log's `candidate offset` lines say what the scan
-      considered, and the window (`kGalaxyScanFirst`/`kGalaxyScanLast`) may need
-      widening past `0x140`.
+- [ ] **Confirm the GNAM scan finds the offset (v0.3.7).** Look for
+      `[galaxy] GNAM located at +0x…`, then check Kurtz's parent equals
+      Jemison's planet id and that Kurtz is indented under Jemison. If it gives
+      up, the log says how many bodies and how wide a window it searched —
+      raise `uGalaxyScanBytes`. The scan needs a system with a moon actually in
+      the feed; one without simply teaches it nothing.
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
@@ -140,11 +140,19 @@ Each of these cost real time; the reasoning is in the findings docs.
     form id. **GNAM lies past the declared end of the record**, so no offset
     derived from that struct can ever be right. Another instance of the stale
     CommonLibSF layout hazard in `STARFIELD-NOTES.md`.
-  - **The offset is now discovered at runtime, not hardcoded** — the record's
-    tail is scanned for a triple that behaves like GNAM (one shared system id,
-    small distinct planet ids, at least one body with parent 0, and at least one
-    body whose parent equals another's planet id). The scan is bounded by
-    `VirtualQuery`, since it deliberately reads past a declared struct.
+  - **The offset AND the field order are discovered at runtime, not hardcoded** —
+    the record's tail is scanned for a triple that behaves like GNAM (one shared
+    system id, small distinct planet ids, at least one body with parent 0, and —
+    decisively — at least one body whose parent equals another's planet id). All
+    six slot orderings are tried, since xEdit's display order is no guarantee of
+    the memory order. Bounded by `VirtualQuery`, as it reads past a declared
+    struct.
+  - **Anything per-body must be cached, and any scan rate-limited.** v0.3.6 ran
+    the whole scan on every low-frequency feed callback because it never
+    succeeded, doing a `VirtualQuery` per candidate offset per body on the UI
+    thread — the game became a slideshow. Each attempt now snapshots each form
+    once and scans plain memory; attempts are 3 s apart and capped at 8; and
+    every form's GNAM is cached by form id, since it never changes.
   - **The star map providers are a dead end from the ship HUD.**
     `StarmapSystemBodyInfoProvider` subscribes fine but never fires with the map
     closed — zero callbacks in a full cruise. Its `uBodyType`
