@@ -131,6 +131,13 @@ namespace
 	// Dumps each planet record's raw words side by side, so the layout can be
 	// read off the log instead of guessed at. Three guesses have now been wrong;
 	// this is the diagnostic that should have come first.
+	// Does `graphics.clear()` work here? It decides how per-body icons can be
+	// drawn: if a clip's drawing can be wiped and replaced, one clip per row is
+	// enough and it redraws when the row's body changes. If not, every class
+	// needs its own pre-drawn clip and the row toggles visibility between them -
+	// eight times the clips, created up front.
+	REX::TIniSetting<bool>          bTestGraphicsClear{ "Recon", "bTestGraphicsClear", false };
+
 	REX::TIniSetting<bool>          bDumpPlanetRecords{ "Recon", "bDumpPlanetRecords", false };
 	REX::TIniSetting<std::uint32_t> uDumpPlanetBytes{ "Recon", "uDumpPlanetBytes", 0x400 };
 
@@ -3162,6 +3169,64 @@ namespace
 	// in the way a guessed stage coordinate would not be.
 	// ---------------------------------------------------------------------------
 
+	// Draws a red square, calls clear(), then draws a blue square somewhere else.
+	// Both the call's own answer and the screen answer the question, and they
+	// are worth having separately: Invoke returning true only says the method
+	// existed and was callable, not that it did anything.
+	//
+	//   only the BLUE square  -> clear() works; one icon clip per row, redrawn
+	//                            when that row's body changes.
+	//   BOTH squares          -> it does not; every class needs its own clip and
+	//                            the row toggles which is visible.
+	void RunGraphicsClearTest(RE::Scaleform::GFx::Value& a_parent)
+	{
+		using V = RE::Scaleform::GFx::Value;
+
+		RE::Scaleform::GFx::Value clip;
+		if (!a_parent.CreateEmptyMovieClip(&clip, "ShipNavPanelClearTest", 20050)) {
+			REX::WARN("[cleartest] could not create the test clip");
+			return;
+		}
+
+		RE::Scaleform::GFx::Value gfx;
+		if (!clip.GetMember("graphics", &gfx)) {
+			REX::WARN("[cleartest] test clip has no graphics");
+			return;
+		}
+
+		const auto square = [&](double a_x0, double a_y0, double a_x1, double a_y1, std::uint32_t a_colour) {
+			V fill[]{ V{ a_colour }, V{ 1.0 } };
+			gfx.Invoke("beginFill", nullptr, fill, 2);
+			V p0[]{ V{ a_x0 }, V{ a_y0 } };
+			gfx.Invoke("moveTo", nullptr, p0, 2);
+			V p1[]{ V{ a_x1 }, V{ a_y0 } };
+			gfx.Invoke("lineTo", nullptr, p1, 2);
+			V p2[]{ V{ a_x1 }, V{ a_y1 } };
+			gfx.Invoke("lineTo", nullptr, p2, 2);
+			V p3[]{ V{ a_x0 }, V{ a_y1 } };
+			gfx.Invoke("lineTo", nullptr, p3, 2);
+			gfx.Invoke("lineTo", nullptr, p0, 2);
+			gfx.Invoke("endFill", nullptr, nullptr, 0);
+		};
+
+		square(-80.0, -40.0, -30.0, 10.0, 0xFF3333);
+
+		RE::Scaleform::GFx::Value result;
+		const bool                called = gfx.Invoke("clear", &result, nullptr, 0);
+
+		square(30.0, -40.0, 80.0, 10.0, 0x3388FF);
+
+		clip.SetMember("x", V{ 0.0 });
+		clip.SetMember("y", V{ 0.0 });
+		clip.SetMember("visible", V{ true });
+
+		REX::INFO("[cleartest] graphics.clear() invoke returned {} ({})", called,
+			called ? "the method exists and was callable" : "no such method - clear() is unavailable");
+		REX::INFO("[cleartest] now LOOK at the middle of the screen, left of the crosshair:");
+		REX::INFO("[cleartest]   only a BLUE square  -> clear() works, one icon clip per row will do");
+		REX::INFO("[cleartest]   a RED and a BLUE    -> it does not, each class needs its own clip");
+	}
+
 	void TryCreatePanel()
 	{
 		if (!bPanel.GetValue() || g_panelReady.load(std::memory_order_acquire) ||
@@ -3192,6 +3257,9 @@ namespace
 			REX::WARN("[panel] not created: {}", a_why);
 			g_panelFailed.store(true, std::memory_order_release);
 		};
+
+		if (bTestGraphicsClear.GetValue())
+			RunGraphicsClearTest(reticle);
 
 		using V = RE::Scaleform::GFx::Value;
 

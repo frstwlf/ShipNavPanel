@@ -121,6 +121,14 @@ These three come before release.
 
 Later, and not blocking release:
 
+- [ ] **The panel can outlive a forced exit from cruise.** Seen when a random
+      combat event dropped the ship out: the panel stayed up until the scanner
+      key closed it. Cruise is detected only from `Reticle_mc.CruiseModeHUDActive`,
+      and on an interrupted exit that flag evidently stays set for a while — a
+      failed *read* closes the panel, so it cannot be the path resolution. Minor
+      (one keypress clears it) but it means the panel can sit over the HUD just
+      as combat starts. Wants a second, independent signal for "still cruising".
+
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
       default confirm — it engages the cruise **autopilot**. Build a params
       object `{uBodyID: <uniqueID>}`, construct `Shared.AS3.Events.CustomEvent`
