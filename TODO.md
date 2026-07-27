@@ -101,6 +101,19 @@ retired; the HUD's Scaleform layer is the API.**
 
 ### What is left
 
+**How targeting actually picks (2026-07-27, from play):** the target key takes
+whatever is **closest to screen centre**, and that reticle is *fixed*. The mouse
+circle steers the ship and has no bearing on targeting. So the only lever is
+what the camera is pointed at — there is no movable reticle to exploit.
+Two things make this workable rather than hopeless:
+- The engine publishes each target's **`screenPositionX` / `screenPositionY`**
+  (screen percentages) in `TargetHighFrequencyProvider`, so the mod can *measure*
+  which entry the target key would pick, and verify any aiming scheme exactly.
+- **Free-look is a distinct HUD mode** the engine tracks
+  (`ShipInfoUtils.SH_MODE_FREE_LOOK`; the HUD jumps to a "FreeLook" frame). If
+  free-look moves screen centre and targeting follows, the camera can be aimed
+  **without steering the ship** — no course change, no jitter.
+
 - [ ] **★★ FIRST, zero code: in cruise, manually point the ship at a distant
       planet that the cycle will not reach, and press the target key.**
       - **It targets** → the cone is about *aim*, not eligibility. The mod can
