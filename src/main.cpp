@@ -64,11 +64,7 @@ namespace
 	// per distinct event rather than the flood bLogInput produces.
 	REX::TIniSetting<bool> bSurveyCruiseKeys{ "Recon", "bSurveyCruiseKeys", false };
 
-	// The mouse wheel is the natural input for a list, but in the ship it drives
-	// the camera's point of view. This hides the wheel events from the camera
-	// while the panel is up - by unlinking them from the queue rather than by
-	// flagging them, since flagging is exactly what failed for the throttle.
-	REX::TIniSetting<bool> bWheelFilterTest{ "Recon", "bWheelFilterTest", false };
+	// (bWheelFilter lives in [Panel] with the rest of the shipped settings.)
 
 	// Scaleform reader: dumps the ship HUD's ActionScript data model on demand.
 	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", false };
@@ -84,6 +80,23 @@ namespace
 	// appears. It is a setting at all only so a tester chasing a conflict can
 	// take the mod's one vtable write out of the picture without unloading it.
 	REX::TIniSetting<bool> bInputTap{ "Panel", "bInputTap", true };
+
+	// The list panel, and the key that locks the highlighted body or clears it
+	// again. The confirm key is a NAME, matched against the user event, so it
+	// follows a rebind - never write an id code here.
+	REX::TIniSetting<bool>          bPanel{ "Panel", "bPanel", true };
+	REX::TIniSetting<std::string>   sConfirmEvent{ "Panel", "sConfirmEvent", "SelectTarget" };
+
+	// Hide the mouse wheel from the camera while the panel is open, so scrolling
+	// the list does not swing the point of view. Verified in game (v0.2.3); the
+	// switch remains as an escape hatch, not because it is experimental.
+	REX::TIniSetting<bool> bWheelFilter{ "Panel", "bWheelFilter", true };
+
+	REX::TIniSetting<float>         fPanelOffsetX{ "Panel", "fPanelOffsetX", -540.0f };
+	REX::TIniSetting<float>         fPanelOffsetY{ "Panel", "fPanelOffsetY", -160.0f };
+	REX::TIniSetting<float>         fPanelWidth{ "Panel", "fPanelWidth", 340.0f };
+	REX::TIniSetting<float>         fPanelRowHeight{ "Panel", "fPanelRowHeight", 26.0f };
+	REX::TIniSetting<std::uint32_t> uPanelMaxRows{ "Panel", "uPanelMaxRows", 10 };
 
 	// The pointer arrow.
 	REX::TIniSetting<bool>  bArrow{ "Panel", "bArrow", true };
@@ -152,9 +165,17 @@ namespace
 		std::string   name;
 	};
 
-	std::mutex                 g_candidateMutex;
-	std::vector<Candidate>     g_candidates;
-	std::atomic<std::uint32_t> g_selectedID{ 0 };
+	std::mutex             g_candidateMutex;
+	std::vector<Candidate> g_candidates;
+
+	// Two selections, deliberately distinct. `locked` is the committed one: it
+	// is what the arrow points at once the panel is closed, and it only changes
+	// when the confirm key is pressed. `highlight` is the browse cursor, live
+	// only while the panel is open. Closing the panel without confirming throws
+	// the highlight away, which is what makes "clear without picking another"
+	// possible at all.
+	std::atomic<std::uint32_t> g_lockedID{ 0 };
+	std::atomic<std::uint32_t> g_highlightID{ 0 };
 	std::atomic<bool>          g_cycleRequested{ false };
 	std::atomic<bool>          g_arrowReady{ false };
 	std::atomic<bool>          g_arrowFailed{ false };
@@ -168,17 +189,29 @@ namespace
 	// panel must stay out of the way there - the gate identified back in Phase 0.
 	std::atomic<bool> g_inCruise{ false };
 
-	// "The panel is up": while this is set, throttle events are marked disabled
-	// on their way past the tap. Nothing is drawn yet - this build exists to
-	// answer whether the suppression works at all, which is the piece Phase 2
-	// can fail outright on.
-	std::atomic<bool>          g_panelUp{ false };
+	// The panel is open. While this is set the wheel is hidden from the camera
+	// and drives the highlight instead.
+	std::atomic<bool>          g_panelOpen{ false };
 	std::atomic<std::uint32_t> g_suppressedCount{ 0 };
 	std::atomic<std::uint32_t> g_wheelRemovedCount{ 0 };
+
+	// The drawn list. Row count is fixed at creation - growing it would mean
+	// building TextFields from a feed callback, and every AS3 construction is a
+	// risk worth taking exactly once, at startup.
+	constexpr std::size_t      kPanelMaxRowsHard = 16;
+	RE::Scaleform::GFx::Value  g_panelClip;
+	RE::Scaleform::GFx::Value  g_panelHighlight;
+	RE::Scaleform::GFx::Value  g_panelRows[kPanelMaxRowsHard];
+	RE::Scaleform::GFx::Value  g_panelFormat;
+	std::atomic<bool>          g_panelReady{ false };
+	std::atomic<bool>          g_panelFailed{ false };
+	std::atomic<std::uint32_t> g_panelRowCount{ 0 };
 
 	// Defined further down, but called from the data-feed callbacks above them.
 	bool WorldSettled();
 	void TryCreateArrow();
+	void TryCreatePanel();
+	void RefreshPanel();
 	void RefreshCruiseState();
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
@@ -380,31 +413,106 @@ namespace
 				  "is a free verb for the panel ---");
 	}
 
-	// Toggling is a compare-exchange rather than load-then-store because the
-	// input queue is not guaranteed to be drained by the same thread every
-	// frame, and a lost toggle here leaves the throttle suppressed.
-	void TogglePanelForTest()
+	// ---------------------------------------------------------------------------
+	// Panel selection.
+	//
+	// The list the player sees is the local bodies, in feed order - which is
+	// stable enough to walk with a wheel, and is the same order the arrow's
+	// cycling used. Everything here runs under the candidate mutex because the
+	// feed callbacks rewrite that vector from another thread.
+	// ---------------------------------------------------------------------------
+
+	// Caller holds g_candidateMutex.
+	void CollectLocalRows(std::vector<std::size_t>& a_out)
 	{
-		bool wasUp = g_panelUp.load(std::memory_order_acquire);
-		while (!g_panelUp.compare_exchange_weak(wasUp, !wasUp, std::memory_order_acq_rel))
+		a_out.clear();
+		for (std::size_t i = 0; i < g_candidates.size(); ++i) {
+			const auto& row = g_candidates[i];
+			if (IsLocalBody(row.type, row.distance))
+				a_out.push_back(i);
+		}
+	}
+
+	// a_delta of 0 means "settle onto something valid": used when the panel opens
+	// and when the highlighted body drops out of the feed.
+	void MoveHighlight(int a_delta)
+	{
+		std::lock_guard          lock{ g_candidateMutex };
+		std::vector<std::size_t> local;
+		CollectLocalRows(local);
+		if (local.empty()) {
+			g_highlightID.store(0, std::memory_order_release);
+			return;
+		}
+
+		const auto  current = g_highlightID.load(std::memory_order_acquire);
+		std::size_t pos = 0;
+		bool        found = false;
+		for (std::size_t n = 0; n < local.size(); ++n) {
+			if (g_candidates[local[n]].id == current) {
+				pos = n;
+				found = true;
+				break;
+			}
+		}
+
+		if (found) {
+			const auto count = static_cast<int>(local.size());
+			int        next = (static_cast<int>(pos) + a_delta) % count;
+			if (next < 0)
+				next += count;
+			pos = static_cast<std::size_t>(next);
+		}
+		// If it was not found the highlight has gone stale (or the panel just
+		// opened with nothing selected), so pos stays 0 and it lands on the
+		// first local body regardless of the delta.
+
+		g_highlightID.store(g_candidates[local[pos]].id, std::memory_order_release);
+	}
+
+	void TogglePanel()
+	{
+		bool wasOpen = g_panelOpen.load(std::memory_order_acquire);
+		while (!g_panelOpen.compare_exchange_weak(wasOpen, !wasOpen, std::memory_order_acq_rel))
 			;
 
-		if (!wasUp) {
+		if (!wasOpen) {
+			// Open onto whatever is locked, so the list shows where you already
+			// are rather than jumping to the top.
+			g_highlightID.store(g_lockedID.load(std::memory_order_acquire), std::memory_order_release);
+			MoveHighlight(0);
 			g_suppressedCount.store(0, std::memory_order_release);
 			g_wheelRemovedCount.store(0, std::memory_order_release);
-			REX::INFO("[panel] UP");
+			REX::INFO("[panel] opened - wheel moves the highlight, '{}' locks or clears it",
+				sConfirmEvent.GetValue());
 			if (bSuppressThrottleTest.GetValue())
-				REX::INFO("[panel]   '{}' and '{}' will be marked disabled - hold W and S and watch "
-						  "whether the ship still accelerates",
-					kThrottleUpEvent, kThrottleDownEvent);
-			if (bWheelFilterTest.GetValue())
-				REX::INFO("[panel]   '{}' and '{}' will be hidden from the camera - spin the wheel and "
-						  "watch whether the point of view still changes",
-					kWheelUpEvent, kWheelDownEvent);
+				REX::INFO("[panel]   throttle-suppression test armed");
 		} else {
-			REX::INFO("[panel] DOWN - {} throttle events marked disabled, {} wheel events hidden",
-				g_suppressedCount.load(std::memory_order_acquire),
+			// Nothing is committed on close - that is the whole point of the
+			// confirm key.
+			REX::INFO("[panel] closed (locked stays {:08X}, {} wheel events hidden)",
+				g_lockedID.load(std::memory_order_acquire),
 				g_wheelRemovedCount.load(std::memory_order_acquire));
+		}
+	}
+
+	// The confirm key is a toggle on the highlighted row: lock it, or clear it
+	// if it is already the locked one. Clearing without picking another is the
+	// behaviour this key exists for.
+	void ConfirmHighlight()
+	{
+		const auto highlight = g_highlightID.load(std::memory_order_acquire);
+		if (!highlight) {
+			REX::INFO("[panel] confirm ignored - nothing highlighted");
+			return;
+		}
+
+		if (g_lockedID.load(std::memory_order_acquire) == highlight) {
+			g_lockedID.store(0, std::memory_order_release);
+			REX::INFO("[panel] cleared {:08X} - no target on the HUD", highlight);
+		} else {
+			g_lockedID.store(highlight, std::memory_order_release);
+			REX::INFO("[panel] locked {:08X}", highlight);
 		}
 	}
 
@@ -447,14 +555,9 @@ namespace
 		if (!g_inCruise.load(std::memory_order_acquire))
 			return;
 
-		// Either test needs the panel-up state, so either one claims the key.
-		if (bSuppressThrottleTest.GetValue() || bWheelFilterTest.GetValue()) {
-			TogglePanelForTest();
-			return;
-		}
-
-		if (bArrow.GetValue())
-			g_cycleRequested.store(true, std::memory_order_release);
+		// The panel-open state is toggled regardless of whether the list is
+		// being drawn, so the input tests still work with bPanel off.
+		TogglePanel();
 	}
 
 	// Walks the frame's input queue. This runs on every build, logging or not:
@@ -496,13 +599,30 @@ namespace
 			// accelerate. The cruise check is deliberately redundant with the
 			// one that raises the panel: a throttle stuck off is the worst
 			// failure this mod could have, so it is gated twice.
-			if (g_panelUp.load(std::memory_order_acquire) &&
+			if (bSuppressThrottleTest.GetValue() &&
+				g_panelOpen.load(std::memory_order_acquire) &&
 				g_inCruise.load(std::memory_order_acquire) &&
 				IsThrottleEvent(userEvent))
 				SuppressThrottleEvent(button, down, firstFrame);
 
-			if (down && firstFrame && userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0)
-				OnTriggerPressed();
+			if (down && firstFrame && userEvent) {
+				if (std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
+					OnTriggerPressed();
+				} else if (g_panelOpen.load(std::memory_order_acquire) &&
+						   g_inCruise.load(std::memory_order_acquire)) {
+					// The wheel is spliced away from the camera elsewhere; here
+					// it is simply read. One notch is one step.
+					if (std::strcmp(userEvent, kWheelUpEvent) == 0) {
+						MoveHighlight(-1);
+						REX::INFO("[panel] highlight up -> {:08X}", g_highlightID.load(std::memory_order_acquire));
+					} else if (std::strcmp(userEvent, kWheelDownEvent) == 0) {
+						MoveHighlight(1);
+						REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
+					} else if (sConfirmEvent.GetValue() == userEvent) {
+						ConfirmHighlight();
+					}
+				}
+			}
 
 			// --- logging only, from here down ---
 
@@ -554,8 +674,11 @@ namespace
 	{
 		const auto original = g_origCameraInputProcessing.load(std::memory_order_acquire);
 
-		const bool filtering = bWheelFilterTest.GetValue() &&
-		                       g_panelUp.load(std::memory_order_acquire) &&
+		// The wheel is hidden from the camera whenever the panel is open - this
+		// is the shipped behaviour now, not a test. The setting survives only as
+		// an escape hatch if the camera hook ever misbehaves.
+		const bool filtering = bWheelFilter.GetValue() &&
+		                       g_panelOpen.load(std::memory_order_acquire) &&
 		                       g_inCruise.load(std::memory_order_acquire);
 
 		if (!filtering) {
@@ -621,7 +744,7 @@ namespace
 
 	void TryInstallCameraTap()
 	{
-		if (!bWheelFilterTest.GetValue() || g_cameraTapClaimed.load(std::memory_order_acquire))
+		if (!bWheelFilter.GetValue() || g_cameraTapClaimed.load(std::memory_order_acquire))
 			return;
 
 		const auto camera = RE::PlayerCamera::GetSingleton();
@@ -767,11 +890,29 @@ namespace
 			g_labelField = RE::Scaleform::GFx::Value{};
 			g_labelFormat = RE::Scaleform::GFx::Value{};
 			g_labelReady.store(false, std::memory_order_release);
+
+			// The list belonged to the old movie too.
+			g_panelReady.store(false, std::memory_order_release);
+			g_panelFailed.store(false, std::memory_order_release);
+			g_panelClip = RE::Scaleform::GFx::Value{};
+			g_panelHighlight = RE::Scaleform::GFx::Value{};
+			g_panelFormat = RE::Scaleform::GFx::Value{};
+			for (auto& row : g_panelRows)
+				row = RE::Scaleform::GFx::Value{};
+			g_panelRowCount.store(0, std::memory_order_release);
+
 			{
 				std::lock_guard lock{ g_candidateMutex };
 				g_candidates.clear();
 			}
-			g_selectedID.store(0, std::memory_order_release);
+
+			// The panel closes and the browse cursor goes, but the LOCKED body
+			// survives: it is a form id, not a Scaleform handle, and rebuilds
+			// happen often enough that dropping it would feel like the mod
+			// forgetting your target at random. If the id never comes back in
+			// the feed the arrow simply stays hidden.
+			g_panelOpen.store(false, std::memory_order_release);
+			g_highlightID.store(0, std::memory_order_release);
 		}
 
 		if (!bLogMenus.GetValue())
@@ -1306,6 +1447,7 @@ namespace
 			// task, which crashed v0.1.3 by doing it from elsewhere.
 			if (WorldSettled()) {
 				TryCreateArrow();
+				TryCreatePanel();
 				RefreshCruiseState();
 			}
 
@@ -1422,34 +1564,14 @@ namespace
 				for (std::size_t i = 0; i < count; ++i)
 					g_candidates[i].distance = bearings.rows[i].distance;
 
-				if (g_cycleRequested.exchange(false, std::memory_order_acq_rel)) {
-					// Advance to the next local body after the current one, so
-					// repeated presses walk the system in a stable order.
-					const auto current = g_selectedID.load(std::memory_order_acquire);
-					std::size_t start = 0;
-					for (std::size_t i = 0; i < count; ++i) {
-						if (g_candidates[i].id == current) {
-							start = i + 1;
-							break;
-						}
-					}
-					std::uint32_t picked = 0;
-					for (std::size_t n = 0; n < count; ++n) {
-						const auto& row = g_candidates[(start + n) % count];
-						if (IsLocalBody(row.type, row.distance)) {
-							picked = row.id;
-							selectedName = row.name;
-							break;
-						}
-					}
-					g_selectedID.store(picked, std::memory_order_release);
-					if (picked)
-						REX::INFO("[arrow] selected '{}' (uniqueID={})", selectedName, picked);
-					else
-						REX::WARN("[arrow] no local body to select among {} targets", count);
-				}
+				// The arrow follows the highlight while the panel is open - that
+				// is the preview - and falls back to the locked body once it
+				// closes. Closing without confirming therefore reverts it, which
+				// is exactly what the confirm key is for.
+				const auto selected = g_panelOpen.load(std::memory_order_acquire) ?
+				                          g_highlightID.load(std::memory_order_acquire) :
+				                          g_lockedID.load(std::memory_order_acquire);
 
-				const auto selected = g_selectedID.load(std::memory_order_acquire);
 				for (std::size_t i = 0; i < count; ++i) {
 					if (selected != 0 && g_candidates[i].id == selected) {
 						haveSelected = true;
@@ -1503,6 +1625,9 @@ namespace
 				if (g_labelReady.load(std::memory_order_acquire))
 					g_labelField.SetMember("visible", V{ haveSelected });
 			}
+
+			// Distances are current by this point, which is what the list shows.
+			RefreshPanel();
 
 			if (g_captureHighRequested.exchange(false, std::memory_order_acq_rel)) {
 				REX::INFO("[nav] ==== high-frequency (bearings) ====");
@@ -1720,10 +1845,13 @@ namespace
 		if (was != cruising) {
 			REX::INFO("[arrow] cruise {}", cruising ? "entered - panel active" : "left - panel idle");
 			if (!cruising) {
-				g_selectedID.store(0, std::memory_order_release);
-				// Leaving cruise must never strand the throttle suppressed.
-				if (g_panelUp.exchange(false, std::memory_order_acq_rel))
-					REX::INFO("[panel] forced DOWN - left cruise ({} throttle events marked, "
+				// The lock survives leaving cruise - the arrow is hidden outside
+				// cruise anyway, so keeping it means a brief drop out to
+				// manoeuvre does not cost you your target.
+				g_highlightID.store(0, std::memory_order_release);
+				// Closing on exit must never strand the throttle suppressed.
+				if (g_panelOpen.exchange(false, std::memory_order_acq_rel))
+					REX::INFO("[panel] forced closed - left cruise ({} throttle events marked, "
 							  "{} wheel events hidden)",
 						g_suppressedCount.load(std::memory_order_acquire),
 						g_wheelRemovedCount.load(std::memory_order_acquire));
@@ -1731,6 +1859,282 @@ namespace
 				if (bSurveyCruiseKeys.GetValue())
 					SurveyDump();
 			}
+		}
+	}
+
+	// Borrow a TextFormat from a field the HUD already owns. A TextField built at
+	// runtime carries no font and renders every glyph as a placeholder box; the
+	// HUD's own fields have fonts embedded at author time and it never names one
+	// in code, so there is nothing to copy but the whole format object.
+	//
+	// Each caller needs its OWN borrowed copy - the format is a live object, so
+	// setting `size` on a shared one would resize the arrow label too.
+	bool BorrowTextFormat(RE::Scaleform::GFx::ASMovieRootBase* a_root, const char* a_rootPath,
+		RE::Scaleform::GFx::Value& a_format, const char* a_logTag)
+	{
+		const std::string base = std::string{ a_rootPath ? a_rootPath : "root" };
+		const char*       donors[]{
+            ".Reticle_mc.ShipReticle_mc.LockOn_mc.LockText_tf",
+            ".Reticle_mc.ShipReticle_mc.Distance_tf",
+            ".DebugText_tf",
+		};
+
+		for (const auto* suffix : donors) {
+			RE::Scaleform::GFx::Value donor;
+			if (!a_root->GetVariable(&donor, (base + suffix).c_str()))
+				continue;
+			if (!donor.Invoke("getTextFormat", &a_format) || !a_format.IsObject())
+				continue;
+
+			RE::Scaleform::GFx::Value fontName;
+			if (a_format.GetMember("font", &fontName) && fontName.IsString())
+				REX::INFO("{} borrowed font '{}' from {}", a_logTag, SafeStr(fontName.GetString()), suffix);
+			else
+				REX::INFO("{} borrowed a text format from {}", a_logTag, suffix);
+			return true;
+		}
+		return false;
+	}
+
+	// ---------------------------------------------------------------------------
+	// The list panel.
+	//
+	// Built once, with a fixed number of rows, and then only ever updated: text,
+	// visibility and the highlight's y. Constructing AS3 objects from a feed
+	// callback is the risk this mod has been most careful about, so it happens
+	// exactly once per movie.
+	//
+	// Parented to Reticle_mc rather than the menu root, because the reticle's
+	// origin is screen centre and that is a coordinate space already proven by
+	// the arrow. The offsets are from there, which makes them resolution-relative
+	// in the way a guessed stage coordinate would not be.
+	// ---------------------------------------------------------------------------
+
+	void TryCreatePanel()
+	{
+		if (!bPanel.GetValue() || g_panelReady.load(std::memory_order_acquire) ||
+			g_panelFailed.load(std::memory_order_acquire))
+			return;
+		if (!g_subscribed.load(std::memory_order_acquire))
+			return;  // no feed yet, so nothing to list
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud))
+			return;
+		const auto menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return;
+
+		auto*             root = menu->uiMovie->asMovieRoot.get();
+		const char*       rootPath = menu->GetRootPath();
+		const std::string reticlePath = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc";
+
+		RE::Scaleform::GFx::Value reticle;
+		if (!root->GetVariable(&reticle, reticlePath.c_str()))
+			return;
+
+		const auto giveUp = [&](const char* a_why) {
+			REX::WARN("[panel] not created: {}", a_why);
+			g_panelFailed.store(true, std::memory_order_release);
+		};
+
+		using V = RE::Scaleform::GFx::Value;
+
+		// Depth 20001 puts the list above the arrow's 20000.
+		if (!reticle.CreateEmptyMovieClip(&g_panelClip, "ShipNavPanelList", 20001)) {
+			giveUp("CreateEmptyMovieClip refused a container for the list");
+			return;
+		}
+
+		const auto rows = std::clamp<std::size_t>(uPanelMaxRows.GetValue(), 1, kPanelMaxRowsHard);
+		const double rowHeight = static_cast<double>(fPanelRowHeight.GetValue());
+		const double width = static_cast<double>(fPanelWidth.GetValue());
+		const double height = rowHeight * static_cast<double>(rows) + 12.0;
+
+		// Background: a flat panel at 55% so the starfield still reads through.
+		RE::Scaleform::GFx::Value gfx;
+		if (!g_panelClip.GetMember("graphics", &gfx)) {
+			giveUp("the list container has no 'graphics' member to draw into");
+			return;
+		}
+		V bgFill[]{ V{ static_cast<std::uint32_t>(0x0A1420) }, V{ 0.55 } };
+		gfx.Invoke("beginFill", nullptr, bgFill, 2);
+		V bg0[]{ V{ 0.0 }, V{ 0.0 } };
+		gfx.Invoke("moveTo", nullptr, bg0, 2);
+		V bg1[]{ V{ width }, V{ 0.0 } };
+		gfx.Invoke("lineTo", nullptr, bg1, 2);
+		V bg2[]{ V{ width }, V{ height } };
+		gfx.Invoke("lineTo", nullptr, bg2, 2);
+		V bg3[]{ V{ 0.0 }, V{ height } };
+		gfx.Invoke("lineTo", nullptr, bg3, 2);
+		gfx.Invoke("lineTo", nullptr, bg0, 2);
+		gfx.Invoke("endFill", nullptr, nullptr, 0);
+
+		// The highlight is its own clip so moving it is one property write per
+		// wheel notch rather than a redraw.
+		if (g_panelClip.CreateEmptyMovieClip(&g_panelHighlight, "Highlight", 1)) {
+			RE::Scaleform::GFx::Value hlGfx;
+			if (g_panelHighlight.GetMember("graphics", &hlGfx)) {
+				V hlFill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 0.28 } };
+				hlGfx.Invoke("beginFill", nullptr, hlFill, 2);
+				V h0[]{ V{ 4.0 }, V{ 0.0 } };
+				hlGfx.Invoke("moveTo", nullptr, h0, 2);
+				V h1[]{ V{ width - 4.0 }, V{ 0.0 } };
+				hlGfx.Invoke("lineTo", nullptr, h1, 2);
+				V h2[]{ V{ width - 4.0 }, V{ rowHeight } };
+				hlGfx.Invoke("lineTo", nullptr, h2, 2);
+				V h3[]{ V{ 4.0 }, V{ rowHeight } };
+				hlGfx.Invoke("lineTo", nullptr, h3, 2);
+				hlGfx.Invoke("lineTo", nullptr, h0, 2);
+				hlGfx.Invoke("endFill", nullptr, nullptr, 0);
+			}
+			g_panelHighlight.SetMember("visible", V{ false });
+		} else {
+			REX::WARN("[panel] no highlight clip - the list will run without one");
+		}
+
+		const bool haveFormat = BorrowTextFormat(root, rootPath, g_panelFormat, "[panel]");
+		if (haveFormat) {
+			g_panelFormat.SetMember("size", V{ 17.0 });
+			g_panelFormat.SetMember("bold", V{ false });
+			g_panelFormat.SetMember("color", V{ static_cast<std::uint32_t>(0xCCE6FF) });
+		} else {
+			REX::WARN("[panel] no donor TextField found - rows will likely render as boxes");
+		}
+
+		std::size_t made = 0;
+		for (std::size_t i = 0; i < rows; ++i) {
+			auto& field = g_panelRows[i];
+			root->CreateObject(&field, "flash.text.TextField");
+			if (!field.IsObject() && !field.IsDisplayObject())
+				break;
+
+			field.SetMember("selectable", V{ false });
+			field.SetMember("mouseEnabled", V{ false });
+			field.SetMember("multiline", V{ false });
+			field.SetMember("width", V{ width - 16.0 });
+			field.SetMember("height", V{ rowHeight });
+			field.SetMember("x", V{ 10.0 });
+			field.SetMember("y", V{ 6.0 + rowHeight * static_cast<double>(i) });
+			if (haveFormat) {
+				field.SetMember("embedFonts", V{ true });
+				field.SetMember("defaultTextFormat", g_panelFormat);
+			} else {
+				field.SetMember("textColor", V{ static_cast<std::uint32_t>(0xCCE6FF) });
+			}
+
+			RE::Scaleform::GFx::Value added;
+			if (!g_panelClip.Invoke("addChild", &added, &field, 1))
+				break;
+			field.SetMember("visible", V{ false });
+			++made;
+		}
+
+		if (made == 0) {
+			giveUp("could not create a single row TextField");
+			return;
+		}
+		if (made < rows)
+			REX::WARN("[panel] only {} of {} rows could be created", made, rows);
+
+		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
+		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
+		g_panelClip.SetMember("visible", V{ false });
+
+		g_panelRowCount.store(static_cast<std::uint32_t>(made), std::memory_order_release);
+		g_panelReady.store(true, std::memory_order_release);
+		REX::INFO("[panel] ready - {} rows at ({}, {})", made,
+			fPanelOffsetX.GetValue(), fPanelOffsetY.GetValue());
+	}
+
+	// Called from the high-frequency feed, on the UI thread, with distances
+	// already refreshed. Row text is rebuilt at a few hertz rather than every
+	// tick - distances crawl, and ten TextField writes per frame is a cost with
+	// nothing to show for it. The highlight moves immediately, because that is
+	// the part the player is waiting on.
+	void RefreshPanel()
+	{
+		if (!g_panelReady.load(std::memory_order_acquire))
+			return;
+
+		using V = RE::Scaleform::GFx::Value;
+
+		const bool open = g_panelOpen.load(std::memory_order_acquire) &&
+		                  g_inCruise.load(std::memory_order_acquire);
+		g_panelClip.SetMember("visible", V{ open });
+		if (!open)
+			return;
+
+		using clock = std::chrono::steady_clock;
+		static auto s_lastText = clock::time_point{};
+		const auto  now = clock::now();
+		const bool  refreshText = std::chrono::duration<float>(now - s_lastText).count() >= 0.25f;
+		if (refreshText)
+			s_lastText = now;
+
+		const auto    rowCount = static_cast<std::size_t>(g_panelRowCount.load(std::memory_order_acquire));
+		const auto    highlight = g_highlightID.load(std::memory_order_acquire);
+		const auto    locked = g_lockedID.load(std::memory_order_acquire);
+		const double  rowHeight = static_cast<double>(fPanelRowHeight.GetValue());
+		std::size_t   highlightRow = 0;
+		bool          haveHighlightRow = false;
+
+		{
+			std::lock_guard          lock{ g_candidateMutex };
+			std::vector<std::size_t> local;
+			CollectLocalRows(local);
+
+			// Scroll so the highlight stays on screen once the system has more
+			// bodies than the panel has rows.
+			std::size_t first = 0;
+			for (std::size_t n = 0; n < local.size(); ++n) {
+				if (g_candidates[local[n]].id == highlight) {
+					if (n >= rowCount)
+						first = n - rowCount + 1;
+					break;
+				}
+			}
+
+			for (std::size_t r = 0; r < rowCount; ++r) {
+				const std::size_t n = first + r;
+				auto&             field = g_panelRows[r];
+				if (n >= local.size()) {
+					field.SetMember("visible", V{ false });
+					continue;
+				}
+
+				const auto& row = g_candidates[local[n]];
+				if (row.id == highlight) {
+					highlightRow = r;
+					haveHighlightRow = true;
+				}
+
+				if (refreshText) {
+					// The locked body is marked in the list itself, so the
+					// panel says what the HUD is showing without the player
+					// having to close it and look.
+					const char* mark = (locked != 0 && row.id == locked) ? "> " : "  ";
+					const auto  text = row.distance > 0.0 ?
+					                       std::format("{}{}  {:.0f} km", mark, row.name, row.distance / 1000.0) :
+					                       std::format("{}{}", mark, row.name);
+					field.SetMember("text", V{ text.c_str() });
+					// defaultTextFormat only applies to text present when it was
+					// set, so re-apply after every assignment or the new glyphs
+					// fall back to no font.
+					if (g_panelFormat.IsObject())
+						field.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
+				}
+				field.SetMember("visible", V{ true });
+			}
+		}
+
+		if (g_panelHighlight.IsObject() || g_panelHighlight.IsDisplayObject()) {
+			g_panelHighlight.SetMember("visible", V{ haveHighlightRow });
+			if (haveHighlightRow)
+				g_panelHighlight.SetMember("y", V{ 6.0 + rowHeight * static_cast<double>(highlightRow) });
 		}
 	}
 
@@ -1827,42 +2231,13 @@ namespace
 			g_labelField.SetMember("mouseEnabled", V{ false });
 			g_labelField.SetMember("autoSize", V{ "center" });
 
-			// A TextField created at runtime has no font, so every glyph renders
-			// as a placeholder box - which is exactly what the first attempt did.
-			// The HUD's own fields carry fonts embedded at author time and it
-			// never names one in code, so there is no font name to copy: borrow
-			// the whole format off a field the HUD already owns instead. That
-			// inherits a font guaranteed to exist in this movie.
-			const std::string base = std::string{ rootPath ? rootPath : "root" };
-			const char*       donors[]{
-                ".Reticle_mc.ShipReticle_mc.LockOn_mc.LockText_tf",
-                ".Reticle_mc.ShipReticle_mc.Distance_tf",
-                ".DebugText_tf",
-			};
-
-			bool haveFormat = false;
-			for (const auto* suffix : donors) {
-				RE::Scaleform::GFx::Value donor;
-				if (!root->GetVariable(&donor, (base + suffix).c_str()))
-					continue;
-				if (!donor.Invoke("getTextFormat", &g_labelFormat) || !g_labelFormat.IsObject())
-					continue;
-
-				RE::Scaleform::GFx::Value fontName;
-				if (g_labelFormat.GetMember("font", &fontName) && fontName.IsString())
-					REX::INFO("[arrow] borrowed font '{}' from {}", SafeStr(fontName.GetString()), suffix);
-				else
-					REX::INFO("[arrow] borrowed a text format from {}", suffix);
-
+			if (BorrowTextFormat(root, rootPath, g_labelFormat, "[arrow]")) {
 				g_labelFormat.SetMember("size", V{ 22.0 });
 				g_labelFormat.SetMember("bold", V{ true });
 				g_labelFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x66CCFF) });
 				g_labelField.SetMember("embedFonts", V{ true });
 				g_labelField.SetMember("defaultTextFormat", g_labelFormat);
-				haveFormat = true;
-				break;
-			}
-			if (!haveFormat) {
+			} else {
 				g_labelField.SetMember("textColor", V{ static_cast<std::uint32_t>(0x66CCFF) });
 				REX::WARN("[arrow] no donor TextField found - the label will likely render as boxes");
 			}
@@ -1978,18 +2353,18 @@ namespace
 		iniStore->Init("Data/SFSE/Plugins/ShipNavPanel.ini", "Data/SFSE/Plugins/ShipNavPanelCustom.ini");
 		iniStore->Load();
 
-		REX::INFO("config: bInputTap={} bArrow={} bLabel={}", bInputTap.GetValue(), bArrow.GetValue(), bLabel.GetValue());
+		REX::INFO("config: bInputTap={} bArrow={} bLabel={} bPanel={} bWheelFilter={} sConfirmEvent='{}'",
+			bInputTap.GetValue(), bArrow.GetValue(), bLabel.GetValue(), bPanel.GetValue(),
+			bWheelFilter.GetValue(), sConfirmEvent.GetValue());
 		REX::INFO("config: bLogInput={} bLogInputHeldFrames={} bLogInputNonButton={} uMaxInputLines={} "
 				  "bLogMenus={} bLogHeartbeat={} fHeartbeatSeconds={} bVerifyVTableID={} bSuppressThrottleTest={}",
 			bLogInput.GetValue(), bLogInputHeldFrames.GetValue(), bLogInputNonButton.GetValue(),
 			uMaxInputLines.GetValue(), bLogMenus.GetValue(), bLogHeartbeat.GetValue(),
 			fHeartbeatSeconds.GetValue(), bVerifyVTableID.GetValue(), bSuppressThrottleTest.GetValue());
-		REX::INFO("config: bSurveyCruiseKeys={} bWheelFilterTest={}",
-			bSurveyCruiseKeys.GetValue(), bWheelFilterTest.GetValue());
+		REX::INFO("config: bSurveyCruiseKeys={}", bSurveyCruiseKeys.GetValue());
 
-		if (bWheelFilterTest.GetValue())
-			REX::INFO("[wheel] wheel filter test ON - in cruise the scanner key raises the panel state; "
-					  "spin the wheel while it is up and watch whether the point of view changes");
+		if (!bWheelFilter.GetValue())
+			REX::WARN("bWheelFilter is off - scrolling the list will also swing your point of view");
 
 		if (bSurveyCruiseKeys.GetValue())
 			REX::INFO("[survey] cruise key survey ON - enter cruise, then press every key you can spare. "

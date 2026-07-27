@@ -127,12 +127,17 @@ answered this. Everything below is verified in game.
 | Mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight | drives the camera, and the camera can be made not to see it (below) |
 | — | — | confirm | **not needed**: the arrow follows the highlight live, so closing the panel simply keeps the selection |
 
-Spares, if a verb is ever wanted: `Quickkey2` / `Quickkey3` (keys 2 and 3) reach
-the mod undisabled in cruise and do not change weapon groups. Tested with 3.
-**Caveat if these are ever used:** confirm against a ship that actually *has* a
-weapon group of that number, or "nothing happened" proves nothing. `XButton`
-(key R) is a further untested candidate. `RepairShip` sits on key 4 and is not
-free.
+`Quickkey2` / `Quickkey3` (keys 2 and 3) reach the mod undisabled in cruise and
+are free. `XButton` (key R) is a further untested candidate. `RepairShip` sits
+on key 4 and is not free.
+
+> **These are the player's personal hotkeys, not ship weapon groups** — assign a
+> weapon to slot 2, press 2, it equips. Ship weapon groups are not selectable at
+> all: they are fixed assignments (mouse button 1 = group 1) that *fire* the
+> group rather than choose it, so there was never anything for a number key to
+> disturb. Tested in cruise: pressing 3 did not change the equipped weapon.
+> The caveat that does apply is that the test is only conclusive if something is
+> actually assigned to that hotkey slot.
 
 ### Why the wheel works when the throttle did not
 
