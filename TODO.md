@@ -101,8 +101,21 @@ retired; the HUD's Scaleform layer is the API.**
 
 ### What is left
 
+- [ ] **★★ FIRST, zero code: in cruise, manually point the ship at a distant
+      planet that the cycle will not reach, and press the target key.**
+      - **It targets** → the cone is about *aim*, not eligibility. The mod can
+        automate the aiming and never needs the engine's set-target at all.
+      - **It does not** → aim is irrelevant, reticle manipulation cannot help,
+        and the engine route is required. Either answer saves days.
+      Secondary, same session: does free-look move what is hovered, or does
+      hover stay with the ship's nose? Free-look aims without steering, which
+      would matter a great deal.
 - [ ] **★ Set the ship's target from the engine side.** The only remaining
-      unknown. `Reticle_OnCruiseLockCourse` is **not** the answer — it engages
+      unknown. **Try the vtable-observation route before Ghidra**:
+      `RE::VTABLE::Spaceship__TargetingMode` is **mapped** (450764, 450766), so
+      its slots can be hooked and logged while the player targets manually —
+      dynamic analysis with the same technique already used for the input tap,
+      no disassembler and no instance pointer needed. Hours rather than weeks. `Reticle_OnCruiseLockCourse` is **not** the answer — it engages
       the cruise **autopilot** (`bIsCruiseTargetLock` drives a Lock/Clear Course
       toggle), and the panel should select, not fly. There is no by-id "set
       target" event anywhere in the UI layer, and `iInfoTargetIndex` is
