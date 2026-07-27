@@ -10,7 +10,7 @@ set_xmakever("3.0.0")
 
 -- set project constants
 set_project("ShipNavPanel")
-set_version("0.3.8")
+set_version("0.4.0")
 set_license("GPL-3.0-or-later")
 
 set_arch("x64")
@@ -34,6 +34,11 @@ target("ShipNavPanel", function()
 
     -- ship the default config next to the DLL
     add_installfiles("ShipNavPanel.ini", { prefixdir = "SFSE/Plugins" })
+
+    -- the planet/moon table, if it has been generated (see tools/ExportBodies.pas)
+    if os.isfile("ShipNavPanelBodies.txt") then
+        add_installfiles("ShipNavPanelBodies.txt", { prefixdir = "SFSE/Plugins" })
+    end
 
     -- without XSE_SF_GAME_PATH / XSE_SF_MODS_PATH set, deploy into the build tree
     if not os.getenv("XSE_SF_MODS_PATH") and not os.getenv("XSE_SF_GAME_PATH") then

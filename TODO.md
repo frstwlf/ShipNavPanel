@@ -70,12 +70,10 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Confirm the GNAM scan finds the offset (v0.3.7).** Look for
-      `[galaxy] GNAM located at +0x…`, then check Kurtz's parent equals
-      Jemison's planet id and that Kurtz is indented under Jemison. If it gives
-      up, the log says how many bodies and how wide a window it searched —
-      raise `uGalaxyScanBytes`. The scan needs a system with a moon actually in
-      the feed; one without simply teaches it nothing.
+- [ ] **Generate `ShipNavPanelBodies.txt`** with `tools/ExportBodies.pas` in
+      xEdit and drop it in `Data\SFSE\Plugins\`. That is all moon nesting needs
+      now — the log reports how many bodies loaded, and `[galaxy]` shows the
+      hierarchy per system. Ship the generated file with the mod.
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
@@ -129,6 +127,15 @@ Each of these cost real time; the reasoning is in the findings docs.
     id, PARENT planet id, planet id.** Found in xEdit by the tester. Earth =
     (Sol 0, parent 0, planet 3); Luna = (Sol 0, parent 3, planet 11) — a planet
     carries parent 0, a moon carries its planet's id.
+  - **★★ GNAM IS NOT IN THE RUNTIME RECORD — that is why four searches failed.**
+    The v0.3.8 dump settled it: PNDT objects are allocated back to back with a
+    stride of exactly **0x58**, and every word of a record is spoken for —
+    `surfaceTree` 0x38, a float 0x40, `temperatureCelcius` 0x44 (20.0 Jemison,
+    −83.0 Olivas), `density` 0x48, `periAngleInDegrees` 0x4C (186.0),
+    `resourceCreationSpeed` 0x50, **form id 0x54**. Anything past 0x58 is the
+    *next planet's record*, which is why every scan turned up pointers and float
+    bit patterns. **Do not go looking for it in memory again.** The hierarchy now
+    comes from a table generated out of the ESM by `tools/ExportBodies.pas`.
   - **`BGSPlanet::PlanetData`'s member comments are stale AND the struct is
     incomplete.** The comments start at `0x30`, but they were written against a
     `0x30`-byte `TESForm` and `TESForm` is now `0x38` — so the compiler places
