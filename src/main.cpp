@@ -118,6 +118,9 @@ namespace
 	// wrong. Kept wired up because the data exists elsewhere - see the probe.
 	REX::TIniSetting<bool> bNestMoons{ "Panel", "bNestMoons", true };
 
+	// A small drawn glyph per body, showing what kind of world it is.
+	REX::TIniSetting<bool> bPanelIcons{ "Panel", "bPanelIcons", true };
+
 	// List every body in the system, not just the ones the HUD happens to be
 	// offering. Bodies the game is not tracking have no distance and cannot be
 	// pointed at, but they show the system's actual shape.
@@ -287,10 +290,56 @@ namespace
 	// which four builds of memory archaeology argue is worth something.
 	constexpr const char* kBodyTablePath = "Data/SFSE/Plugins/ShipNavPanelBodies.txt";
 
+	// From the record's PlanetType keyword. The full set is exactly these eight -
+	// confirmed by listing every KYWD editor id beginning "PlanetType".
+	enum class PlanetClass : std::uint8_t
+	{
+		kUnknown = 0,
+		kAsteroid,
+		kAsteroidBelt,
+		kBarren,
+		kGasGiant,
+		kHotGasGiant,
+		kIce,
+		kIceGiant,
+		kRock,
+	};
+
+	// Matched on the name rather than the "NN" in the editor id, so a plugin
+	// numbering its own types differently cannot quietly shift everything.
+	PlanetClass ClassFromKeyword(std::string_view a_editorID)
+	{
+		constexpr std::string_view kPrefix = "PlanetType";
+		if (!a_editorID.starts_with(kPrefix))
+			return PlanetClass::kUnknown;
+		a_editorID.remove_prefix(kPrefix.size());
+		while (!a_editorID.empty() && a_editorID.front() >= '0' && a_editorID.front() <= '9')
+			a_editorID.remove_prefix(1);
+
+		if (a_editorID == "AsteroidBelt")
+			return PlanetClass::kAsteroidBelt;
+		if (a_editorID == "Asteroid")
+			return PlanetClass::kAsteroid;
+		if (a_editorID == "Barren")
+			return PlanetClass::kBarren;
+		if (a_editorID == "HotGasGiant")
+			return PlanetClass::kHotGasGiant;
+		if (a_editorID == "GasGiant")
+			return PlanetClass::kGasGiant;
+		if (a_editorID == "IceGiant")
+			return PlanetClass::kIceGiant;
+		if (a_editorID == "Ice")
+			return PlanetClass::kIce;
+		if (a_editorID == "Rock")
+			return PlanetClass::kRock;
+		return PlanetClass::kUnknown;
+	}
+
 	struct BodyEntry
 	{
 		GalaxyData  galaxy;
 		std::string name;
+		PlanetClass planetClass{ PlanetClass::kUnknown };
 		// False for bodies the game generates rather than authors. They are kept
 		// for their place in the hierarchy - a body the HUD offers may be one of
 		// them - but never listed in their own right.
@@ -623,7 +672,7 @@ namespace
 
 	// Walks one record's subrecords looking for GNAM.
 	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out, std::string& a_name,
-		std::uint32_t& a_fullID, bool& a_authored)
+		std::uint32_t& a_fullID, bool& a_authored, std::vector<std::uint32_t>& a_keywords)
 	{
 		std::size_t   offset = 0;
 		std::uint32_t pending = 0;
@@ -663,6 +712,11 @@ namespace
 				// The localised name's id. It sits inside a component block but
 				// reads as an ordinary subrecord, and comes before GNAM.
 				std::memcpy(&a_fullID, a_data + offset, 4);
+			} else if (std::memcmp(sig, "KWDA", 4) == 0 && size >= 4) {
+				// The body's keywords, as form ids. Kept whole and resolved by
+				// the caller, which is the only place that knows the load order.
+				a_keywords.assign(size / 4, 0u);
+				std::memcpy(a_keywords.data(), a_data + offset, a_keywords.size() * 4);
 			} else if (std::memcmp(sig, "GNAM", 4) == 0 && size >= 12) {
 				std::uint32_t values[3];
 				std::memcpy(values, a_data + offset, sizeof(values));
@@ -686,8 +740,99 @@ namespace
 		return (static_cast<std::uint32_t>(owner) << 24) | (a_localID & 0x00FFFFFFu);
 	}
 
+	// Seeks to a top-level group and returns where it ends, or 0. The file is
+	// left positioned at the group's first record.
+	std::uint64_t SeekGroup(std::ifstream& a_file, const char (&a_label)[5])
+	{
+		while (a_file) {
+			const auto   start = static_cast<std::uint64_t>(a_file.tellg());
+			RecordHeader group{};
+			if (!ReadExact(a_file, &group, sizeof(group)) || std::memcmp(group.signature, "GRUP", 4) != 0)
+				return 0;
+			if (std::memcmp(&group.flagsOrLabel, a_label, 4) == 0)
+				return start + group.dataSize;
+			a_file.seekg(static_cast<std::streamoff>(start + group.dataSize), std::ios::beg);
+		}
+		return 0;
+	}
+
+	// The eight PlanetType keywords, by runtime form id. Everything else in the
+	// group is skipped, so this stays tiny however many keywords a game has.
+	void ParsePluginKeywords(const std::string& a_path, const std::vector<std::uint8_t>& a_masterIndices,
+		std::uint8_t a_selfIndex, std::unordered_map<std::uint32_t, PlanetClass>& a_out)
+	{
+		std::ifstream file{ a_path, std::ios::binary };
+		if (!file)
+			return;
+
+		RecordHeader header{};
+		if (!ReadExact(file, &header, sizeof(header)) || std::memcmp(header.signature, "TES4", 4) != 0)
+			return;
+		file.seekg(header.dataSize, std::ios::cur);
+
+		const auto groupEnd = SeekGroup(file, "KYWD");
+		if (groupEnd == 0)
+			return;
+
+		std::vector<std::byte> raw;
+		std::vector<std::byte> inflated;
+
+		while (file && static_cast<std::uint64_t>(file.tellg()) + sizeof(RecordHeader) < groupEnd) {
+			const auto   start = static_cast<std::uint64_t>(file.tellg());
+			RecordHeader record{};
+			if (!ReadExact(file, &record, sizeof(record)))
+				return;
+			if (std::memcmp(record.signature, "GRUP", 4) == 0) {
+				file.seekg(static_cast<std::streamoff>(start + record.dataSize), std::ios::beg);
+				continue;
+			}
+			if (std::memcmp(record.signature, "KYWD", 4) != 0) {
+				file.seekg(record.dataSize, std::ios::cur);
+				continue;
+			}
+
+			raw.resize(record.dataSize);
+			if (record.dataSize != 0 && !ReadExact(file, raw.data(), raw.size()))
+				return;
+
+			const std::byte* body = raw.data();
+			std::size_t      bodySize = raw.size();
+			if ((record.flagsOrLabel & kRecordCompressed) != 0) {
+				if (raw.size() < 5)
+					continue;
+				std::uint32_t inflatedSize = 0;
+				std::memcpy(&inflatedSize, raw.data(), sizeof(inflatedSize));
+				if (inflatedSize == 0 || inflatedSize > 1024u * 1024u)
+					continue;
+				inflated.resize(inflatedSize);
+				uLongf produced = inflatedSize;
+				if (::uncompress(reinterpret_cast<Bytef*>(inflated.data()), &produced,
+						reinterpret_cast<const Bytef*>(raw.data() + 4),
+						static_cast<uLong>(raw.size() - 4)) != Z_OK)
+					continue;
+				body = inflated.data();
+				bodySize = produced;
+			}
+
+			// EDID is the first subrecord on a keyword, so there is no need to
+			// walk the rest.
+			if (bodySize < 7 || std::memcmp(body, "EDID", 4) != 0)
+				continue;
+			std::uint16_t size = 0;
+			std::memcpy(&size, body + 4, 2);
+			if (size <= 1 || 6 + size > bodySize)
+				continue;
+
+			const auto planetClass = ClassFromKeyword(
+				std::string_view{ reinterpret_cast<const char*>(body) + 6, size - 1u });
+			if (planetClass != PlanetClass::kUnknown)
+				a_out.insert_or_assign(ResolveFormID(record.formID, a_masterIndices, a_selfIndex), planetClass);
+		}
+	}
+
 	bool ParsePluginBodies(const std::string& a_path, const std::vector<std::uint8_t>& a_masterIndices,
 		std::uint8_t a_selfIndex, bool a_validate, const std::unordered_map<std::uint32_t, std::string>& a_strings,
+		const std::unordered_map<std::uint32_t, PlanetClass>& a_keywords,
 		std::unordered_map<std::uint32_t, BodyEntry>& a_out,
 		std::vector<std::string>* a_masterNames)
 	{
@@ -789,11 +934,22 @@ namespace
 			}
 
 			GalaxyData data;
-			std::string   name;
-			std::uint32_t fullID = 0;
-			bool          authored = false;
-			if (!FindGnam(body, bodySize, data, name, fullID, authored))
+			std::string                name;
+			std::uint32_t              fullID = 0;
+			bool                       authored = false;
+			std::vector<std::uint32_t> keywords;
+			if (!FindGnam(body, bodySize, data, name, fullID, authored, keywords))
 				continue;
+
+			auto planetClass = PlanetClass::kUnknown;
+			for (const auto keyword : keywords) {
+				const auto found =
+					a_keywords.find(ResolveFormID(keyword, a_masterIndices, a_selfIndex));
+				if (found != a_keywords.end()) {
+					planetClass = found->second;
+					break;
+				}
+			}
 
 			// A real, localised name beats one derived from the editor id - but
 			// having a name says nothing about whether the body belongs in the
@@ -818,7 +974,7 @@ namespace
 
 			// Later plugins override earlier ones, which is what the load order
 			// means.
-			a_out.insert_or_assign(runtimeID, BodyEntry{ data, std::move(name), authored });
+			a_out.insert_or_assign(runtimeID, BodyEntry{ data, std::move(name), planetClass, authored });
 			++records;
 		}
 
@@ -849,6 +1005,10 @@ namespace
 			return a_text;
 		};
 
+		// Shared across the whole order, since a plugin's bodies routinely use
+		// the base game's keywords.
+		std::unordered_map<std::uint32_t, PlanetClass> keywords;
+
 		std::unordered_map<std::string, std::uint8_t> indexByName;
 		for (const auto& plugin : plugins)
 			indexByName.emplace(fold(plugin.name), plugin.index);
@@ -858,7 +1018,7 @@ namespace
 
 			std::vector<std::string>                      masterNames;
 			std::unordered_map<std::uint32_t, std::string> strings;
-			if (!ParsePluginBodies(path, {}, plugin.index, false, strings, a_out, &masterNames)) {
+			if (!ParsePluginBodies(path, {}, plugin.index, false, strings, {}, a_out, &masterNames)) {
 				REX::WARN("[bodies] could not read {}", path);
 				continue;
 			}
@@ -877,7 +1037,10 @@ namespace
 				masterIndices.push_back(found != indexByName.end() ? found->second : std::uint8_t{ 0 });
 			}
 
-			ParsePluginBodies(path, masterIndices, plugin.index, validate, strings, a_out, nullptr);
+			// Keywords first: a body's class is one of them, and they may belong
+			// to any file in the order.
+			ParsePluginKeywords(path, masterIndices, plugin.index, keywords);
+			ParsePluginBodies(path, masterIndices, plugin.index, validate, strings, keywords, a_out, nullptr);
 		}
 
 		REX::INFO("[bodies] read {} bodies from {} plugin(s)", a_out.size(), plugins.size());
@@ -908,14 +1071,17 @@ namespace
 		}
 		file << "# ShipNavPanel body table - generated from the load order\n";
 		file << "# Delete this to have it rebuilt.\n";
-		file << "# formID,systemID,parentPlanetID,planetID,authored,name\n";
+		file << "# formID,systemID,parentPlanetID,planetID,authored,class,name\n";
+		file << "# class: 0 unknown, 1 asteroid, 2 asteroid belt, 3 barren, 4 gas giant,\n";
+		file << "#        5 hot gas giant, 6 ice, 7 ice giant, 8 rock\n";
 		file << "# authored=0 means the game generates that body rather than authoring it - an orbital\n";
 		file << "# marker, a grav-jump arrival point, a station's anchor. Kept for its place in the\n";
 		file << "# hierarchy, since the HUD may offer it, but never listed as a body in its own right.\n";
 		file << "# order " << a_fingerprint << "\n";
 		for (const auto& [formID, entry] : a_table)
-			file << std::format("{:08X},{},{},{},{},{}\n", formID, entry.galaxy.systemID,
-				entry.galaxy.parentPlanetID, entry.galaxy.planetID, entry.authored ? 1 : 0, entry.name);
+			file << std::format("{:08X},{},{},{},{},{},{}\n", formID, entry.galaxy.systemID,
+				entry.galaxy.parentPlanetID, entry.galaxy.planetID, entry.authored ? 1 : 0,
+				std::to_underlying(entry.planetClass), entry.name);
 		REX::INFO("[bodies] cached {} bodies to {}", a_table.size(), kBodyTablePath);
 	}
 
@@ -956,32 +1122,33 @@ namespace
 			// Split on the first four commas only: a real name can contain
 			// spaces ("New Atlantis") and tokenising on whitespace would cut it
 			// in half - which the editor-id names never would have shown.
-			std::string fields[5];
+			std::string fields[6];
 			std::string name;
 			{
 				std::size_t start = 0;
 				std::size_t which = 0;
-				for (; which < 5; ++which) {
+				for (; which < 6; ++which) {
 					const auto comma = text.find(',', start);
 					if (comma == std::string::npos)
 						break;
 					fields[which] = text.substr(start, comma - start);
 					start = comma + 1;
 				}
-				if (which == 5)
+				if (which == 6)
 					name = text.substr(start);
 				while (!name.empty() && (name.back() == '\r' || name.back() == ' '))
 					name.pop_back();
 			}
 
-			std::istringstream parse{ std::format("{} {} {} {}", fields[1], fields[2], fields[3], fields[4]) };
+			std::istringstream parse{ std::format("{} {} {} {} {}", fields[1], fields[2], fields[3], fields[4], fields[5]) };
 
 			const std::string& idText = fields[0];
 			std::uint32_t      system = 0;
 			std::uint32_t      parent = 0;
 			std::uint32_t      planet = 0;
 			int                authored = 1;
-			if (idText.empty() || !(parse >> system >> parent >> planet >> authored)) {
+			int                planetClass = 0;
+			if (idText.empty() || !(parse >> system >> parent >> planet >> authored >> planetClass)) {
 				if (++rejected <= 3)
 					REX::WARN("[bodies] {}:{} could not be read - expected "
 							  "formID,system,parent,planet",
@@ -1001,7 +1168,8 @@ namespace
 				continue;
 
 			a_out.insert_or_assign(formID,
-				BodyEntry{ GalaxyData{ system, parent, planet }, name, authored != 0 });
+				BodyEntry{ GalaxyData{ system, parent, planet }, name,
+					static_cast<PlanetClass>(planetClass), authored != 0 });
 			++loaded;
 		}
 
@@ -1113,6 +1281,11 @@ namespace
 	// right - a single field cannot align part of its text.
 	RE::Scaleform::GFx::Value g_panelRows[kPanelMaxRowsHard];
 	RE::Scaleform::GFx::Value g_panelDists[kPanelMaxRowsHard];
+	// One icon clip per row, redrawn only when that row's body changes -
+	// `graphics.clear()` was verified to work before this was built on.
+	RE::Scaleform::GFx::Value g_panelIcons[kPanelMaxRowsHard];
+	PlanetClass               g_panelIconClass[kPanelMaxRowsHard]{};
+	bool                      g_panelIconDrawn[kPanelMaxRowsHard]{};
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -1898,6 +2071,10 @@ namespace
 			g_panelHintRightFormat = RE::Scaleform::GFx::Value{};
 			for (auto& dist : g_panelDists)
 				dist = RE::Scaleform::GFx::Value{};
+			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
+				g_panelIcons[i] = RE::Scaleform::GFx::Value{};
+				g_panelIconDrawn[i] = false;
+			}
 			for (auto& row : g_panelRows)
 				row = RE::Scaleform::GFx::Value{};
 			g_panelRowCount.store(0, std::memory_order_release);
@@ -3227,6 +3404,89 @@ namespace
 		REX::INFO("[cleartest]   a RED and a BLUE    -> it does not, each class needs its own clip");
 	}
 
+	// Each class as a small drawn glyph. Polygons rather than circles, and drawn
+	// rather than typed, for the reason the wheel symbols are: the borrowed font
+	// carries only the glyphs its author embedded, and `drawCircle` is one more
+	// method than needs proving. Size and colour do most of the work - giants
+	// are large and ringed, rock is a solid diamond, ice is pale, asteroids are
+	// a scatter of small marks.
+	void DrawClassIcon(RE::Scaleform::GFx::Value& a_graphics, PlanetClass a_class)
+	{
+		using V = RE::Scaleform::GFx::Value;
+
+		const auto fill = [&](std::uint32_t a_colour, double a_alpha) {
+			V args[]{ V{ a_colour }, V{ a_alpha } };
+			a_graphics.Invoke("beginFill", nullptr, args, 2);
+		};
+		const auto poly = [&](std::initializer_list<std::pair<double, double>> a_points) {
+			bool first = true;
+			for (const auto& [x, y] : a_points) {
+				V point[]{ V{ x }, V{ y } };
+				a_graphics.Invoke(first ? "moveTo" : "lineTo", nullptr, point, 2);
+				first = false;
+			}
+			const auto& start = *a_points.begin();
+			V           close[]{ V{ start.first }, V{ start.second } };
+			a_graphics.Invoke("lineTo", nullptr, close, 2);
+			a_graphics.Invoke("endFill", nullptr, nullptr, 0);
+		};
+		const auto diamond = [&](double a_r) {
+			poly({ { 0.0, -a_r }, { a_r, 0.0 }, { 0.0, a_r }, { -a_r, 0.0 } });
+		};
+		const auto bar = [&](double a_halfWidth, double a_halfHeight) {
+			poly({ { -a_halfWidth, -a_halfHeight },
+				{ a_halfWidth, -a_halfHeight },
+				{ a_halfWidth, a_halfHeight },
+				{ -a_halfWidth, a_halfHeight } });
+		};
+
+		switch (a_class) {
+		case PlanetClass::kRock:
+			fill(0x9ED6A0, 1.0);
+			diamond(5.5);
+			break;
+		case PlanetClass::kBarren:
+			fill(0xA79B86, 0.95);
+			diamond(4.0);
+			break;
+		case PlanetClass::kIce:
+			fill(0xCFEBFF, 0.95);
+			diamond(4.5);
+			break;
+		case PlanetClass::kIceGiant:
+			fill(0x8FD3F0, 0.95);
+			diamond(6.5);
+			fill(0xCFEBFF, 0.85);
+			bar(9.0, 1.0);
+			break;
+		case PlanetClass::kGasGiant:
+			fill(0xE0B77A, 0.95);
+			diamond(6.5);
+			fill(0xF2DCB4, 0.85);
+			bar(9.0, 1.0);
+			break;
+		case PlanetClass::kHotGasGiant:
+			fill(0xE8895A, 0.95);
+			diamond(6.5);
+			fill(0xF7C39E, 0.85);
+			bar(9.0, 1.0);
+			break;
+		case PlanetClass::kAsteroid:
+			fill(0x9A8F80, 0.95);
+			bar(2.0, 2.0);
+			break;
+		case PlanetClass::kAsteroidBelt:
+			fill(0x9A8F80, 0.95);
+			poly({ { -7.0, -1.5 }, { -4.0, -1.5 }, { -4.0, 1.5 }, { -7.0, 1.5 } });
+			poly({ { -1.5, -2.0 }, { 1.5, -2.0 }, { 1.5, 2.0 }, { -1.5, 2.0 } });
+			poly({ { 4.0, -1.5 }, { 7.0, -1.5 }, { 7.0, 1.5 }, { 4.0, 1.5 } });
+			break;
+		default:
+			// Nothing known about it - draw nothing rather than a wrong guess.
+			break;
+		}
+	}
+
 	void TryCreatePanel()
 	{
 		if (!bPanel.GetValue() || g_panelReady.load(std::memory_order_acquire) ||
@@ -3431,7 +3691,9 @@ namespace
 
 		constexpr double kNamePad = 10.0;
 		constexpr double kDistWidth = 96.0;
-		const double     nameWidth = std::max(40.0, width - kNamePad * 2.0 - kDistWidth - 6.0);
+		const double     iconColumn = bPanelIcons.GetValue() ? 20.0 : 0.0;
+		const double     nameWidth =
+			std::max(40.0, width - kNamePad * 2.0 - kDistWidth - 6.0 - iconColumn);
 
 		std::size_t made = 0;
 		for (std::size_t i = 0; i < rows; ++i) {
@@ -3466,10 +3728,24 @@ namespace
 				return true;
 			};
 
-			if (!makeField(g_panelRows[i], kNamePad, nameWidth, false))
+			if (!makeField(g_panelRows[i], kNamePad + iconColumn, nameWidth, false))
 				break;
 			if (!makeField(g_panelDists[i], width - kNamePad - kDistWidth, kDistWidth, true))
 				break;
+
+			// The icon clip sits in its own column and is drawn into later, when
+			// the row is known. Its origin is the middle of the row so the
+			// glyphs can be written symmetrically about (0, 0).
+			if (iconColumn > 0.0 &&
+				g_panelClip.CreateEmptyMovieClip(&g_panelIcons[i], std::format("Icon{}", i).c_str(),
+					static_cast<std::uint32_t>(100 + i))) {
+				g_panelIcons[i].SetMember("x", V{ kNamePad + iconColumn * 0.5 });
+				g_panelIcons[i].SetMember("y", V{ rowY + rowHeight * 0.5 });
+				g_panelIcons[i].SetMember("visible", V{ false });
+			}
+			g_panelIconClass[i] = PlanetClass::kUnknown;
+			g_panelIconDrawn[i] = false;
+
 			++made;
 		}
 
@@ -3596,9 +3872,14 @@ namespace
 				const std::size_t n = first + r;
 				auto&             nameField = g_panelRows[r];
 				auto&             distField = g_panelDists[r];
+				auto& iconClip = g_panelIcons[r];
+				const bool haveIcon = iconClip.IsObject() || iconClip.IsDisplayObject();
+
 				if (n >= local.size()) {
 					nameField.SetMember("visible", V{ false });
 					distField.SetMember("visible", V{ false });
+					if (haveIcon)
+						iconClip.SetMember("visible", V{ false });
 					continue;
 				}
 
@@ -3613,7 +3894,8 @@ namespace
 					// field rather than padding the string, so it does not
 					// depend on the width of a space in a borrowed font.
 					nameField.SetMember("x",
-						V{ 10.0 + (row.isMoon ? static_cast<double>(fPanelMoonIndent.GetValue()) : 0.0) });
+						V{ 10.0 + (bPanelIcons.GetValue() ? 20.0 : 0.0) +
+							(row.isMoon ? static_cast<double>(fPanelMoonIndent.GetValue()) : 0.0) });
 
 					// The locked body is marked in the list itself, so the panel
 					// says what the HUD is showing without having to be closed.
@@ -3648,6 +3930,28 @@ namespace
 					if (g_panelDistFormat.IsObject())
 						distField.Invoke("setTextFormat", nullptr, &g_panelDistFormat, 1);
 				}
+				// Redrawn only when this row's class actually changes, which is
+				// rare - scrolling a list, not every frame.
+				if (haveIcon) {
+					PlanetClass rowClass = PlanetClass::kUnknown;
+					{
+						std::lock_guard bodies{ g_bodyTableMutex };
+						if (const auto body = g_bodyTable.find(row.id); body != g_bodyTable.end())
+							rowClass = body->second.planetClass;
+					}
+
+					if (!g_panelIconDrawn[r] || g_panelIconClass[r] != rowClass) {
+						RE::Scaleform::GFx::Value gfx;
+						if (iconClip.GetMember("graphics", &gfx)) {
+							gfx.Invoke("clear", nullptr, nullptr, 0);
+							DrawClassIcon(gfx, rowClass);
+							g_panelIconClass[r] = rowClass;
+							g_panelIconDrawn[r] = true;
+						}
+					}
+					iconClip.SetMember("visible", V{ rowClass != PlanetClass::kUnknown });
+				}
+
 				nameField.SetMember("visible", V{ true });
 				distField.SetMember("visible", V{ true });
 			}

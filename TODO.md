@@ -76,7 +76,15 @@ and subscription whenever the movie-created callback fires, and drop stale
       in the system (dash for distance on ones the HUD is not tracking).
 These three come before release.
 
-- [ ] **1. Icons pass — body class is SOLVED, only POI kinds are open.**
+- [ ] **1. Icons — body class DONE in v0.6.0; POI kinds still open.**
+      Class comes from the record's `KWDA` resolved against `KYWD`, and each row
+      has one icon clip redrawn only when its body changes — `graphics.clear()`
+      was tested first and does work, which is what made one-clip-per-row viable
+      instead of one clip per class. Still to do: settlements and stations need
+      `uPoiType`/`uPoiCategory` sampled from known locations (Jemison 83/10, The
+      Eye 43/7). Original notes below.
+
+- [ ] ~~**1. Icons pass — body class is SOLVED, only POI kinds are open.**~~
       The old note said gas giants needed a body-class field "not in the feed"
       and were therefore last. That is no longer true: the class is in the PNDT
       record, in the `KWDA` keyword array the ESM parse already walks past.
