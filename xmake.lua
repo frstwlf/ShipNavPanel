@@ -10,7 +10,7 @@ set_xmakever("3.0.0")
 
 -- set project constants
 set_project("ShipNavPanel")
-set_version("0.1.5")
+set_version("0.2.0")
 set_license("GPL-3.0-or-later")
 
 set_arch("x64")
@@ -26,7 +26,7 @@ target("ShipNavPanel", function()
     add_rules("commonlibsf.plugin", {
         name = "ShipNavPanel",
         author = "frstwlf",
-        description = "Ship targeting nav panel. Phase 0: read-only input/menu recon build."
+        description = "Points a labelled arrow at any planet in the system while cruising."
     })
 
     add_files("src/**.cpp")

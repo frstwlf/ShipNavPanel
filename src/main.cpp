@@ -42,12 +42,15 @@ namespace
 	// vtable entry for the input tap.
 	// ---------------------------------------------------------------------------
 
-	REX::TIniSetting<bool>          bLogInput{ "Recon", "bLogInput", true };
+	// The recon taps default OFF in a shipped build - they were built to answer
+	// questions that are now answered, and left on they write thousands of lines
+	// a session. Testers turn them back on when filing a bug.
+	REX::TIniSetting<bool>          bLogInput{ "Recon", "bLogInput", false };
 	REX::TIniSetting<bool>          bLogInputHeldFrames{ "Recon", "bLogInputHeldFrames", false };
 	REX::TIniSetting<bool>          bLogInputNonButton{ "Recon", "bLogInputNonButton", false };
 	REX::TIniSetting<std::uint32_t> uMaxInputLines{ "Recon", "uMaxInputLines", 20000 };
-	REX::TIniSetting<bool>          bLogMenus{ "Recon", "bLogMenus", true };
-	REX::TIniSetting<bool>          bLogHeartbeat{ "Recon", "bLogHeartbeat", true };
+	REX::TIniSetting<bool>          bLogMenus{ "Recon", "bLogMenus", false };
+	REX::TIniSetting<bool>          bLogHeartbeat{ "Recon", "bLogHeartbeat", false };
 	REX::TIniSetting<float>         fHeartbeatSeconds{ "Recon", "fHeartbeatSeconds", 5.0f };
 	REX::TIniSetting<bool>          bVerifyVTableID{ "Recon", "bVerifyVTableID", false };
 
