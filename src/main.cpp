@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <format>
 #include <mutex>
 #include <string>
@@ -133,6 +134,8 @@ namespace
 	std::atomic<bool>          g_arrowFailed{ false };
 	std::atomic<std::uint32_t> g_subscribeAttempts{ 0 };
 	RE::Scaleform::GFx::Value  g_arrowClip;
+	RE::Scaleform::GFx::Value  g_labelField;
+	std::atomic<bool>          g_labelReady{ false };
 
 	// Cruise state, refreshed from the per-frame task. The scanner key keeps its
 	// vanilla job outside cruise, so the panel must stay out of the way there -
@@ -375,6 +378,8 @@ namespace
 			g_arrowReady.store(false, std::memory_order_release);
 			g_arrowFailed.store(false, std::memory_order_release);
 			g_arrowClip = RE::Scaleform::GFx::Value{};
+			g_labelField = RE::Scaleform::GFx::Value{};
+			g_labelReady.store(false, std::memory_order_release);
 			{
 				std::lock_guard lock{ g_candidateMutex };
 				g_candidates.clear();
@@ -1012,7 +1017,9 @@ namespace
 
 			bool        haveSelected = false;
 			double      selectedAngle = 0.0;
+			double      selectedDistance = 0.0;
 			std::string selectedName;
+			std::string labelText;
 
 			{
 				std::lock_guard lock{ g_candidateMutex };
@@ -1052,6 +1059,8 @@ namespace
 					if (selected != 0 && g_candidates[i].id == selected) {
 						haveSelected = true;
 						selectedAngle = bearings.rows[i].angle;
+						selectedDistance = bearings.rows[i].distance;
+						selectedName = g_candidates[i].name;
 						break;
 					}
 				}
@@ -1070,12 +1079,29 @@ namespace
 					                        static_cast<double>(fArrowAngleOffset.GetValue());
 					g_arrowClip.SetMember("rotation", V{ rotation });
 
+					if (g_labelReady.load(std::memory_order_acquire)) {
+						// Place the label just beyond the arrow tip, on the same
+						// bearing, but never rotate it - rotated text is unreadable.
+						const double radians = rotation * 3.14159265358979323846 / 180.0;
+						const double radius = static_cast<double>(fArrowRadius.GetValue()) + 34.0;
+						const double lightSeconds = selectedDistance / kMetersPerLightSecond;
+						labelText = lightSeconds >= 1.0 ?
+						                std::format("{}  {:.0f} LS", selectedName, lightSeconds) :
+						                std::format("{}  {:.0f} km", selectedName, selectedDistance / 1000.0);
+
+						g_labelField.SetMember("text", V{ labelText.c_str() });
+						g_labelField.SetMember("x", V{ radius * std::sin(radians) });
+						g_labelField.SetMember("y", V{ -radius * std::cos(radians) });
+					}
+
 					// Rate-limited so the bearing can be correlated with what is
 					// actually on screen without flooding the log.
 					static std::atomic<std::uint32_t> s_tick{ 0 };
 					if ((s_tick.fetch_add(1, std::memory_order_relaxed) % 120) == 0)
 						REX::INFO("[arrow] angleToCrosshair={:.1f} -> rotation={:.1f}", selectedAngle, rotation);
 				}
+				if (g_labelReady.load(std::memory_order_acquire))
+					g_labelField.SetMember("visible", V{ haveSelected });
 			}
 
 			if (g_captureHighRequested.exchange(false, std::memory_order_acq_rel)) {
@@ -1360,6 +1386,36 @@ namespace
 		g_arrowClip.SetMember("x", V{ 0.0 });
 		g_arrowClip.SetMember("y", V{ 0.0 });
 		g_arrowClip.SetMember("visible", V{ false });
+
+		// The label rides just outside the arrow tip and is never rotated, so it
+		// stays readable however the ship is oriented. Failure here is
+		// non-fatal: the arrow alone is still useful.
+		root->CreateObject(&g_labelField, "flash.text.TextField");
+		if (g_labelField.IsObject() || g_labelField.IsDisplayObject()) {
+			g_labelField.SetMember("selectable", V{ false });
+			g_labelField.SetMember("mouseEnabled", V{ false });
+			g_labelField.SetMember("autoSize", V{ "center" });
+			g_labelField.SetMember("textColor", V{ static_cast<std::uint32_t>(0x66CCFF) });
+
+			RE::Scaleform::GFx::Value format;
+			root->CreateObject(&format, "flash.text.TextFormat");
+			if (format.IsObject()) {
+				format.SetMember("size", V{ 22.0 });
+				format.SetMember("bold", V{ true });
+				g_labelField.SetMember("defaultTextFormat", format);
+			}
+
+			RE::Scaleform::GFx::Value added;
+			if (reticle.Invoke("addChild", &added, &g_labelField, 1)) {
+				g_labelField.SetMember("visible", V{ false });
+				g_labelReady.store(true, std::memory_order_release);
+				REX::INFO("[arrow] label created");
+			} else {
+				REX::WARN("[arrow] label addChild failed - arrow will run without it");
+			}
+		} else {
+			REX::WARN("[arrow] could not create a TextField - arrow will run without a label");
+		}
 
 		g_arrowReady.store(true, std::memory_order_release);
 		REX::INFO("[arrow] ready (radius {}) - press the scanner key to cycle targets", r);
