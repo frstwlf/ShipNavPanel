@@ -420,18 +420,29 @@ namespace
 	}
 
 	// "BondarPlanetData" -> "Bondar". The record's FULL is a localised string id
-	// rather than text, so the editor id is what there is - and for real bodies
-	// it is simply the name with a suffix. Bodies the game generates rather than
-	// authors are prefixed with an underscore (_TheEyePlanetData,
-	// _JemisonGravJumpArrivalPlanetData); those are left out of the list unless
-	// the HUD itself offers them, where they arrive properly named.
+	// rather than text, so the editor id is all there is - and for an authored
+	// body it is simply the name with a suffix.
+	//
+	// The suffix is REQUIRED, not merely stripped when present. Across
+	// Starfield.esm the split is exact: 1693 records end in "PlanetData", 72
+	// begin with an underscore (the game's own generated markers -
+	// _TheEyePlanetData, _JemisonGravJumpArrivalPlanetData), and none are
+	// neither. So the convention identifies an authored name reliably, and
+	// anything outside it is an internal id that has no business in the panel -
+	// a plugin in the tester's load order offered "scSFTERLC03UnifierOrbital",
+	// which the earlier rule passed through raw and displayed.
+	//
+	// Returning nothing is not the same as discarding the body: it stays in the
+	// table so its place in the hierarchy can still be read. It is only kept out
+	// of the list, and if the HUD offers it, the HUD names it properly.
 	std::string NameFromEditorID(std::string_view a_editorID)
 	{
+		constexpr std::string_view kSuffix = "PlanetData";
 		if (a_editorID.empty() || a_editorID.front() == '_')
 			return {};
-		constexpr std::string_view kSuffix = "PlanetData";
-		if (a_editorID.size() > kSuffix.size() && a_editorID.ends_with(kSuffix))
-			a_editorID.remove_suffix(kSuffix.size());
+		if (a_editorID.size() <= kSuffix.size() || !a_editorID.ends_with(kSuffix))
+			return {};
+		a_editorID.remove_suffix(kSuffix.size());
 		return std::string{ a_editorID };
 	}
 
@@ -700,6 +711,8 @@ namespace
 		}
 		file << "# ShipNavPanel body table - generated from the load order\n";
 		file << "# Delete this to have it rebuilt. formID,systemID,parentPlanetID,planetID,name\n";
+		file << "# A blank name is deliberate: the game generates that body rather than naming it,\n";
+		file << "# so it is kept for its place in the hierarchy but never shown with an invented name.\n";
 		file << "# order " << a_fingerprint << "\n";
 		for (const auto& [formID, entry] : a_table)
 			file << std::format("{:08X},{},{},{},{}\n", formID, entry.galaxy.systemID,

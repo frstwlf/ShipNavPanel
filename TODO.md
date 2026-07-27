@@ -119,6 +119,16 @@ These three come before release.
       `fPanelWidth` / `fPanelRowHeight` / `uPanelMaxRows` cover this without a
       rebuild; find the values in game first, then change the defaults.
 
+- [ ] **Proper names for bodies the HUD is not tracking.** They currently come
+      from the editor id with its `PlanetData` suffix removed, because the
+      record's `FULL` is a localised string id rather than text. That reads fine
+      for Jemison or Kurtz but poorly for Shattered Space's `KavnykI-a`, and it
+      changes to the real name the moment the game starts tracking the body,
+      which is a visible inconsistency. Resolving `FULL` properly means reading
+      `Data\Strings\Starfield_en.STRINGS` (and the DLC's) — a small format:
+      count, offset table, then null-terminated text. Worth doing with the icons
+      pass, since both touch the same parse.
+
 Later, and not blocking release:
 
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
