@@ -1,235 +1,102 @@
-# ShipNavPanel — TODO
+# ShipNavPanel — state and next steps
 
-## Phase 0 — recon (built, awaiting in-game run)
+Rewritten 2026-07-27. The previous version had accreted every superseded plan
+in order, with completed and abandoned items still unticked — misleading to
+anyone picking this up cold. Full narrative lives in
+[PHASE0-FINDINGS.md](PHASE0-FINDINGS.md), [PHASE1-SWF-FINDINGS.md](PHASE1-SWF-FINDINGS.md)
+and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
-- [x] Project scaffolding, INI config, Vortex package
-- [x] Input tap on `UI::PerformInputProcessing`, vtable taken from the live
-      singleton (no Address Library id needed)
-- [x] `MenuOpenCloseEvent` sink + SFSE movie-created callback
-- [x] Context heartbeat (ship state, planet, open menus)
-- [x] **Run the test protocol in README.md and read the log** (2026-07-26)
-- [x] Scanner key = `SHMonocle`, id 84
-- [x] Arrives during cruise, `disabled=false` — best-case outcome
-- [x] Ship HUD = `SpaceshipHudMenu`, movie loads
-- [x] Fold the findings into `..\STARFIELD-NOTES.md`
+## Where it is
 
-Full write-up in [PHASE0-FINDINGS.md](PHASE0-FINDINGS.md). **Phase 0 is
-complete** — the recon build has served its purpose and does not need to ship.
+**v0.2.0 beta — working, packaged, not released.** In cruise, the scanner key
+cycles the system's planets; an arrow points at the selected one with its name
+and distance, updating live as the ship steers. Outside cruise the mod is idle
+and the scanner key keeps its vanilla job.
 
-## Phase 1 — targeting
+Build and deploy: `xmake -y` installs straight into the game
+(`XSE_SF_GAME_PATH` is set at User scope). `xmake package -y` only when handing
+it to someone. Confirm which build actually loaded from the plugin's own version
+line, first line of the log.
 
-- [ ] **Cruise-mode detection, first.** `SHMonocle` is undisabled in normal
-      flight too, so consuming it unconditionally would break the vanilla ship
-      scanner. Cheapest lead: the Papyrus native `Game.IsCruiseModeActive()`
-      (Papyrus natives register by name string, so they are easy to locate).
-      Fallbacks: the `SpaceCruise::*` classes, or the `Reticle_OnCruiseActivate`
-      / `OnCruiseLockCourse` UI events. Note a `Cruise` press is a ~1.5 s
-      **hold** and the state can also end on its own, so watching the key is not
-      a valid proxy for the state.
-- [ ] Act on **press**, and pair press/release by `idCode` — the user-event name
-      is context-resolved and can differ between a key's press and its release
-      (`ExecuteJump` → `R3`, `ExitShip` → `StarbornPower` were both observed).
-- [ ] Reset any held-key state on focus loss: a key held during an alt-tab never
-      reports its release.
+## Quick reference — the mechanism that works
 
-- [ ] **★ Settle the cruise targeting cone first — it decides the whole shape of
-      Phase 1.** In cruise the vanilla cycle only reaches targets near the ship's
-      heading, so building the list by driving the cycle does not work in the one
-      mode the panel is for. Determine whether the cone filters *enumeration* or
-      also *setting* a target: if the latter, the panel needs a bypass, not just
-      a nicer UI.
-      - [x] GMST sweep done 2026-07-26 (`..\tools\Dump-Gmst.ps1`, all 2426 in
-            the load order): **no cruise targeting-cone setting exists.** The
-            cruise update's 26 GMSTs never touch targeting, and the only
-            target-cycle setting in the game is
-            `fShipHudTargetCycleRangeUpperBounds` = 1.5, a range bound.
-      - [x] **Tested 2026-07-26 via console `setgs` — null result.** Neither
-            `fShipHudTargetCycleRangeUpperBounds` nor
-            `fCruiseOutsidePlanetMapMarkerRangeMult` changed cycling at any
-            value. Route 1 (find a tunable) is dead.
-      - [ ] One-minute cleanup: confirm `setgs` reaches GMSTs at all with a
-            canary — `setgs fSpaceshipMaxAngularVelocityScale 10` (default 1.5)
-            makes the ship turn wildly and immediately. If the canary does
-            nothing, the null result above is about `setgs`, not the settings.
-      - [ ] Fallback A: enumerate the system's bodies from **static records**
-            rather than from the targeting system — covers planets and moons,
-            not ships or dynamic POIs.
-      - [ ] Fallback B: reverse `Spaceship::TargetingMode` (live RTTI/vtable
-            ids, no curated API).
-- [x] **Does a target survive entering cruise? YES** (2026-07-26). The cone
-      restricts *acquisition*, not *possession* — the engine will hold a target
-      the cruise cycle could never reach. **The mod is viable**, it is not
-      fighting the engine. See PHASE0-FINDINGS §6d.
-- [x] ~~Try the route subsystem~~ withdrawn — galaxy-map/grav-jump machinery.
+Everything below is verified in game. No Address Library ids, no Ghidra, no SWF
+patching.
 
-### Phase 1, as it now stands
+| what | where |
+|---|---|
+| Ship HUD root path | `root1.Menu_mc` (from `IMenu::GetRootPath()`) |
+| Reticle | `root1.Menu_mc.Reticle_mc` (`ShipReticle_mc` is a *child* of it) |
+| Cruise state | `Reticle_mc.CruiseModeHUDActive` — public getter, true while cruising |
+| Data manager | `Shared.AS3.Data.BSUIDataManager` — **fully-qualified path only**; the bare name resolves to nothing |
+| Subscribe | `manager.Invoke("Subscribe", …, [feedName, nativeFn])` |
+| Feeds used | `TargetLowFrequencyProvider` (name, `uniqueID`, `uTargetType`), `TargetHighFrequencyProvider` (`angleToCrosshair`, `distance`, `screenPositionX/Y`) |
+| Feed payload | callback arg is a `FromClientDataEvent`; entries at `.data.targetArray.dataA[]`, index-aligned across both feeds |
+| `uniqueID` | a **form id** — `TESForm::LookupByID` gives kPNDT (planet), kSTDT (star), kREFR (POI) |
+| `uTargetType` | `TT_STAR`=1, `TT_POI`=4, `TT_SHIP`=5, `TT_PLANET`=7 (full enum in `TargetIconFrameContainer`) |
+| Arrow bearing | `rotation = angleToCrosshair` — a **2D screen bearing**, valid for bodies behind the ship |
+| Arrow clip | `reticle.CreateEmptyMovieClip(...)` + graphics API (`beginFill`/`moveTo`/`lineTo`/`endFill`) |
+| Label font | borrow a whole `TextFormat` via `donor.Invoke("getTextFormat", …)` from `Reticle_mc.ShipReticle_mc.LockOn_mc.LockText_tf` (yields `$MAIN_Font_Bold`); set `embedFonts`, and re-apply `setTextFormat` after every text change |
 
-Three pieces, in dependency order. Piece 2 is the only real unknown.
+**Threading:** all Scaleform work must happen inside the data-feed callbacks
+(the engine's own UI thread) and be gated on `LoadingMenu`/`MainMenu`. Doing it
+from the SFSE per-frame task crashed v0.1.3 inside the AS3 VM. The per-frame
+task only bootstraps the subscription.
 
-**Reshaped 2026-07-26 by the SWF decompile — see
-[PHASE1-SWF-FINDINGS.md](PHASE1-SWF-FINDINGS.md). The id-remapping approach is
-retired; the HUD's Scaleform layer is the API.**
+**Movie rebuilds** happen more often than expected — re-create the arrow, label
+and subscription whenever the movie-created callback fires, and drop stale
+`GFx::Value` handles.
 
-- [x] **Scaleform reader built (v0.0.2).** Scanner key dumps the ship HUD's
-      ActionScript data model to the log. All ids it needs are mapped:
-      `Value::ObjectInterface::*` are live, and `ASMovieRootBase`'s methods are
-      pure virtuals called through the object's own vtable, so they need none.
-      - [x] Reader works; three noise sources fixed (boilerplate, `__anim*`
-            tween data, depth-first traversal). See PHASE1-SWF-FINDINGS §7.
-      - [x] `targetArray` is **not readable** — `LowFreqTargetData` and friends
-            are `private` in `ShipReticle`, and AS3 private members are not
-            enumerable. Do not keep trying to read the model directly.
-      - [x] **Icon census done 2026-07-27 — the cone question is ANSWERED.**
-            Planets persist into cruise at 300–800 LS (Bondar, Gagarin) while
-            nearby ships drop out. The HUD holds distant planets while cruising;
-            the cone only limits what the vanilla *cycle* walks. **A panel can
-            list them.**
-      - [x] `uniqueID` is **not** on the icon clips — it is the key of a private
-            array (`GetClip` does `param1[uniqueID]`). Names and types are
-            readable; the id is not.
-      - [x] ~~Interpose on `UpdateLowFrequencyData`~~ — **impossible**:
-            `ShipReticle` is a sealed AS3 class, so its methods are read-only
-            fixed traits. Tested step by step in game.
-      - [x] **✅ SOLVED — subscribed to the engine's data feed.**
-            `Shared.AS3.Data.BSUIDataManager.Subscribe("TargetLowFrequency\
-            Provider", <native fn>)` delivers the same payload the reticle gets.
-            AS3 class objects resolve only by fully-qualified package path.
-      - [x] **✅ `uniqueID` is a form id.** Every entry resolved via
-            `TESForm::LookupByID`: planets kPNDT, star kSTDT, POIs kREFR
-            (one FF-prefixed). `0x5E30E` = Bondar, confirmed in xEdit. The whole
-            list — names included — resolves in C++.
+## Open work
 
-### Phase 1 data: COMPLETE (2026-07-27)
-
-Names, form ids, types, distances, screen positions and **`angleToCrosshair`**
-all read from the two subscribed feeds. Verified in cruise: five planets, a
-star and four POIs, all named. Nothing further is needed to *know* what to show.
-
-- [ ] **★ Build a POINTER ARROW, live while steering.** `angleToCrosshair` is a
-      2D **screen bearing**, not a cone angle — vanilla's own off-screen blips
-      are driven by `rotation = angleToCrosshair + 180` and nothing else
-      (`OffScreenIcon.SetTargetHighInfo`). So the arrow is that one line,
-      recomputed on each high-frequency update, and it works for targets behind
-      the player where `screenPositionX/Y` is the `-1` sentinel.
-      - [ ] Selection: cycle among `uTargetType` 7 (planet) / 1 (star) entries
-            with the scanner key; name shown in a small label.
-      - [ ] Rendering: `CreateEmptyMovieClip` (live id) + the graphics API to
-            draw a triangle — no font or symbol dependency — parented to the
-            reticle and centred. Counter-rotate any label so it stays upright,
-            as `PoiIcon_mc` does.
-      - [ ] Re-assert on high-frequency updates; the HUD rebuilds constantly.
-      - [ ] Beware: a `TT_STAR` entry may be **out of system** (a quest-marked
-            star showed at 87 ly). Filter by distance or by type+proximity, not
-            type alone.
-
-### Still open (not needed for the list panel)
-
-**How targeting actually picks (2026-07-27, from play):** the target key takes
-whatever is **closest to screen centre**, and that reticle is *fixed*. The mouse
-circle steers the ship and has no bearing on targeting. So the only lever is
-what the camera is pointed at — there is no movable reticle to exploit.
-Two things make this workable rather than hopeless:
-- The engine publishes each target's **`screenPositionX` / `screenPositionY`**
-  (screen percentages) in `TargetHighFrequencyProvider`, so the mod can *measure*
-  which entry the target key would pick, and verify any aiming scheme exactly.
-- **Free-look is a distinct HUD mode** the engine tracks
-  (`ShipInfoUtils.SH_MODE_FREE_LOOK`; the HUD jumps to a "FreeLook" frame). If
-  free-look moves screen centre and targeting follows, the camera can be aimed
-  **without steering the ship** — no course change, no jitter.
-
-- [ ] **★★ FIRST, zero code: in cruise, manually point the ship at a distant
-      planet that the cycle will not reach, and press the target key.**
-      - **It targets** → the cone is about *aim*, not eligibility. The mod can
-        automate the aiming and never needs the engine's set-target at all.
-      - **It does not** → aim is irrelevant, reticle manipulation cannot help,
-        and the engine route is required. Either answer saves days.
-      Secondary, same session: does free-look move what is hovered, or does
-      hover stay with the ship's nose? Free-look aims without steering, which
-      would matter a great deal.
-- [ ] **★ Set the ship's target from the engine side.** The only remaining
-      unknown. **Try the vtable-observation route before Ghidra**:
-      `RE::VTABLE::Spaceship__TargetingMode` is **mapped** (450764, 450766), so
-      its slots can be hooked and logged while the player targets manually —
-      dynamic analysis with the same technique already used for the input tap,
-      no disassembler and no instance pointer needed. Hours rather than weeks. `Reticle_OnCruiseLockCourse` is **not** the answer — it engages
-      the cruise **autopilot** (`bIsCruiseTargetLock` drives a Lock/Clear Course
-      toggle), and the panel should select, not fly. There is no by-id "set
-      target" event anywhere in the UI layer, and `iInfoTargetIndex` is
-      read-only to the SWF, so this has to come from `Spaceship::TargetingMode`.
-      Much more tractable than when first proposed: we know each candidate's
-      **form id**, which is almost certainly the argument such a function takes.
-- [ ] Keep the lock-course dispatch as a **separate, opt-in** panel action —
-      it is fully specified and would be genuinely useful, just never the
-      default confirm. `CustomEvent(type, params)` with `{uBodyID: <uniqueID>}`
-      (payload is the 2nd ctor arg, lands in `params`), dispatched via
+- [ ] **Phase 2 panel** — list, icons, W/S navigation. Specced and graded in
+      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md). Start with the one piece that
+      can fail outright: suppressing throttle input by setting `disabled = true`
+      on `ButtonEvent`s inside the input tap we already own.
+- [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
+      default confirm — it engages the cruise **autopilot**. Build a params
+      object `{uBodyID: <uniqueID>}`, construct `Shared.AS3.Events.CustomEvent`
+      (payload is the **2nd** ctor arg, lands in `params`), dispatch via
       `BSUIDataManager.dispatchEvent`.
-- [ ] Resolve display names from the form ids (kPNDT/kSTDT/kREFR) — beware
-      `GetFormEditorID()` on stubs; prefer the `editorID` member where present.
-- [ ] Then Phase 2: the panel UI itself.
-- [x] **1. Cruise detection — SOLVED 2026-07-27, no Ghidra.** Reads `true` while
-      cruising at `root1.Menu_mc.Reticle_mc.CruiseModeHUDActive` (public getter);
-      `CanActivateCruiseMode` sits beside it.
-- [ ] **2. Set-target — ★ test `uBodyID` first, everything depends on it.**
-      - [x] ~~`ShipHud_Target`~~ **retired**: it is dispatched as a bare
-            `Event` with no payload (`ShipReticle.as:2163`), so it means "target
-            what is hovered" and can never select an arbitrary body. Killed
-            before any Ghidra work — the point of looking at the SWF first.
-      - [x] **`Reticle_OnCruiseLockCourse` carries `{"uBodyID": N}` — PROVEN by
-            vanilla**, no test needed: `FarTravelIconBase.OnLockCourse()` passes
-            `TargetOnlyData.uniqueID`. The id space is `uniqueID`, the same key
-            used for target icon clips and present on `targetArray` entries.
-            **The confirm action is fully specified.**
-      - [x] ~~Patch the SWF to probe `uBodyID`~~ — unnecessary (above), *and*
-            the technique is unsafe: whole-class AS3 replacement silently drops
-            code (see PHASE1-SWF-FINDINGS). If a patch is ever needed, use
-            P-code on a single method body.
-      - [ ] Bind and log the **`LockCourse`** user event — it drives the above
-            and never appeared in the Phase 0 logs.
-      - [ ] Fallback only if `uBodyID` is ignored: `Spaceship::TargetingMode`
-            plus the Ghidra route.
-- [ ] **3. The list — read it, maybe.** The engine already pushes
-      `LowFreqTargetData.targetArray` (+ `iHoverTargetIndex`,
-      `iInfoTargetIndex`, `uTargetType`, `bLandingAllowed`) into the HUD data
-      model. Readable via `asMovieRoot->GetVariable`, no ids.
-      - [ ] **Check in cruise whether it holds the whole system or just the
-            cone.** Decides between "read the data model" and "build from static
-            records".
+- [ ] Gas-giant / settlement icons — needs the `uPoiType`/`uPoiCategory` enums
+      (sample known locations) and a body-class field that is not in the feed.
+- [ ] Cosmetics: arrow size and colour, distance formatting.
 
-Payload note now evidenced, not just suspected: UI→engine events use
-`new CustomEvent(name, {…})`, so they genuinely do carry structured data, and
-CommonLibSF's empty `ShipHud_*` structs would have reproduced the
-SeamlessGravJumps bug exactly.
-- [ ] Map the `ShipHud_*` event ids. All are `{ 0 }` placeholders in
-      CommonLibSF `include/RE/IDs.h`; the old-database ids survive in the
-      comments (137011–137033) as Ghidra anchors. They sit in one tight cluster,
-      so the first one found should locate the rest.
-- [ ] **Verify each event's real payload before publishing one.** CommonLibSF
-      declares the `ShipHud_*` structs as empty. If the engine's payload is not
-      empty, `Notify` with an empty struct is the same layout bug that broke
-      SeamlessGravJumps — silently, in one of its two failure modes.
-- [ ] Sink `TryUpdateShipHudTarget` / `ClearShipHudTarget` to observe target
-      changes
-- [ ] Drive the vanilla cycle by publishing `ShipHud_Target`; build the list by
-      cycling and recording, and match selections by **form id, not list index**
-- [ ] Ship the intermediate mod: scanner key advances the target, name shown in
-      a notification
+## Release checklist
 
-Do **not** build the list by enumerating the space cell.
-`TESObjectCELL::ForEachReference` on cell 0x18343 crashed every single time it
-was tried during the SeamlessGravJumps triage, mid-transition and idle alike.
+- [ ] Flip `frstwlf/ShipNavPanel` public — **GPL obligation** once a DLL is
+      distributed (CommonLibSF is GPL-3.0-or-later).
+- [ ] Scan history first for `C:\Users\<you>\...` paths and log excerpts; deleting
+      a file later does not remove it from history.
+- [ ] Decide on the PDB. It ships now deliberately so tester crash logs come back
+      symbolised; drop it for a stable release.
+- [ ] Mod page should say: cruise-mode only, planets and stars only, and it
+      **points rather than targets** — the game's UI layer has no by-id set
+      target. Mention `fArrowAngleOffset` / `bArrowInvertAngle` as the first
+      thing to try if anyone reports the arrow pointing wrongly.
 
-## Phase 2 — the panel
+## Settled — do not re-derive
 
-- [ ] Extract the ship HUD SWF (BSArch / B.A.E.) and inspect it in JPEXS
-- [ ] Panel: flat rows, a highlight bar, the game's own `fonts_en.swf`
-- [ ] Inject via SFSE's menu interface; bridge selection back to C++
-- [ ] W/S navigation matched on user-event names (`Forward`/`Back`) so ZQSD
-      works without special-casing
-- [ ] Check upstream CommonLibSF for the `IMenu` / `GameMenuBase` ids before
-      considering a registered standalone menu — as of 2026-07-26 they are all
-      `{ 0 }` and upstream has no work in flight on them
+Each of these cost real time; the reasoning is in the findings docs.
 
-## Release
-
-- [ ] Strip the PDB from the public archive
-- [ ] Flip the repo public (GPL obligation once a DLL is distributed)
+- **Targeting a body by id is impossible from the UI layer.** No such event
+  exists; `ShipHud_Target` is parameterless ("target what is hovered") and
+  `iInfoTargetIndex` is read-only to the SWF. Would need
+  `Spaceship::TargetingMode` (vtable **is** mapped: 450764, 450766 — try
+  vtable-observation before Ghidra).
+- **Targeting picks whatever is nearest screen centre**, and that reticle is
+  fixed; the mouse circle steers only. Free-look does **not** allow targeting.
+- **No cruise targeting-cone setting exists** — all 2426 GMSTs swept
+  (`..\tools\Dump-Gmst.ps1`); `setgs` on the candidates changed nothing.
+- **Interposing on `ShipReticle` methods is impossible** — sealed AS3 class,
+  methods are read-only fixed traits. Its data members are `private` and so
+  unreadable from outside.
+- **Whole-class AS3 replacement in JPEXS 10.0.0 silently drops code** — proven by
+  a no-op round trip. Use P-code on a single method body if a patch is ever
+  needed. (Their JPEXS is from 2016; a newer build may behave.)
+- **The star-map route subsystem is galaxy-map/grav-jump machinery**, unrelated
+  to cruise.
+- **A `TT_STAR` entry may be in another system** (one showed at ~87 ly), so
+  filter by type **and** distance.
+- **Do not enumerate the space cell** — `TESObjectCELL::ForEachReference` on
+  cell `0x18343` crashed every attempt during the SeamlessGravJumps triage.
