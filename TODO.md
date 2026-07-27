@@ -70,16 +70,10 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Moon nesting — find a real source for the hierarchy.** The v0.3.3
-      order-based guess was wrong and is gone; the display side (indent) is
-      still wired up and waiting. See the settled note below for what the feed
-      does and does not carry. Next step is the `bProbeStarmapFeed` probe in
-      v0.3.4: if `StarmapSystemBodyInfoProvider` holds bodies while merely
-      flying, `uBodyType` answers it outright. If it is empty with the map
-      closed, the fallbacks are reading the PNDT record's unmapped tail
-      (`PlanetData` is `0x58`, mapped only to `0x4C`) against known ground
-      truth, or checking in xEdit whether PNDT carries a parent field at all —
-      that would at least say whether the data is in the record.
+- [ ] **Confirm the GNAM read in game (v0.3.5).** Nesting now comes from the
+      PNDT record, but the offset and field order are inferred — check the
+      `[galaxy]` block in the log shows Kurtz's parent equal to Jemison's planet
+      id, and that no `look wrong` warning appears. Worth a second system too.
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
@@ -129,13 +123,21 @@ Each of these cost real time; the reasoning is in the findings docs.
     built on that assumption indented everything after Jemison and was removed.
   - **The feed also lists only some moons** — one of eight here — so the panel
     is inherently a partial list of the system.
-  - **Where the data does exist:** `galaxystarmapmenu.swf` has `uBodyType` with
-    `BT_STAR`/`BT_PLANET`/`BT_MOON`/`BT_SATELLITE`/`BT_STATION`/
-    `BT_ASTEROID_BELT`, plus `uBodyID`, `uSystemID`, `EntryHasChildren`,
-    `GetChildrenOfEntry`, `childInfoA`, on provider
-    **`StarmapSystemBodyInfoProvider`** (siblings: `StarmapInspectBodyInfoProvider`,
-    `GalaxyMarkersProvider`, `GalaxyMarkerDefsProvider`). Probe it with
-    `bProbeStarmapFeed`.
+  - **★ The hierarchy is in the PNDT record: GNAM "Galaxy Data" = star system
+    id, PARENT planet id, planet id.** Found in xEdit by the tester. Earth =
+    (Sol 0, parent 0, planet 3); Luna = (Sol 0, parent 3, planet 11) — a planet
+    carries parent 0, a moon carries its planet's id. Read at **+0x4C** on the
+    form: CommonLibSF maps `BGSPlanet::PlanetData` only to 0x4C yet asserts the
+    record is 0x58, and three `uint32`s is exactly the 12 bytes left over. Both
+    the offset and the field order are inferred, so `ReportGalaxyData()`
+    sanity-checks them each system and warns rather than silently mis-nesting.
+  - **The star map providers are a dead end from the ship HUD.**
+    `StarmapSystemBodyInfoProvider` subscribes fine but never fires with the map
+    closed — zero callbacks in a full cruise. Its `uBodyType`
+    (`BT_STAR`/`BT_PLANET`/`BT_MOON`/`BT_SATELLITE`/`BT_STATION`/
+    `BT_ASTEROID_BELT`) would have answered this, but only with the map open.
+    Extracted SWFs live in `M:\Starfield\Extracted\interface\` (CWS = zlib from
+    byte 8; PowerShell `DeflateStream` after skipping the 2-byte zlib header).
 - **A borrowed `TextFormat` carries the DONOR's alignment.** The donor is the
   HUD's centred lock-on caption, so any field using it is centred until `align`
   is set explicitly. Cost one build: the panel shipped with centred names.

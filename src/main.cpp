@@ -186,18 +186,61 @@ namespace
 	// One entry per feed slot, index-aligned with both feeds: the low-frequency
 	// one supplies id/type/name, the high-frequency one distance and angle. That
 	// alignment is how a name gets matched to a bearing.
+	// PNDT's GNAM "Galaxy Data", read straight off the record. Confirmed in
+	// xEdit: Earth = (Sol 0, parent 0, planet 3), Luna = (Sol 0, parent 3,
+	// planet 11). A planet carries parent 0; a moon carries its planet's id.
+	// This is the exact hierarchy the HUD feed never exposes.
+	struct GalaxyData
+	{
+		std::uint32_t systemID{ 0 };
+		std::uint32_t parentPlanetID{ 0 };
+		std::uint32_t planetID{ 0 };
+	};
+
 	struct Candidate
 	{
 		std::uint32_t id{ 0 };
 		std::uint32_t type{ 0 };
 		double        distance{ 0.0 };
 		std::string   name;
-		// `bIsCelestialParentBody` from the feed: true on a planet that has
-		// moons. It does NOT name the children - see NestsUnderPrevious().
+		// From the feed. NOT "has moons" - see the settled list in TODO.md;
+		// kept only because it is cheap and may yet mean something useful.
 		bool isParentBody{ false };
-		// Derived at display time, not from the feed.
+		// From the PNDT record.
+		GalaxyData galaxy;
+		bool       haveGalaxy{ false };
+		// Derived at display time.
 		bool isMoon{ false };
 	};
+
+	// CommonLibSF maps `BGSPlanet::PlanetData` only as far as 0x4C but asserts
+	// the record is 0x58 - and three uint32s is exactly the 12 bytes left over,
+	// which is what GNAM holds. So they are read there. Both the offset and the
+	// order of the three are inferred, so the values are logged once per system
+	// and checked for self-consistency below rather than simply trusted.
+	//
+	// The read stays inside the asserted size of the object, so a wrong guess
+	// yields nonsense, not a fault.
+	constexpr std::size_t kGalaxyDataOffset = 0x4C;
+
+	bool ReadGalaxyData(std::uint32_t a_formID, GalaxyData& a_out)
+	{
+		const auto form = RE::TESForm::LookupByID(a_formID);
+		if (!form || form->GetFormType() != RE::FormType::kPNDT)
+			return false;
+
+		const auto* base = reinterpret_cast<const std::byte*>(form);
+		const auto  at = [&](std::size_t a_offset) {
+            std::uint32_t value{};
+            std::memcpy(&value, base + a_offset, sizeof(value));
+            return value;
+		};
+
+		a_out.systemID = at(kGalaxyDataOffset);
+		a_out.parentPlanetID = at(kGalaxyDataOffset + 4);
+		a_out.planetID = at(kGalaxyDataOffset + 8);
+		return true;
+	}
 
 	std::mutex             g_candidateMutex;
 	std::vector<Candidate> g_candidates;
@@ -482,37 +525,70 @@ namespace
 	// One entry per line the player sees, in display order: bodies first in feed
 	// order, then stations and landing sites. Caller holds g_candidateMutex.
 	//
-	// Moon nesting is NOT derivable from this feed, and v0.3.3 shipped a wrong
-	// guess that this replaces. Ground truth for Alpha Centauri, from the
-	// tester: Jemison (moon Kurtz), Bondar (Grissom, Curbeam), Gagarin (none),
-	// Olivas (Lovell, Chawla, Hawley, Voss, Zamka). Against the capture:
+	// Moons are grouped under their planet from GNAM, not from feed order - the
+	// feed interleaves them (Alpha Centauri came through as Jemison, Bondar,
+	// Gagarin, Kurtz, Olivas, with Kurtz two entries from its own parent), which
+	// is what defeated the v0.3.3 guess. With the real ids there is no guessing:
+	// a body whose parentPlanetID matches another body's planetID is its moon.
 	//
-	//  - `bIsCelestialParentBody` was true ONLY on Jemison, though Bondar and
-	//    Olivas both have moons. So it does not mean "has moons". Kurtz was the
-	//    only moon present in the feed at all, which fits it meaning something
-	//    nearer "is the parent of an entry currently in this list".
-	//  - Feed order was Jemison, Bondar, Gagarin, Kurtz, Olivas - Kurtz sits
-	//    two entries away from its own parent. So order does not group families
-	//    either, and the old rule indented every body after Jemison, which is
-	//    exactly the "everything looked indented" that was reported.
-	//
-	// The indent plumbing below stays, because the star map SWF shows the game
-	// does have this: `uBodyType` with BT_PLANET / BT_MOON / BT_SATELLITE, on
-	// `StarmapSystemBodyInfoProvider`. Until something fills `isMoon` from a
-	// real source, nothing is nested.
+	// A moon whose planet is not in the feed stays at the top level rather than
+	// disappearing - the feed lists only some moons, so this is normal.
 	void CollectLocalRows(std::vector<std::size_t>& a_out)
 	{
 		a_out.clear();
-		for (int pass = 0; pass < 2; ++pass) {
-			const bool wantSecondary = pass == 1;
-			for (std::size_t i = 0; i < g_candidates.size(); ++i) {
-				const auto& row = g_candidates[i];
-				if (!IsLocalBody(row.type, row.distance))
-					continue;
-				if (IsSecondaryRow(row.type) != wantSecondary)
-					continue;
-				a_out.push_back(i);
+
+		const bool nest = bNestMoons.GetValue();
+
+		const auto isChildOf = [&](const Candidate& a_child, const Candidate& a_parent) {
+			return nest && a_child.haveGalaxy && a_parent.haveGalaxy &&
+			       a_child.galaxy.parentPlanetID != 0 &&
+			       a_child.galaxy.systemID == a_parent.galaxy.systemID &&
+			       a_child.galaxy.parentPlanetID == a_parent.galaxy.planetID;
+		};
+
+		const auto wanted = [&](const Candidate& a_row) {
+			return IsLocalBody(a_row.type, a_row.distance);
+		};
+
+		// Pass 1: bodies, each followed by whichever of its moons are present.
+		std::vector<bool> placed(g_candidates.size(), false);
+
+		for (std::size_t i = 0; i < g_candidates.size(); ++i) {
+			auto& row = g_candidates[i];
+			if (!wanted(row) || IsSecondaryRow(row.type) || placed[i])
+				continue;
+
+			// Anything with a parent in this list is emitted by that parent.
+			bool hasParentHere = false;
+			for (std::size_t p = 0; p < g_candidates.size() && !hasParentHere; ++p) {
+				if (p != i && wanted(g_candidates[p]) && isChildOf(row, g_candidates[p]))
+					hasParentHere = true;
 			}
+			if (hasParentHere)
+				continue;
+
+			row.isMoon = false;
+			a_out.push_back(i);
+			placed[i] = true;
+
+			for (std::size_t c = 0; c < g_candidates.size(); ++c) {
+				if (c == i || placed[c] || !wanted(g_candidates[c]) || IsSecondaryRow(g_candidates[c].type))
+					continue;
+				if (!isChildOf(g_candidates[c], row))
+					continue;
+				g_candidates[c].isMoon = true;
+				a_out.push_back(c);
+				placed[c] = true;
+			}
+		}
+
+		// Pass 2: stations and landing sites, below the bodies.
+		for (std::size_t i = 0; i < g_candidates.size(); ++i) {
+			auto& row = g_candidates[i];
+			if (!wanted(row) || !IsSecondaryRow(row.type))
+				continue;
+			row.isMoon = false;
+			a_out.push_back(i);
 		}
 	}
 
@@ -1519,11 +1595,70 @@ namespace
 			}
 			if (entry.GetMember("bIsCelestialParentBody", &member))
 				row.isParentBody = member.IsBoolean() && member.GetBoolean();
+			if (row.id)
+				row.haveGalaxy = ReadGalaxyData(row.id, row.galaxy);
 			if (rows.size() <= a_index)
 				rows.resize(a_index + 1);
 			rows[a_index] = std::move(row);
 		}
 	};
+
+	// The GNAM offset and the order of its three values are both inferred, so
+	// they get checked rather than trusted. Every body in a system must share a
+	// system id, planet ids must be distinct, and at least one body must be a
+	// planet (parent 0). If that does not hold, the fields are not where or what
+	// they are assumed to be, and saying so beats silently mis-nesting the list.
+	//
+	// Logged once per system, on the low-frequency feed, so it costs nothing in
+	// normal play but is there in any bug report.
+	void ReportGalaxyData(const std::vector<Candidate>& a_rows)
+	{
+		static std::atomic<std::uint32_t> s_lastSystem{ 0xFFFFFFFF };
+
+		std::uint32_t system = 0;
+		bool          haveSystem = false;
+		for (const auto& row : a_rows) {
+			if (row.haveGalaxy) {
+				system = row.galaxy.systemID;
+				haveSystem = true;
+				break;
+			}
+		}
+		if (!haveSystem || s_lastSystem.exchange(system, std::memory_order_acq_rel) == system)
+			return;
+
+		bool mixedSystems = false;
+		bool anyPlanet = false;
+		bool duplicateIDs = false;
+		for (std::size_t i = 0; i < a_rows.size(); ++i) {
+			if (!a_rows[i].haveGalaxy)
+				continue;
+			if (a_rows[i].galaxy.systemID != system)
+				mixedSystems = true;
+			if (a_rows[i].galaxy.parentPlanetID == 0)
+				anyPlanet = true;
+			for (std::size_t j = i + 1; j < a_rows.size(); ++j) {
+				if (a_rows[j].haveGalaxy && a_rows[j].galaxy.systemID == a_rows[i].galaxy.systemID &&
+					a_rows[j].galaxy.planetID == a_rows[i].galaxy.planetID)
+					duplicateIDs = true;
+			}
+		}
+
+		REX::INFO("[galaxy] system {} - GNAM read at +0x{:X}", system, kGalaxyDataOffset);
+		for (const auto& row : a_rows) {
+			if (row.haveGalaxy)
+				REX::INFO("[galaxy]   {:<28} system={} parent={} planet={}",
+					row.name, row.galaxy.systemID, row.galaxy.parentPlanetID, row.galaxy.planetID);
+		}
+
+		// `mixedSystems` alone is legitimate - a quest star from elsewhere shows
+		// up in this feed - so it is not on its own a sign of a bad read.
+		if (duplicateIDs || !anyPlanet)
+			REX::WARN("[galaxy] these values look wrong ({}{}) - the GNAM offset or field order is "
+					  "probably not what was assumed, and moon nesting should not be trusted",
+				duplicateIDs ? "duplicate planet ids" : "",
+				!anyPlanet ? (duplicateIDs ? ", no body without a parent" : "no body without a parent") : "");
+	}
 
 	class DataFeedHandler : public RE::Scaleform::GFx::FunctionHandler
 	{
@@ -1556,6 +1691,7 @@ namespace
 			if (GetEntryArray(data, entries)) {
 				CandidateCollector collector;
 				entries.VisitElements(&collector);
+				ReportGalaxyData(collector.rows);
 				std::lock_guard lock{ g_candidateMutex };
 				const auto      previous = std::move(g_candidates);
 				g_candidates = std::move(collector.rows);
