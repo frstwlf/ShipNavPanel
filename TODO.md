@@ -74,20 +74,60 @@ and subscription whenever the movie-created callback fires, and drop stale
       confirmed working. New: the pointer is a diamond moved around the reticle
       circle rather than a rotated arrow, and the list now includes every body
       in the system (dash for distance on ones the HUD is not tracking).
-- [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
-      giants last, since that needs the PNDT layout. See the verdict table in
-      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
-- [ ] **Cosmetics pass on the panel** — position and size were guessed against
-      one resolution. `fPanelOffsetX`/`fPanelOffsetY`/`fPanelWidth` exist for
-      exactly this.
+These three come before release.
+
+- [ ] **1. Icons pass — body class is SOLVED, only POI kinds are open.**
+      The old note said gas giants needed a body-class field "not in the feed"
+      and were therefore last. That is no longer true: the class is in the PNDT
+      record, in the `KWDA` keyword array the ESM parse already walks past.
+      Resolve those ids against the `KYWD` group (5930 records, `EDID` is plain
+      text) and the answer is literally spelled out — Jemison is
+      `PlanetType07Rock`, Kurtz `PlanetType02Barren`. The full enum:
+
+      | keyword | | keyword |
+      |---|---|---|
+      | `PlanetType00Asteroid` | | `PlanetType04HotGasGiant` |
+      | `PlanetType01AsteroidBelt` | | `PlanetType05Ice` |
+      | `PlanetType02Barren` | | `PlanetType06IceGiant` |
+      | `PlanetType03GasGiant` | | `PlanetType07Rock` |
+
+      So: extend the parse to keep the `PlanetTypeNN` keyword per body, cache it
+      in the body table beside the name, and draw per-class glyphs. **Draw them
+      with the graphics API, not as text** — the borrowed font's glyph coverage
+      is unknown, which is exactly why the wheel symbols are drawn.
+      Still genuinely open: POI kinds (settlements, stations) need
+      `uPoiType`/`uPoiCategory` sampled from known locations — Jemison came back
+      83/10, The Eye 43/7.
+
+- [ ] **2. UI pass — match the ship HUD's own blips.** Every colour in the panel
+      is invented (`0x66CCFF` marker, `0x0A1420` background, `0xCCE6FF` rows),
+      picked to look reasonable rather than to match anything. Vanilla's styling
+      is readable in the extracted SWFs at `M:\Starfield\Extracted\interface\` —
+      `shipreticle.swf` and `spaceshiphudmenu.swf` for the reticle and blips,
+      `mapicons.swf` for icon shapes (CWS = zlib from byte 8; decompress with
+      PowerShell `DeflateStream` after skipping the 2-byte zlib header).
+      Worth stealing: the blip colours and their alpha, the target-frame shape
+      from `TargetIconFrameContainer`, and whatever the HUD uses to distinguish
+      a hovered from a locked target. The font is already borrowed rather than
+      guessed, so type should match once the colours do.
+
+- [ ] **3. Reposition the panel to sit with the HUD.** Currently 540 left and
+      160 up from screen centre, guessed against one resolution and never
+      revisited. It hangs off `Reticle_mc`, whose origin is screen centre — a
+      space the pointer proved — so offsets are relative to centre rather than
+      to a stage size the mod never learns. `fPanelOffsetX` / `fPanelOffsetY` /
+      `fPanelWidth` / `fPanelRowHeight` / `uPanelMaxRows` cover this without a
+      rebuild; find the values in game first, then change the defaults.
+
+Later, and not blocking release:
+
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
       default confirm — it engages the cruise **autopilot**. Build a params
       object `{uBodyID: <uniqueID>}`, construct `Shared.AS3.Events.CustomEvent`
       (payload is the **2nd** ctor arg, lands in `params`), dispatch via
       `BSUIDataManager.dispatchEvent`.
-- [ ] Gas-giant / settlement icons — needs the `uPoiType`/`uPoiCategory` enums
-      (sample known locations) and a body-class field that is not in the feed.
-- [ ] Cosmetics: arrow size and colour, distance formatting.
+- [ ] Distance formatting: the LS/km switch is abrupt, and untracked bodies show
+      a dash where a real distance could be computed from orbital data.
 
 ## Release checklist
 

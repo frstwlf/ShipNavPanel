@@ -27,7 +27,7 @@ panel is up, and the scanner or cancel key dismissing it.
 | Target key pins the arrow | **trivial** | state only — keep the selection when the panel closes |
 | Dismiss on scanner / cancel | **feasible** | the input tap already sees both by user-event name |
 | Icons: settlements / POI kinds | **likely** | entries carry `uPoiType`, `uPoiCategory` (43 and 7 for The Eye) — enums unknown, mappable by sampling known locations |
-| Icons: gas giants | **needs research** | body class is not in the feed; the form id reaches a `kPNDT` record, but CommonLibSF's `BGSPlanet::PlanetData` is a stub, so the field must be found |
+| Icons: gas giants | **solved, not yet built** | body class is not in the feed, but it *is* in the PNDT record: the `KWDA` keyword array resolved against `KYWD` gives `PlanetType03GasGiant`, `04HotGasGiant`, `06IceGiant`, `07Rock`, `02Barren`, `05Ice`, `00Asteroid`, `01AsteroidBelt`. Nothing to do with `BGSPlanet::PlanetData`, which is a stub *and* the wrong place — see TODO.md |
 | **W/S navigation with steering suppressed** | **ruled out** — tested and failed, see below | — |
 | **Wheel navigation, camera suppressed** | **proven in game (v0.2.3)** | `PlayerCamera` hook + queue splice, see below |
 | True menu mode (cursor, focus, full capture) | **blocked** | needs `UI::RegisterMenu` with a real `IMenu`; every `IMenu` vfunc id is an unmapped `{ 0 }` placeholder, and upstream has no remapping in flight |
