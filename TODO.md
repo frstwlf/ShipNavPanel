@@ -112,18 +112,33 @@ These three come before release.
                   -> Universe
 
       So a settlement's planet is found by climbing `PNAM`. **No location in the
-      chain carries a `PNDT` reference**, so the last step — planet-level
-      location to planet record — is the only part still open. Two leads:
+      chain carries a `PNDT` reference — but it does not need to.
 
-      1. **`XNAM` and `YNAM`.** Present on the planet- and system-level
-         locations and on *neither* the settlement nor `Universe` — two 4-byte
-         values sitting exactly where a system id and a planet id would be
-         wanted. Check against GNAM: Alpha Centauri is system **71456**, Jemison
-         is planet **3**. A match makes the join direct and name-free. *(The
-         probe for this timed out unfinished; it is a small script away.)*
-      2. **The editor id convention** `S<System>_P<Planet>[_Surface]` encodes the
-         mapping outright. Workable as a fallback, but matching on names is the
-         sort of thing this project has been burned by twice — prefer lead 1.
+      **★★ SOLVED: locations carry `XNAM` = Star ID and `YNAM` = Planet ID.**
+      Confirmed in xEdit, which names those fields exactly that.
+      `SAlphaCentauri_PJemison_Surface` holds **XNAM 71456, YNAM 3** — precisely
+      Jemison's GNAM (system 71456, planet 3). So a location joins to a body by
+      *id*, with no name matching anywhere. The settlement record itself leaves
+      both empty; the values appear once the chain reaches the surface/planet
+      level.
+
+      **The algorithm, ready to build:**
+
+      1. Parse the `LCTN` group per plugin (same walk as `PNDT`/`KYWD`), keeping
+         for each location: its `PNAM` parent, its `XNAM`/`YNAM` if non-zero,
+         and whether `KWDA` contains `LocTypeSettlement` (`00022611`, itself
+         resolved through the load order like any other keyword).
+      2. For each location marked a settlement, climb `PNAM` until one has
+         `XNAM`/`YNAM`. Cap the climb (the chain is 4–5 deep; `Universe` is the
+         root) and guard against cycles.
+      3. That `(XNAM, YNAM)` pair matches `BodyEntry::galaxy`
+         `(systemID, planetID)` directly — set a `hasSettlement` flag on it.
+      4. Cache it as another column, and draw a settlement glyph in the icon
+         column. A body can be both a giant and settled; giants cannot be
+         landed on, so in practice they will not collide, but decide precedence
+         rather than let it fall out of the switch order.
+
+      Remember the keyword-union rule below when reading step 1.
 
       ⚠ **Keywords can be dropped by an overriding master.** The tester sees
       `LocTypeSettlement` on a base record but absent from overrides, which
@@ -298,6 +313,12 @@ Each of these cost real time; the reasoning is in the findings docs.
     Eye as a `kREFR` (`0x28FBA9`); its record is a `kPNDT` (`0x2900AC`). No
     amount of form-id matching will dedupe those, so the panel must avoid
     listing the record rather than hope to catch the collision.
+  - **Locations join to planets by id, not by name.** `LCTN` carries `XNAM`
+    (Star ID) and `YNAM` (Planet ID), which are the same numbers as `PNDT`'s
+    GNAM — `SAlphaCentauri_PJemison_Surface` is XNAM 71456, YNAM 3, and Jemison
+    is system 71456, planet 3. Climb `PNAM` from any location until those are
+    non-zero and you have the body. Neither `PNDT` nor `WRLD` points at a
+    location, so this is the join; do not go looking for a form reference.
   - **A record can carry the SAME subrecord signature twice, meaning different
     things.** A planet has two `GNAM`s — a 4-byte float and the 12-byte galaxy
     data — and two each of `FNAM` and `CNAM`, because signatures are reused
