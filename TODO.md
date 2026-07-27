@@ -90,12 +90,25 @@ These three come before release.
       `CityNeonLocation`, `CityCydoniaLocation`, `StationTheKeyInteriorLocation`,
       `SettleHopeTownLocation` and so on. Each carries **`PNAM`, a form
       reference to its parent location** (New Atlantis → `0001AB2B`), so the
-      hierarchy runs settlement → parent → … upward. What is not yet established
-      is where that chain meets the planet: either an ancestor location is the
-      planet's own, or `PNDT` carries a location reference of its own — the
-      planet subrecord list has not been read since the `XXXX` fix, so it may
-      well be sitting there unnoticed. `Planet.GetLocation()` existing in
-      Papyrus says the link is there to be found.
+      hierarchy runs settlement → parent → … upward.
+
+      **`PNDT` does NOT reference a location — checked and ruled out.** Jemison's
+      43 subrecords were dumped and every 4-byte value cross-referenced against
+      all 6450 `LCTN` and `WRLD` editor ids; none resolved. The only unexplained
+      form reference on a planet is `FNAM = 0005FCD2`, which is neither. So the
+      link runs the other way, from the world down. Next: the tester notes
+      Jemison has a **New Atlantis worldspace holding the location record**, so
+      check whether `WRLD` carries a planet reference and walk
+      settlement → `PNAM` chain → worldspace → planet.
+      `Planet.GetLocation()` existing in Papyrus says the link is there.
+
+      ⚠ **Keywords can be dropped by an overriding master.** The tester sees
+      `LocTypeSettlement` on a base record but absent from overrides, which
+      xEdit flags yellow. An override replaces a record wholesale, so reading
+      only the winning version would lose the marking — settlement detection
+      should take the **union of keywords across every version** of a location,
+      not the winner alone. That is the opposite of the rule the body table
+      uses, and the difference is deliberate.
       Only *major* settlements are wanted, so `LocTypeSettlement` may need
       narrowing — the six above look right, but the keyword's full membership
       has not been counted.
@@ -262,6 +275,13 @@ Each of these cost real time; the reasoning is in the findings docs.
     Eye as a `kREFR` (`0x28FBA9`); its record is a `kPNDT` (`0x2900AC`). No
     amount of form-id matching will dedupe those, so the panel must avoid
     listing the record rather than hope to catch the collision.
+  - **A record can carry the SAME subrecord signature twice, meaning different
+    things.** A planet has two `GNAM`s — a 4-byte float and the 12-byte galaxy
+    data — and two each of `FNAM` and `CNAM`, because signatures are reused
+    freely between component (`BFCB`/`BFCE`) blocks. Matching on signature alone
+    takes the float and reads a hierarchy out of nonsense. The parser's
+    `size >= 12` check is what makes it right, and is load-bearing rather than
+    defensive. `drawCircle`, incidentally, does work.
   - **Parsing the ESM: two things that will bite.** Every PNDT record is
     zlib-compressed (1765 of 1765), the stream starting 4 bytes in, after a
     `uint32` inflated size. And **`XXXX` carries the real 32-bit length of the

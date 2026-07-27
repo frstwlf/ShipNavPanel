@@ -718,6 +718,12 @@ namespace
 				a_keywords.assign(size / 4, 0u);
 				std::memcpy(a_keywords.data(), a_data + offset, a_keywords.size() * 4);
 			} else if (std::memcmp(sig, "GNAM", 4) == 0 && size >= 12) {
+				// The SIZE CHECK IS LOAD-BEARING, not defensive. A planet record
+				// carries TWO subrecords called GNAM - a 4-byte float earlier on
+				// and the 12-byte galaxy data later - and signatures are reused
+				// freely between component blocks (FNAM and CNAM appear twice
+				// each too). Matching on the signature alone would take the
+				// float and read a hierarchy out of nonsense.
 				std::uint32_t values[3];
 				std::memcpy(values, a_data + offset, sizeof(values));
 				a_out = GalaxyData{ values[0], values[1], values[2] };
