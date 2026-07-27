@@ -70,6 +70,18 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
+- [ ] **Moons nested under their planet** (indented, e.g. `- Jemison` /
+      `-- Kurtz`). **Blocked on finding the parent relationship.** It is *not*
+      in `BGSPlanet::PlanetData` — that record is temperature, density, surface
+      tree and orbital angle, with no relational field at all — and moons come
+      through the feed as plain `TT_PLANET` entries indistinguishable from
+      planets. Next step: v0.3.2 widened the capture to dump every entry's full
+      schema (it previously dumped entry 0 only, which happened to be a POI and
+      so could never have shown this). Run one capture in cruise and look for a
+      parent/primary id among the ~15 fields Phase 1 never enumerated. If it is
+      not there, the routes left are `BGSPlanet::Manager` (unmapped past
+      `currentPlanetFormId`) or the unmapped tail of the PNDT record — both
+      real digs.
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).

@@ -94,6 +94,13 @@ namespace
 	REX::TIniSetting<bool>        bPanelHints{ "Panel", "bPanelHints", true };
 	REX::TIniSetting<std::string> sConfirmKeyLabel{ "Panel", "sConfirmKeyLabel", "R" };
 
+	// Stations and landing sites in the list, below the bodies. Ships are off by
+	// default: in traffic that would be a list of everything flying past rather
+	// than of destinations.
+	REX::TIniSetting<bool> bIncludePOI{ "Panel", "bIncludePOI", true };
+	REX::TIniSetting<bool> bIncludeShips{ "Panel", "bIncludeShips", false };
+	REX::TIniSetting<bool> bPanelRowSeparators{ "Panel", "bPanelRowSeparators", true };
+
 	// Hide the mouse wheel from the camera while the panel is open, so scrolling
 	// the list does not swing the point of view. Verified in game (v0.2.3); the
 	// switch remains as an escape hatch, not because it is experimental.
@@ -208,10 +215,16 @@ namespace
 	constexpr std::size_t      kPanelMaxRowsHard = 16;
 	RE::Scaleform::GFx::Value  g_panelClip;
 	RE::Scaleform::GFx::Value  g_panelHighlight;
-	RE::Scaleform::GFx::Value  g_panelRows[kPanelMaxRowsHard];
-	RE::Scaleform::GFx::Value  g_panelFormat;
-	RE::Scaleform::GFx::Value  g_panelHint;
-	RE::Scaleform::GFx::Value  g_panelHintFormat;
+	// Name and distance are separate fields so one can sit left and the other
+	// right - a single field cannot align part of its text.
+	RE::Scaleform::GFx::Value g_panelRows[kPanelMaxRowsHard];
+	RE::Scaleform::GFx::Value g_panelDists[kPanelMaxRowsHard];
+	RE::Scaleform::GFx::Value g_panelFormat;
+	RE::Scaleform::GFx::Value g_panelDistFormat;
+	RE::Scaleform::GFx::Value g_panelHint;
+	RE::Scaleform::GFx::Value g_panelHintRight;
+	RE::Scaleform::GFx::Value g_panelHintFormat;
+	RE::Scaleform::GFx::Value g_panelHintRightFormat;
 	std::atomic<bool>          g_panelReady{ false };
 	std::atomic<bool>          g_panelFailed{ false };
 	std::atomic<std::uint32_t> g_panelRowCount{ 0 };
@@ -227,11 +240,26 @@ namespace
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
 	constexpr double kMetersPerLightSecond = 299792458.0;
 
+	constexpr std::uint32_t kTargetTypeStar = 1;
+	constexpr std::uint32_t kTargetTypePOI = 4;
+	constexpr std::uint32_t kTargetTypeShip = 5;
+	constexpr std::uint32_t kTargetTypePlanet = 7;
+
 	bool IsLocalBody(std::uint32_t a_type, double a_distanceMeters)
 	{
-		if (a_type != 7 /* TT_PLANET */ && a_type != 1 /* TT_STAR */)
+		const bool wanted = a_type == kTargetTypePlanet || a_type == kTargetTypeStar ||
+		                    (a_type == kTargetTypePOI && bIncludePOI.GetValue()) ||
+		                    (a_type == kTargetTypeShip && bIncludeShips.GetValue());
+		if (!wanted)
 			return false;
 		return a_distanceMeters <= static_cast<double>(fMaxTargetLightSeconds.GetValue()) * kMetersPerLightSecond;
+	}
+
+	// Stations, landing sites and the like sort below the bodies, so the planets
+	// stay together at the top where they are the point of the list.
+	bool IsSecondaryRow(std::uint32_t a_type)
+	{
+		return a_type == kTargetTypePOI || a_type == kTargetTypeShip;
 	}
 
 	// The user event that requests a data-model dump: the scanner key, i.e. the
@@ -431,14 +459,21 @@ namespace
 	// feed callbacks rewrite that vector from another thread.
 	// ---------------------------------------------------------------------------
 
-	// Caller holds g_candidateMutex.
+	// One entry per line the player sees, in display order: bodies first in feed
+	// order, then stations and landing sites. Caller holds g_candidateMutex.
 	void CollectLocalRows(std::vector<std::size_t>& a_out)
 	{
 		a_out.clear();
-		for (std::size_t i = 0; i < g_candidates.size(); ++i) {
-			const auto& row = g_candidates[i];
-			if (IsLocalBody(row.type, row.distance))
+		for (int pass = 0; pass < 2; ++pass) {
+			const bool wantSecondary = pass == 1;
+			for (std::size_t i = 0; i < g_candidates.size(); ++i) {
+				const auto& row = g_candidates[i];
+				if (!IsLocalBody(row.type, row.distance))
+					continue;
+				if (IsSecondaryRow(row.type) != wantSecondary)
+					continue;
 				a_out.push_back(i);
+			}
 		}
 	}
 
@@ -906,8 +941,13 @@ namespace
 			g_panelClip = RE::Scaleform::GFx::Value{};
 			g_panelHighlight = RE::Scaleform::GFx::Value{};
 			g_panelFormat = RE::Scaleform::GFx::Value{};
+			g_panelDistFormat = RE::Scaleform::GFx::Value{};
 			g_panelHint = RE::Scaleform::GFx::Value{};
+			g_panelHintRight = RE::Scaleform::GFx::Value{};
 			g_panelHintFormat = RE::Scaleform::GFx::Value{};
+			g_panelHintRightFormat = RE::Scaleform::GFx::Value{};
+			for (auto& dist : g_panelDists)
+				dist = RE::Scaleform::GFx::Value{};
 			for (auto& row : g_panelRows)
 				row = RE::Scaleform::GFx::Value{};
 			g_panelRowCount.store(0, std::memory_order_release);
@@ -1302,14 +1342,17 @@ namespace
 				a_index, field("name"), field("uniqueID"), formInfo, field("uTargetType"),
 				field("bAllowedOnScreen"), field("bAllowedOffScreen"));
 
-			// The entry schema is not documented anywhere, so spell the first
-			// one out in full - that is how the remaining field names are found.
-			if (a_index == 0) {
-				REX::INFO("[nav] --- full schema of entry 0 ---");
-				LevelCollector visitor{ "[nav] entry0", nullptr };
-				entry.VisitMembers(&visitor);
-				REX::INFO("[nav] --- end schema ---");
-			}
+			// The entry schema is not documented anywhere, so spell every entry
+			// out in full. This used to dump entry 0 alone, which was enough to
+			// find the field names but not to answer questions that only some
+			// entries can answer - the open one being whether a moon carries any
+			// reference to the planet it orbits. Entry 0 was a POI, so it could
+			// never have shown that either way. A capture is a one-shot manual
+			// trigger; verbosity is the entire point of it.
+			REX::INFO("[nav] --- full schema of entry {} ---", a_index);
+			LevelCollector visitor{ "[nav] entry", nullptr };
+			entry.VisitMembers(&visitor);
+			REX::INFO("[nav] --- end schema ---");
 		}
 	};
 
@@ -1989,6 +2032,26 @@ namespace
 		gfx.Invoke("lineTo", nullptr, bg0, 2);
 		gfx.Invoke("endFill", nullptr, nullptr, 0);
 
+		// A hairline between rows. Static, because the rows are at fixed
+		// positions - only their contents change.
+		if (bPanelRowSeparators.GetValue() && rows > 1) {
+			V sepFill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 0.10 } };
+			for (std::size_t i = 1; i < rows; ++i) {
+				const double y = 6.0 + rowHeight * static_cast<double>(i);
+				gfx.Invoke("beginFill", nullptr, sepFill, 2);
+				V s0[]{ V{ 12.0 }, V{ y } };
+				gfx.Invoke("moveTo", nullptr, s0, 2);
+				V s1[]{ V{ width - 12.0 }, V{ y } };
+				gfx.Invoke("lineTo", nullptr, s1, 2);
+				V s2[]{ V{ width - 12.0 }, V{ y + 1.0 } };
+				gfx.Invoke("lineTo", nullptr, s2, 2);
+				V s3[]{ V{ 12.0 }, V{ y + 1.0 } };
+				gfx.Invoke("lineTo", nullptr, s3, 2);
+				gfx.Invoke("lineTo", nullptr, s0, 2);
+				gfx.Invoke("endFill", nullptr, nullptr, 0);
+			}
+		}
+
 		// The control hint's symbols are DRAWN, not typed. The font here is
 		// borrowed from the HUD and embedded, which means it carries only the
 		// glyphs its author included - arrows like U+25B2 would very likely come
@@ -2009,25 +2072,49 @@ namespace
 			gfx.Invoke("lineTo", nullptr, r0, 2);
 			gfx.Invoke("endFill", nullptr, nullptr, 0);
 
-			// Two small triangles, up then down: the wheel, both ways.
 			const double midY = hintTop + hintHeight * 0.5;
-			const auto   triangle = [&](double a_cx, bool a_up) {
-                V fill[]{ V{ static_cast<std::uint32_t>(0x99D6FF) }, V{ 0.85 } };
-                gfx.Invoke("beginFill", nullptr, fill, 2);
-                const double tip = a_up ? midY - 4.5 : midY + 4.5;
-                const double base = a_up ? midY + 3.0 : midY - 3.0;
-                V p0[]{ V{ a_cx }, V{ tip } };
-                gfx.Invoke("moveTo", nullptr, p0, 2);
-                V p1[]{ V{ a_cx - 5.0 }, V{ base } };
-                gfx.Invoke("lineTo", nullptr, p1, 2);
-                V p2[]{ V{ a_cx + 5.0 }, V{ base } };
-                gfx.Invoke("lineTo", nullptr, p2, 2);
-                gfx.Invoke("lineTo", nullptr, p0, 2);
-                gfx.Invoke("endFill", nullptr, nullptr, 0);
+
+			const auto rect = [&](double a_x0, double a_y0, double a_x1, double a_y1,
+								   std::uint32_t a_colour, double a_alpha) {
+				V fill[]{ V{ a_colour }, V{ a_alpha } };
+				gfx.Invoke("beginFill", nullptr, fill, 2);
+				V p0[]{ V{ a_x0 }, V{ a_y0 } };
+				gfx.Invoke("moveTo", nullptr, p0, 2);
+				V p1[]{ V{ a_x1 }, V{ a_y0 } };
+				gfx.Invoke("lineTo", nullptr, p1, 2);
+				V p2[]{ V{ a_x1 }, V{ a_y1 } };
+				gfx.Invoke("lineTo", nullptr, p2, 2);
+				V p3[]{ V{ a_x0 }, V{ a_y1 } };
+				gfx.Invoke("lineTo", nullptr, p3, 2);
+				gfx.Invoke("lineTo", nullptr, p0, 2);
+				gfx.Invoke("endFill", nullptr, nullptr, 0);
 			};
-			triangle(17.0, true);
-			triangle(32.0, false);
-			hintTextX = 44.0;
+
+			// A mouse body with a wheel in it. The triangles alone were read as
+			// generic up/down rather than as a wheel, so the glyph now says
+			// which device it means and the triangles say which way it turns.
+			rect(12.0, midY - 8.0, 23.0, midY + 8.0, 0x99D6FF, 0.30);
+			rect(16.5, midY - 5.5, 18.5, midY - 0.5, 0xCCE6FF, 0.95);
+
+			// Stacked beside the mouse, so the pair reads as one symbol.
+			const auto triangle = [&](double a_cx, double a_cy, bool a_up) {
+				V fill[]{ V{ static_cast<std::uint32_t>(0x99D6FF) }, V{ 0.85 } };
+				gfx.Invoke("beginFill", nullptr, fill, 2);
+				const double tip = a_up ? a_cy - 3.5 : a_cy + 3.5;
+				const double base = a_up ? a_cy + 1.5 : a_cy - 1.5;
+				V            p0[]{ V{ a_cx }, V{ tip } };
+				gfx.Invoke("moveTo", nullptr, p0, 2);
+				V p1[]{ V{ a_cx - 4.0 }, V{ base } };
+				gfx.Invoke("lineTo", nullptr, p1, 2);
+				V p2[]{ V{ a_cx + 4.0 }, V{ base } };
+				gfx.Invoke("lineTo", nullptr, p2, 2);
+				gfx.Invoke("lineTo", nullptr, p0, 2);
+				gfx.Invoke("endFill", nullptr, nullptr, 0);
+			};
+			triangle(31.0, midY - 4.0, true);
+			triangle(31.0, midY + 4.0, false);
+
+			hintTextX = 41.0;
 		}
 
 		// The highlight is its own clip so moving it is one property write per
@@ -2062,31 +2149,57 @@ namespace
 			REX::WARN("[panel] no donor TextField found - rows will likely render as boxes");
 		}
 
+		// The distance column is the same borrowed format with align="right", on
+		// its own object so setting that does not right-align the names too.
+		const bool haveDistFormat = BorrowTextFormat(root, rootPath, g_panelDistFormat, "[panel-dist]");
+		if (haveDistFormat) {
+			g_panelDistFormat.SetMember("size", V{ 17.0 });
+			g_panelDistFormat.SetMember("bold", V{ false });
+			g_panelDistFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x8FB8D4) });
+			g_panelDistFormat.SetMember("align", V{ "right" });
+		}
+
+		constexpr double kNamePad = 10.0;
+		constexpr double kDistWidth = 96.0;
+		const double     nameWidth = std::max(40.0, width - kNamePad * 2.0 - kDistWidth - 6.0);
+
 		std::size_t made = 0;
 		for (std::size_t i = 0; i < rows; ++i) {
-			auto& field = g_panelRows[i];
-			root->CreateObject(&field, "flash.text.TextField");
-			if (!field.IsObject() && !field.IsDisplayObject())
-				break;
+			const double rowY = 6.0 + rowHeight * static_cast<double>(i);
 
-			field.SetMember("selectable", V{ false });
-			field.SetMember("mouseEnabled", V{ false });
-			field.SetMember("multiline", V{ false });
-			field.SetMember("width", V{ width - 16.0 });
-			field.SetMember("height", V{ rowHeight });
-			field.SetMember("x", V{ 10.0 });
-			field.SetMember("y", V{ 6.0 + rowHeight * static_cast<double>(i) });
-			if (haveFormat) {
-				field.SetMember("embedFonts", V{ true });
-				field.SetMember("defaultTextFormat", g_panelFormat);
-			} else {
-				field.SetMember("textColor", V{ static_cast<std::uint32_t>(0xCCE6FF) });
-			}
+			const auto makeField = [&](RE::Scaleform::GFx::Value& a_field, double a_x, double a_w,
+									   bool a_useDist) {
+				root->CreateObject(&a_field, "flash.text.TextField");
+				if (!a_field.IsObject() && !a_field.IsDisplayObject())
+					return false;
 
-			RE::Scaleform::GFx::Value added;
-			if (!g_panelClip.Invoke("addChild", &added, &field, 1))
+				a_field.SetMember("selectable", V{ false });
+				a_field.SetMember("mouseEnabled", V{ false });
+				a_field.SetMember("multiline", V{ false });
+				a_field.SetMember("width", V{ a_w });
+				a_field.SetMember("height", V{ rowHeight });
+				a_field.SetMember("x", V{ a_x });
+				a_field.SetMember("y", V{ rowY });
+
+				const bool have = a_useDist ? haveDistFormat : haveFormat;
+				if (have) {
+					a_field.SetMember("embedFonts", V{ true });
+					a_field.SetMember("defaultTextFormat", a_useDist ? g_panelDistFormat : g_panelFormat);
+				} else {
+					a_field.SetMember("textColor", V{ static_cast<std::uint32_t>(0xCCE6FF) });
+				}
+
+				RE::Scaleform::GFx::Value added;
+				if (!g_panelClip.Invoke("addChild", &added, &a_field, 1))
+					return false;
+				a_field.SetMember("visible", V{ false });
+				return true;
+			};
+
+			if (!makeField(g_panelRows[i], kNamePad, nameWidth, false))
 				break;
-			field.SetMember("visible", V{ false });
+			if (!makeField(g_panelDists[i], width - kNamePad - kDistWidth, kDistWidth, true))
+				break;
 			++made;
 		}
 
@@ -2100,37 +2213,51 @@ namespace
 		// The hint is static text, so it is written once here rather than on
 		// every refresh.
 		if (hints) {
-			root->CreateObject(&g_panelHint, "flash.text.TextField");
-			if (g_panelHint.IsObject() || g_panelHint.IsDisplayObject()) {
-				g_panelHint.SetMember("selectable", V{ false });
-				g_panelHint.SetMember("mouseEnabled", V{ false });
-				g_panelHint.SetMember("multiline", V{ false });
-				g_panelHint.SetMember("width", V{ width - hintTextX - 8.0 });
-				g_panelHint.SetMember("height", V{ hintHeight });
-				g_panelHint.SetMember("x", V{ hintTextX });
-				g_panelHint.SetMember("y", V{ hintTop + 2.0 });
-
-				if (BorrowTextFormat(root, rootPath, g_panelHintFormat, "[panel-hint]")) {
-					g_panelHintFormat.SetMember("size", V{ 14.0 });
-					g_panelHintFormat.SetMember("bold", V{ false });
-					g_panelHintFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x7FA8C4) });
-					g_panelHint.SetMember("embedFonts", V{ true });
-					g_panelHint.SetMember("defaultTextFormat", g_panelHintFormat);
-				} else {
-					g_panelHint.SetMember("textColor", V{ static_cast<std::uint32_t>(0x7FA8C4) });
+			// Left hint sits right against the wheel symbol; the confirm hint is
+			// right-aligned to the panel edge, mirroring the name/distance
+			// columns above it.
+			const auto makeHint = [&](RE::Scaleform::GFx::Value& a_field, RE::Scaleform::GFx::Value& a_format,
+									   double a_x, double a_w, const char* a_align, const std::string& a_text,
+									   const char* a_tag) {
+				root->CreateObject(&a_field, "flash.text.TextField");
+				if (!a_field.IsObject() && !a_field.IsDisplayObject()) {
+					REX::WARN("[panel] could not create the {} hint field", a_tag);
+					return;
 				}
 
-				const auto hintText = std::format("browse     {}  lock / clear", sConfirmKeyLabel.GetValue());
-				g_panelHint.SetMember("text", V{ hintText.c_str() });
-				if (g_panelHintFormat.IsObject())
-					g_panelHint.Invoke("setTextFormat", nullptr, &g_panelHintFormat, 1);
+				a_field.SetMember("selectable", V{ false });
+				a_field.SetMember("mouseEnabled", V{ false });
+				a_field.SetMember("multiline", V{ false });
+				a_field.SetMember("width", V{ a_w });
+				a_field.SetMember("height", V{ hintHeight });
+				a_field.SetMember("x", V{ a_x });
+				a_field.SetMember("y", V{ hintTop + 2.0 });
+
+				if (BorrowTextFormat(root, rootPath, a_format, "[panel-hint]")) {
+					a_format.SetMember("size", V{ 14.0 });
+					a_format.SetMember("bold", V{ false });
+					a_format.SetMember("color", V{ static_cast<std::uint32_t>(0x7FA8C4) });
+					a_format.SetMember("align", V{ a_align });
+					a_field.SetMember("embedFonts", V{ true });
+					a_field.SetMember("defaultTextFormat", a_format);
+				} else {
+					a_field.SetMember("textColor", V{ static_cast<std::uint32_t>(0x7FA8C4) });
+				}
+
+				a_field.SetMember("text", V{ a_text.c_str() });
+				if (a_format.IsObject())
+					a_field.Invoke("setTextFormat", nullptr, &a_format, 1);
 
 				RE::Scaleform::GFx::Value added;
-				if (!g_panelClip.Invoke("addChild", &added, &g_panelHint, 1))
-					REX::WARN("[panel] hint addChild failed - the list will run without it");
-			} else {
-				REX::WARN("[panel] could not create the hint TextField - the list will run without it");
-			}
+				if (!g_panelClip.Invoke("addChild", &added, &a_field, 1))
+					REX::WARN("[panel] {} hint addChild failed", a_tag);
+			};
+
+			const double leftWidth = std::max(60.0, width * 0.45 - hintTextX);
+			makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
+				std::string{ "wheel to browse" }, "left");
+			makeHint(g_panelHintRight, g_panelHintRightFormat, width * 0.45, width * 0.55 - 10.0, "right",
+				std::format("{}  lock / clear", sConfirmKeyLabel.GetValue()), "right");
 		}
 
 		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
@@ -2193,9 +2320,11 @@ namespace
 
 			for (std::size_t r = 0; r < rowCount; ++r) {
 				const std::size_t n = first + r;
-				auto&             field = g_panelRows[r];
+				auto&             nameField = g_panelRows[r];
+				auto&             distField = g_panelDists[r];
 				if (n >= local.size()) {
-					field.SetMember("visible", V{ false });
+					nameField.SetMember("visible", V{ false });
+					distField.SetMember("visible", V{ false });
 					continue;
 				}
 
@@ -2206,21 +2335,28 @@ namespace
 				}
 
 				if (refreshText) {
-					// The locked body is marked in the list itself, so the
-					// panel says what the HUD is showing without the player
-					// having to close it and look.
+					// The locked body is marked in the list itself, so the panel
+					// says what the HUD is showing without having to be closed.
 					const char* mark = (locked != 0 && row.id == locked) ? "> " : "  ";
-					const auto  text = row.distance > 0.0 ?
-					                       std::format("{}{}  {:.0f} km", mark, row.name, row.distance / 1000.0) :
-					                       std::format("{}{}", mark, row.name);
-					field.SetMember("text", V{ text.c_str() });
+					const auto  name = std::format("{}{}", mark, row.name);
+					nameField.SetMember("text", V{ name.c_str() });
 					// defaultTextFormat only applies to text present when it was
 					// set, so re-apply after every assignment or the new glyphs
 					// fall back to no font.
 					if (g_panelFormat.IsObject())
-						field.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
+						nameField.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
+
+					// Light-seconds once kilometres stop being readable.
+					const double lightSeconds = row.distance / kMetersPerLightSecond;
+					const auto   dist = row.distance <= 0.0 ? std::string{} :
+					                    lightSeconds >= 1.0 ? std::format("{:.0f} LS", lightSeconds) :
+					                                          std::format("{:.0f} km", row.distance / 1000.0);
+					distField.SetMember("text", V{ dist.c_str() });
+					if (g_panelDistFormat.IsObject())
+						distField.Invoke("setTextFormat", nullptr, &g_panelDistFormat, 1);
 				}
-				field.SetMember("visible", V{ true });
+				nameField.SetMember("visible", V{ true });
+				distField.SetMember("visible", V{ true });
 			}
 		}
 
