@@ -8,7 +8,7 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.3.1 — the Phase 2 panel works in game.** In cruise the scanner key opens a
+**v0.7.0 — the Phase 2 panel works in game.** In cruise the scanner key opens a
 list of the system's bodies; the mouse wheel moves the highlight and the arrow
 previews it; R locks the highlighted body onto the HUD, or clears it if it is
 already locked. Closing without confirming changes nothing. Outside cruise the
@@ -74,23 +74,70 @@ and subscription whenever the movie-created callback fires, and drop stale
       confirmed working. New: the pointer is a diamond moved around the reticle
       circle rather than a rotated arrow, and the list now includes every body
       in the system (dash for distance on ones the HUD is not tracking).
+- [ ] **Confirm the v0.7.0 settlement icons in game.** The join is verified
+      against the file offline (below), but the C++ that reads it has never
+      run. The check is one log line — `[bodies] N locations, 47 settlements
+      (2 reached no body), 17 settled bodies: …` — and the names on it should
+      match the seventeen listed below. Note the cache format changed, so
+      `ShipNavPanelBodies.txt` rebuilds on first launch (a few seconds, on a
+      background thread) rather than being read.
 These three come before release.
 
-- [ ] **1. Icons — body class DONE in v0.6.0; POI kinds still open.**
+- [ ] **1. Icons — body class DONE in v0.6.0, settlements DONE in v0.7.0; POI
+      kinds still open.**
       Class comes from the record's `KWDA` resolved against `KYWD`, and each row
       has one icon clip redrawn only when its body changes — `graphics.clear()`
       was tested first and does work, which is what made one-clip-per-row viable
-      instead of one clip per class. Still to do: settlements and stations need
-      `uPoiType`/`uPoiCategory` sampled from known locations (Jemison 83/10, The
-      Eye 43/7). Original notes below.
+      instead of one clip per class. Still to do: stations and landing sites
+      arriving as POIs need `uPoiType`/`uPoiCategory` sampled from known
+      locations (Jemison 83/10, The Eye 43/7) — that is a *feed* question, and
+      separate from the settled-body marking below, which is now done.
 
-      **Settlement icons — the record trail, as far as it goes.**
-      `LocTypeSettlement` is `00022611`, and it sits on **LCTN** records, not on
-      planet data: `CityNewAtlantisLocation`, `CityAkilaCityLocation`,
-      `CityNeonLocation`, `CityCydoniaLocation`, `StationTheKeyInteriorLocation`,
-      `SettleHopeTownLocation` and so on. Each carries **`PNAM`, a form
-      reference to its parent location** (New Atlantis → `0001AB2B`), so the
-      hierarchy runs settlement → parent → … upward.
+      **Settlements: built and verified offline against `Starfield.esm`.** The
+      plugin parses the `LCTN` group alongside `PNDT`, climbs `PNAM` to the
+      ancestor carrying a planet id, and marks the matching body. Verified with
+      `tools/Check-Settlements.ps1`, which re-implements the join independently
+      and reads the file directly: **47 locations carry `LocTypeSettlement`, 45
+      reach a body, and 17 distinct bodies are marked.** The two that reach
+      nothing are `DebugLocRefTypesLocation` and `SettleECSShipInteriorLocation`
+      — the ECS Constant is a ship, not a place on a planet — and both should
+      resolve to nothing.
+
+      The seventeen: Jemison, Akila, Volii Alpha, Mars, Suvorov, Chthonia,
+      Polvo, Porrima II, Porrima III, Charybdis III, Ixyll II, Titan, Deepala,
+      Gagarin, Montara Luna, Dalvik, Deimos.
+
+      **★ Sol is system 0, so "climb until XNAM and YNAM are non-zero" is
+      WRONG.** This TODO said exactly that and it would have silently dropped
+      Mars (Cydonia), Titan (New Homestead) and Deimos (the staryard) — three of
+      the seventeen — because their locations carry `XNAM 0`. The stop condition
+      is **`YNAM != 0` alone**, with `XNAM` taken as read. Planet ids are
+      1-based, so that also correctly distinguishes a planet-level location from
+      the system-level one above it, which carries `XNAM` with no `YNAM`.
+
+      **The keyword membership is now counted, and needs no narrowing.** 47
+      locations sounds like a lot but collapses to 17 bodies — Neon alone
+      accounts for nine of them (Ryujin Tower, the trade towers, security HQ…).
+      At body granularity the set is exactly the major settlements.
+
+      Still true and still load-bearing:
+
+      ⚠ **Keywords can be dropped by an overriding master.** The tester sees
+      `LocTypeSettlement` on a base record but absent from overrides, which
+      xEdit flags yellow. An override replaces a record wholesale, so reading
+      only the winning version would lose the marking — settlement detection
+      takes the **union of the marking across every version** of a location,
+      not the winner alone. That is the opposite of the rule the body table
+      uses, and the difference is deliberate. The id fields take the last
+      version that states one, since blank there means "not said here" far more
+      often than it means "deliberately none".
+
+      **Precedence is stated, not left to the switch order:** settled beats
+      giant. The two should never meet — a gas giant cannot be landed on — and
+      if a record ever claims both, "there is something here" is worth more to
+      a pilot than "keep out".
+
+      How it was found, kept because each step cost time:
 
       **`PNDT` does NOT reference a location — checked and ruled out.** Jemison's
       43 subrecords were dumped and every 4-byte value cross-referenced against
@@ -111,45 +158,13 @@ These three come before release.
                 -> SAlphaCentauri           <- system-level location
                   -> Universe
 
-      So a settlement's planet is found by climbing `PNAM`. **No location in the
-      chain carries a `PNDT` reference — but it does not need to.
-
-      **★★ SOLVED: locations carry `XNAM` = Star ID and `YNAM` = Planet ID.**
+      **★★ Locations carry `XNAM` = Star ID and `YNAM` = Planet ID.**
       Confirmed in xEdit, which names those fields exactly that.
       `SAlphaCentauri_PJemison_Surface` holds **XNAM 71456, YNAM 3** — precisely
       Jemison's GNAM (system 71456, planet 3). So a location joins to a body by
       *id*, with no name matching anywhere. The settlement record itself leaves
       both empty; the values appear once the chain reaches the surface/planet
       level.
-
-      **The algorithm, ready to build:**
-
-      1. Parse the `LCTN` group per plugin (same walk as `PNDT`/`KYWD`), keeping
-         for each location: its `PNAM` parent, its `XNAM`/`YNAM` if non-zero,
-         and whether `KWDA` contains `LocTypeSettlement` (`00022611`, itself
-         resolved through the load order like any other keyword).
-      2. For each location marked a settlement, climb `PNAM` until one has
-         `XNAM`/`YNAM`. Cap the climb (the chain is 4–5 deep; `Universe` is the
-         root) and guard against cycles.
-      3. That `(XNAM, YNAM)` pair matches `BodyEntry::galaxy`
-         `(systemID, planetID)` directly — set a `hasSettlement` flag on it.
-      4. Cache it as another column, and draw a settlement glyph in the icon
-         column. A body can be both a giant and settled; giants cannot be
-         landed on, so in practice they will not collide, but decide precedence
-         rather than let it fall out of the switch order.
-
-      Remember the keyword-union rule below when reading step 1.
-
-      ⚠ **Keywords can be dropped by an overriding master.** The tester sees
-      `LocTypeSettlement` on a base record but absent from overrides, which
-      xEdit flags yellow. An override replaces a record wholesale, so reading
-      only the winning version would lose the marking — settlement detection
-      should take the **union of keywords across every version** of a location,
-      not the winner alone. That is the opposite of the rule the body table
-      uses, and the difference is deliberate.
-      Only *major* settlements are wanted, so `LocTypeSettlement` may need
-      narrowing — the six above look right, but the keyword's full membership
-      has not been counted.
 
 - [ ] ~~**1. Icons pass — body class is SOLVED, only POI kinds are open.**~~
       The old note said gas giants needed a body-class field "not in the feed"
@@ -316,9 +331,22 @@ Each of these cost real time; the reasoning is in the findings docs.
   - **Locations join to planets by id, not by name.** `LCTN` carries `XNAM`
     (Star ID) and `YNAM` (Planet ID), which are the same numbers as `PNDT`'s
     GNAM — `SAlphaCentauri_PJemison_Surface` is XNAM 71456, YNAM 3, and Jemison
-    is system 71456, planet 3. Climb `PNAM` from any location until those are
-    non-zero and you have the body. Neither `PNDT` nor `WRLD` points at a
+    is system 71456, planet 3. Climb `PNAM` from any location until **`YNAM` is
+    non-zero** and you have the body. Neither `PNDT` nor `WRLD` points at a
     location, so this is the join; do not go looking for a form reference.
+  - **Sol is star system 0, so a zero star id is DATA, not "absent".** Any test
+    of the form "both ids non-zero" quietly loses the whole home system —
+    Cydonia on Mars, New Homestead on Titan, the Deimos staryard. Planet ids
+    are 1-based, so `YNAM` alone is the presence test, and `XNAM` is read
+    alongside it rather than validated. This was written into the settlement
+    recipe as "climb until XNAM/YNAM are non-zero" and caught only because the
+    offline check listed the bodies it matched instead of counting them.
+  - **A count is not a verification; print the names.** Every parse in this
+    project that went wrong went wrong *plausibly* — 631 of 1765 records looked
+    like a working parse, and "45 settlements resolved" would look equally fine
+    with Sol missing. `tools/Check-Settlements.ps1` re-implements the join
+    against the file directly and lists what it matched, which is the only
+    reason the Sol case surfaced before an in-game test.
   - **A record can carry the SAME subrecord signature twice, meaning different
     things.** A planet has two `GNAM`s — a 4-byte float and the 12-byte galaxy
     data — and two each of `FNAM` and `CNAM`, because signatures are reused

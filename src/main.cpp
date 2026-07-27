@@ -25,8 +25,10 @@
 #include <thread>
 
 #include <zlib.h>
+#include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -344,6 +346,10 @@ namespace
 		// for their place in the hierarchy - a body the HUD offers may be one of
 		// them - but never listed in their own right.
 		bool authored{ true };
+		// Somewhere on this body is a major settlement. Comes from the LCTN
+		// group rather than from the planet record, which names no location -
+		// see MarkSettlements.
+		bool settled{ false };
 	};
 
 	std::mutex                                   g_bodyTableMutex;
@@ -670,9 +676,15 @@ namespace
 		}
 	}
 
-	// Walks one record's subrecords looking for GNAM.
-	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out, std::string& a_name,
-		std::uint32_t& a_fullID, bool& a_authored, std::vector<std::uint32_t>& a_keywords)
+	// Walks a record's subrecords, handing each signature and payload to the
+	// callback; returning false from it stops the walk.
+	//
+	// One copy of this rather than one per record type, because of the XXXX rule
+	// below: it is invisible when missed - the walk desyncs into the middle of a
+	// payload and simply finds fewer records - and it cost 1134 of 1765 records
+	// the one time it was.
+	template <class F>
+	void ForEachSubrecord(const std::byte* a_data, std::size_t a_size, F&& a_fn)
 	{
 		std::size_t   offset = 0;
 		std::uint32_t pending = 0;
@@ -687,12 +699,10 @@ namespace
 			std::uint32_t size = size16;
 
 			// XXXX carries the real 32-bit length of the NEXT subrecord, whose
-			// own size field then reads zero. Skipping that rule desyncs the
-			// walk into the middle of a large payload - in the prototype it
-			// silently lost 1134 of 1765 records, Kurtz among them.
+			// own size field then reads zero.
 			if (std::memcmp(sig, "XXXX", 4) == 0 && size == 4) {
 				if (offset + 4 > a_size)
-					return false;
+					return;
 				std::memcpy(&pending, a_data + offset, 4);
 				offset += 4;
 				continue;
@@ -702,36 +712,79 @@ namespace
 				pending = 0;
 			}
 			if (offset + size > a_size)
-				return false;
+				return;
 
-			if (std::memcmp(sig, "EDID", 4) == 0 && size > 1) {
-				const std::string_view editorID{ reinterpret_cast<const char*>(a_data + offset), size - 1 };
-				a_authored = IsAuthoredBody(editorID);
-				a_name = NameFromEditorID(editorID);
-			} else if (std::memcmp(sig, "FULL", 4) == 0 && size == 4 && a_fullID == 0) {
-				// The localised name's id. It sits inside a component block but
-				// reads as an ordinary subrecord, and comes before GNAM.
-				std::memcpy(&a_fullID, a_data + offset, 4);
-			} else if (std::memcmp(sig, "KWDA", 4) == 0 && size >= 4) {
-				// The body's keywords, as form ids. Kept whole and resolved by
-				// the caller, which is the only place that knows the load order.
-				a_keywords.assign(size / 4, 0u);
-				std::memcpy(a_keywords.data(), a_data + offset, a_keywords.size() * 4);
-			} else if (std::memcmp(sig, "GNAM", 4) == 0 && size >= 12) {
-				// The SIZE CHECK IS LOAD-BEARING, not defensive. A planet record
-				// carries TWO subrecords called GNAM - a 4-byte float earlier on
-				// and the 12-byte galaxy data later - and signatures are reused
-				// freely between component blocks (FNAM and CNAM appear twice
-				// each too). Matching on the signature alone would take the
-				// float and read a hierarchy out of nonsense.
-				std::uint32_t values[3];
-				std::memcpy(values, a_data + offset, sizeof(values));
-				a_out = GalaxyData{ values[0], values[1], values[2] };
-				return true;  // EDID precedes GNAM, so the name is already in hand
-			}
+			if (!a_fn(std::string_view{ sig, 4 }, a_data + offset, static_cast<std::size_t>(size)))
+				return;
 			offset += size;
 		}
-		return false;
+	}
+
+	// Records are routinely zlib-compressed - every PNDT in Starfield.esm is -
+	// with the stream starting four bytes in, after a uint32 inflated size.
+	// Returns the body to read, which is the raw bytes themselves when the
+	// record was never compressed, or nothing if it cannot be inflated.
+	std::span<const std::byte> RecordBody(std::uint32_t a_flags, const std::vector<std::byte>& a_raw,
+		std::vector<std::byte>& a_scratch, std::size_t a_maxInflated)
+	{
+		if ((a_flags & kRecordCompressed) == 0)
+			return { a_raw.data(), a_raw.size() };
+		if (a_raw.size() < 5)
+			return {};
+
+		std::uint32_t inflatedSize = 0;
+		std::memcpy(&inflatedSize, a_raw.data(), sizeof(inflatedSize));
+		if (inflatedSize == 0 || inflatedSize > a_maxInflated)
+			return {};
+
+		a_scratch.resize(inflatedSize);
+		uLongf produced = inflatedSize;
+		if (::uncompress(reinterpret_cast<Bytef*>(a_scratch.data()), &produced,
+				reinterpret_cast<const Bytef*>(a_raw.data() + 4),
+				static_cast<uLong>(a_raw.size() - 4)) != Z_OK)
+			return {};
+		return { a_scratch.data(), produced };
+	}
+
+	// Walks one record's subrecords looking for GNAM.
+	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out, std::string& a_name,
+		std::uint32_t& a_fullID, bool& a_authored, std::vector<std::uint32_t>& a_keywords)
+	{
+		bool found = false;
+
+		ForEachSubrecord(a_data, a_size,
+			[&](std::string_view a_sig, const std::byte* a_payload, std::size_t a_length) {
+				if (a_sig == "EDID" && a_length > 1) {
+					const std::string_view editorID{ reinterpret_cast<const char*>(a_payload), a_length - 1 };
+					a_authored = IsAuthoredBody(editorID);
+					a_name = NameFromEditorID(editorID);
+				} else if (a_sig == "FULL" && a_length == 4 && a_fullID == 0) {
+					// The localised name's id. It sits inside a component block
+					// but reads as an ordinary subrecord, and comes before GNAM.
+					std::memcpy(&a_fullID, a_payload, 4);
+				} else if (a_sig == "KWDA" && a_length >= 4) {
+					// The body's keywords, as form ids. Kept whole and resolved
+					// by the caller, the only place that knows the load order.
+					a_keywords.assign(a_length / 4, 0u);
+					std::memcpy(a_keywords.data(), a_payload, a_keywords.size() * 4);
+				} else if (a_sig == "GNAM" && a_length >= 12) {
+					// The SIZE CHECK IS LOAD-BEARING, not defensive. A planet
+					// record carries TWO subrecords called GNAM - a 4-byte float
+					// earlier on and the 12-byte galaxy data later - and
+					// signatures are reused freely between component blocks
+					// (FNAM and CNAM appear twice each too). Matching on the
+					// signature alone would take the float and read a hierarchy
+					// out of nonsense.
+					std::uint32_t values[3];
+					std::memcpy(values, a_payload, sizeof(values));
+					a_out = GalaxyData{ values[0], values[1], values[2] };
+					found = true;
+					return false;  // EDID precedes GNAM, so the name is in hand
+				}
+				return true;
+			});
+
+		return found;
 	}
 
 	// A record's file-local form id keeps its owner in the top byte: an index
@@ -762,10 +815,19 @@ namespace
 		return 0;
 	}
 
-	// The eight PlanetType keywords, by runtime form id. Everything else in the
-	// group is skipped, so this stays tiny however many keywords a game has.
+	// The keyword that marks a location as a major settlement. Resolved by
+	// editor id rather than hardcoded, for the same reason the PlanetType
+	// keywords are: a form id is a fact about one load order, a name is a fact
+	// about the game. In the base game it comes out as 0x00022611, which the
+	// log prints so a change is visible rather than silent.
+	constexpr std::string_view kSettlementKeyword = "LocTypeSettlement";
+
+	// The eight PlanetType keywords, by runtime form id, plus the settlement
+	// keyword's id. Everything else in the group is skipped, so this stays tiny
+	// however many keywords a game has.
 	void ParsePluginKeywords(const std::string& a_path, const std::vector<std::uint8_t>& a_masterIndices,
-		std::uint8_t a_selfIndex, std::unordered_map<std::uint32_t, PlanetClass>& a_out)
+		std::uint8_t a_selfIndex, std::unordered_map<std::uint32_t, PlanetClass>& a_out,
+		std::uint32_t& a_settlementKeyword)
 	{
 		std::ifstream file{ a_path, std::ios::binary };
 		if (!file)
@@ -801,38 +863,25 @@ namespace
 			if (record.dataSize != 0 && !ReadExact(file, raw.data(), raw.size()))
 				return;
 
-			const std::byte* body = raw.data();
-			std::size_t      bodySize = raw.size();
-			if ((record.flagsOrLabel & kRecordCompressed) != 0) {
-				if (raw.size() < 5)
-					continue;
-				std::uint32_t inflatedSize = 0;
-				std::memcpy(&inflatedSize, raw.data(), sizeof(inflatedSize));
-				if (inflatedSize == 0 || inflatedSize > 1024u * 1024u)
-					continue;
-				inflated.resize(inflatedSize);
-				uLongf produced = inflatedSize;
-				if (::uncompress(reinterpret_cast<Bytef*>(inflated.data()), &produced,
-						reinterpret_cast<const Bytef*>(raw.data() + 4),
-						static_cast<uLong>(raw.size() - 4)) != Z_OK)
-					continue;
-				body = inflated.data();
-				bodySize = produced;
-			}
+			const auto body = RecordBody(record.flagsOrLabel, raw, inflated, 1024u * 1024u);
 
 			// EDID is the first subrecord on a keyword, so there is no need to
 			// walk the rest.
-			if (bodySize < 7 || std::memcmp(body, "EDID", 4) != 0)
+			if (body.size() < 7 || std::memcmp(body.data(), "EDID", 4) != 0)
 				continue;
 			std::uint16_t size = 0;
-			std::memcpy(&size, body + 4, 2);
-			if (size <= 1 || 6 + size > bodySize)
+			std::memcpy(&size, body.data() + 4, 2);
+			if (size <= 1 || 6u + size > body.size())
 				continue;
 
-			const auto planetClass = ClassFromKeyword(
-				std::string_view{ reinterpret_cast<const char*>(body) + 6, size - 1u });
-			if (planetClass != PlanetClass::kUnknown)
+			const std::string_view editorID{ reinterpret_cast<const char*>(body.data()) + 6, size - 1u };
+
+			if (const auto planetClass = ClassFromKeyword(editorID); planetClass != PlanetClass::kUnknown) {
 				a_out.insert_or_assign(ResolveFormID(record.formID, a_masterIndices, a_selfIndex), planetClass);
+			} else if (editorID == kSettlementKeyword) {
+				a_settlementKeyword = ResolveFormID(record.formID, a_masterIndices, a_selfIndex);
+				REX::INFO("[bodies] {} is {:08X}", kSettlementKeyword, a_settlementKeyword);
+			}
 		}
 	}
 
@@ -918,33 +967,14 @@ namespace
 			if (record.dataSize != 0 && !ReadExact(file, raw.data(), raw.size()))
 				break;
 
-			const std::byte* body = raw.data();
-			std::size_t      bodySize = raw.size();
-
-			if ((record.flagsOrLabel & kRecordCompressed) != 0) {
-				if (raw.size() < 5)
-					continue;
-				std::uint32_t inflatedSize = 0;
-				std::memcpy(&inflatedSize, raw.data(), sizeof(inflatedSize));
-				if (inflatedSize == 0 || inflatedSize > 64u * 1024u * 1024u)
-					continue;
-
-				inflated.resize(inflatedSize);
-				uLongf produced = inflatedSize;
-				if (::uncompress(reinterpret_cast<Bytef*>(inflated.data()), &produced,
-						reinterpret_cast<const Bytef*>(raw.data() + 4),
-						static_cast<uLong>(raw.size() - 4)) != Z_OK)
-					continue;
-				body = inflated.data();
-				bodySize = produced;
-			}
+			const auto body = RecordBody(record.flagsOrLabel, raw, inflated, 64u * 1024u * 1024u);
 
 			GalaxyData data;
 			std::string                name;
 			std::uint32_t              fullID = 0;
 			bool                       authored = false;
 			std::vector<std::uint32_t> keywords;
-			if (!FindGnam(body, bodySize, data, name, fullID, authored, keywords))
+			if (!FindGnam(body.data(), body.size(), data, name, fullID, authored, keywords))
 				continue;
 
 			auto planetClass = PlanetClass::kUnknown;
@@ -989,6 +1019,197 @@ namespace
 		return true;
 	}
 
+	// ---------------------------------------------------------------------------
+	// Settlements, out of the location tree.
+	//
+	// Nothing on a planet record names a location, and nothing on a worldspace
+	// names a planet - both were checked and ruled out. The join runs the other
+	// way and by id, not by name: an LCTN carries `XNAM` (Star ID) and `YNAM`
+	// (Planet ID), which are the same two numbers as a body's GNAM. Settlement
+	// locations leave both empty, so the body is found by climbing `PNAM` to the
+	// ancestor that fills them in:
+	//
+	//     CityNewAtlantisLocation                     (LocTypeSettlement)
+	//       -> SAlphaCentauri_PJemison_Surface        XNAM 71456, YNAM 3
+	//         -> SAlphaCentauri_PJemison
+	//           -> SAlphaCentauri
+	//             -> Universe
+	//
+	// and Jemison is system 71456, planet 3.
+	// ---------------------------------------------------------------------------
+
+	// One location, as far as this mod cares.
+	struct LocationEntry
+	{
+		std::uint32_t parent{ 0 };    // PNAM, as a runtime form id
+		std::uint32_t starID{ 0 };    // XNAM
+		std::uint32_t planetID{ 0 };  // YNAM
+		std::string   editorID;
+		bool          settlement{ false };
+	};
+
+	void ParsePluginLocations(const std::string& a_path, const std::vector<std::uint8_t>& a_masterIndices,
+		std::uint8_t a_selfIndex, std::uint32_t a_settlementKeyword,
+		std::unordered_map<std::uint32_t, LocationEntry>& a_out)
+	{
+		if (a_settlementKeyword == 0)
+			return;  // nothing to look for yet
+
+		std::ifstream file{ a_path, std::ios::binary };
+		if (!file)
+			return;
+
+		RecordHeader header{};
+		if (!ReadExact(file, &header, sizeof(header)) || std::memcmp(header.signature, "TES4", 4) != 0)
+			return;
+		file.seekg(header.dataSize, std::ios::cur);
+
+		const auto groupEnd = SeekGroup(file, "LCTN");
+		if (groupEnd == 0)
+			return;  // a plugin with no locations is perfectly normal
+
+		std::vector<std::byte> raw;
+		std::vector<std::byte> inflated;
+
+		while (file && static_cast<std::uint64_t>(file.tellg()) + sizeof(RecordHeader) < groupEnd) {
+			const auto   start = static_cast<std::uint64_t>(file.tellg());
+			RecordHeader record{};
+			if (!ReadExact(file, &record, sizeof(record)))
+				return;
+			if (std::memcmp(record.signature, "GRUP", 4) == 0) {
+				file.seekg(static_cast<std::streamoff>(start + record.dataSize), std::ios::beg);
+				continue;
+			}
+			if (std::memcmp(record.signature, "LCTN", 4) != 0) {
+				file.seekg(record.dataSize, std::ios::cur);
+				continue;
+			}
+
+			raw.resize(record.dataSize);
+			if (record.dataSize != 0 && !ReadExact(file, raw.data(), raw.size()))
+				return;
+
+			const auto body = RecordBody(record.flagsOrLabel, raw, inflated, 4u * 1024u * 1024u);
+
+			LocationEntry entry;
+			bool          hasPlanet = false;
+
+			ForEachSubrecord(body.data(), body.size(),
+				[&](std::string_view a_sig, const std::byte* a_payload, std::size_t a_length) {
+					if (a_sig == "EDID" && a_length > 1) {
+						entry.editorID.assign(reinterpret_cast<const char*>(a_payload), a_length - 1);
+					} else if (a_sig == "PNAM" && a_length == 4) {
+						std::uint32_t parent = 0;
+						std::memcpy(&parent, a_payload, 4);
+						entry.parent = ResolveFormID(parent, a_masterIndices, a_selfIndex);
+					} else if (a_sig == "XNAM" && a_length == 4) {
+						std::memcpy(&entry.starID, a_payload, 4);
+					} else if (a_sig == "YNAM" && a_length == 4) {
+						std::memcpy(&entry.planetID, a_payload, 4);
+						hasPlanet = true;
+					} else if (a_sig == "KWDA" && a_length >= 4) {
+						for (std::size_t at = 0; at + 4 <= a_length; at += 4) {
+							std::uint32_t keyword = 0;
+							std::memcpy(&keyword, a_payload + at, 4);
+							if (ResolveFormID(keyword, a_masterIndices, a_selfIndex) == a_settlementKeyword)
+								entry.settlement = true;
+						}
+					}
+					return true;
+				});
+
+			const auto runtimeID = ResolveFormID(record.formID, a_masterIndices, a_selfIndex);
+			auto&      slot = a_out[runtimeID];
+
+			// Merged field by field rather than replaced wholesale, which is the
+			// OPPOSITE of the rule the body table uses, and deliberate.
+			//
+			// An override replaces a record entirely, so a version that simply
+			// omits the keyword would drop the marking - and the tester has
+			// exactly that, base records carrying `LocTypeSettlement` with an
+			// override that does not, which xEdit flags yellow. Settlement is
+			// therefore the union across every version of the location. The ids
+			// take the last version that states one, since a blank there means
+			// "not said here" far more often than it means "deliberately none".
+			slot.settlement = slot.settlement || entry.settlement;
+			if (!entry.editorID.empty())
+				slot.editorID = std::move(entry.editorID);
+			if (entry.parent != 0)
+				slot.parent = entry.parent;
+			if (hasPlanet && entry.planetID != 0) {
+				// Taken as a pair: a star id of zero is meaningful (Sol) but only
+				// alongside the planet id that came with it.
+				slot.starID = entry.starID;
+				slot.planetID = entry.planetID;
+			}
+		}
+	}
+
+	std::uint64_t BodyKey(std::uint32_t a_systemID, std::uint32_t a_planetID)
+	{
+		return (static_cast<std::uint64_t>(a_systemID) << 32) | a_planetID;
+	}
+
+	// Climbs from every settlement to the body it sits on and marks it.
+	void MarkSettlements(const std::unordered_map<std::uint32_t, LocationEntry>& a_locations,
+		std::unordered_map<std::uint32_t, BodyEntry>& a_bodies)
+	{
+		std::unordered_set<std::uint64_t> settled;
+		std::size_t                       settlements = 0;
+		std::size_t                       unresolved = 0;
+
+		for (const auto& [id, location] : a_locations) {
+			if (!location.settlement)
+				continue;
+			++settlements;
+
+			// Four or five deep in practice, rooted at Universe. The hop cap is
+			// what guards against a cycle, so no set of visited ids is needed.
+			const LocationEntry* at = &location;
+			for (int hop = 0; hop < 16; ++hop) {
+				// A planet id of zero means this location is above the planets -
+				// a system, or the universe. Note that the STAR id may
+				// legitimately be zero: Sol IS system 0, so requiring both to be
+				// non-zero would quietly lose every settlement in the home
+				// system, Cydonia and New Homestead among them.
+				if (at->planetID != 0) {
+					settled.insert(BodyKey(at->starID, at->planetID));
+					break;
+				}
+				const auto found = a_locations.find(at->parent);
+				if (at->parent == 0 || found == a_locations.end()) {
+					// Ran out of chain without reaching a body. Expected for
+					// interiors that hang off no planet at all.
+					++unresolved;
+					break;
+				}
+				at = &found->second;
+			}
+		}
+
+		std::size_t              marked = 0;
+		std::vector<std::string> named;
+		for (auto& [formID, body] : a_bodies) {
+			if (!settled.contains(BodyKey(body.galaxy.systemID, body.galaxy.planetID)))
+				continue;
+			body.settled = true;
+			++marked;
+			if (body.authored && !body.name.empty() && named.size() < 12)
+				named.push_back(body.name);
+		}
+
+		// A handful of names in the log is what makes a bad chain obvious: a
+		// count alone looks equally healthy whether it found the cities or a
+		// dozen asteroids.
+		std::sort(named.begin(), named.end());
+		std::string sample;
+		for (const auto& name : named)
+			sample += (sample.empty() ? ": " : ", ") + name;
+
+		REX::INFO("[bodies] {} locations, {} settlements ({} reached no body), {} settled bodies{}",
+			a_locations.size(), settlements, unresolved, marked, sample);
+	}
+
 	// Walks the whole load order. Falls back to the master alone if the plugin
 	// list could not be read, which keeps the base game working regardless.
 	bool ParseAllBodies(std::unordered_map<std::uint32_t, BodyEntry>& a_out)
@@ -1014,6 +1235,11 @@ namespace
 		// Shared across the whole order, since a plugin's bodies routinely use
 		// the base game's keywords.
 		std::unordered_map<std::uint32_t, PlanetClass> keywords;
+		std::uint32_t                                  settlementKeyword = 0;
+
+		// Likewise shared: a settlement's chain up to its planet can cross
+		// plugins, so nothing can be resolved until the whole order is read.
+		std::unordered_map<std::uint32_t, LocationEntry> locations;
 
 		std::unordered_map<std::string, std::uint8_t> indexByName;
 		for (const auto& plugin : plugins)
@@ -1043,28 +1269,44 @@ namespace
 				masterIndices.push_back(found != indexByName.end() ? found->second : std::uint8_t{ 0 });
 			}
 
-			// Keywords first: a body's class is one of them, and they may belong
-			// to any file in the order.
-			ParsePluginKeywords(path, masterIndices, plugin.index, keywords);
+			// Keywords first: a body's class is one of them, a location's
+			// settlement marking is another, and they may belong to any file in
+			// the order.
+			ParsePluginKeywords(path, masterIndices, plugin.index, keywords, settlementKeyword);
 			ParsePluginBodies(path, masterIndices, plugin.index, validate, strings, keywords, a_out, nullptr);
+			ParsePluginLocations(path, masterIndices, plugin.index, settlementKeyword, locations);
 		}
 
 		REX::INFO("[bodies] read {} bodies from {} plugin(s)", a_out.size(), plugins.size());
+
+		// Only once the whole order is in hand: a settlement in one plugin can
+		// climb through a location another one added.
+		if (settlementKeyword != 0)
+			MarkSettlements(locations, a_out);
+		else
+			REX::WARN("[bodies] no {} keyword found - settlements will not be marked", kSettlementKeyword);
+
 		return !a_out.empty();
 	}
+
+	// Bumped whenever a column is added, so an older cache is discarded and
+	// rebuilt rather than half-parsed. It rides along in the fingerprint because
+	// that is already the one line every reader checks before trusting the file.
+	constexpr const char* kBodyTableFormat = "v2";
 
 	// The cache holds RUNTIME form ids, which depend on where each plugin sits
 	// in the load order - so the fingerprint covers the order and the file sizes
 	// together. Install a mod, move one, or update the game, and it rebuilds.
 	std::string LoadOrderFingerprint(const std::vector<PluginInfo>& a_plugins)
 	{
-		std::string print;
+		std::string print{ kBodyTableFormat };
+		print += '|';
 		for (const auto& plugin : a_plugins) {
 			std::error_code error;
 			const auto      size = std::filesystem::file_size(std::format("Data/{}", plugin.name), error);
 			print += std::format("{}:{}:{}|", plugin.name, plugin.index, error ? 0 : size);
 		}
-		return print.empty() ? std::string{ "none" } : print;
+		return print;  // never empty: the format marker is always there
 	}
 
 	void WriteBodyTable(const std::unordered_map<std::uint32_t, BodyEntry>& a_table,
@@ -1077,17 +1319,19 @@ namespace
 		}
 		file << "# ShipNavPanel body table - generated from the load order\n";
 		file << "# Delete this to have it rebuilt.\n";
-		file << "# formID,systemID,parentPlanetID,planetID,authored,class,name\n";
+		file << "# formID,systemID,parentPlanetID,planetID,authored,class,settled,name\n";
 		file << "# class: 0 unknown, 1 asteroid, 2 asteroid belt, 3 barren, 4 gas giant,\n";
 		file << "#        5 hot gas giant, 6 ice, 7 ice giant, 8 rock\n";
 		file << "# authored=0 means the game generates that body rather than authoring it - an orbital\n";
 		file << "# marker, a grav-jump arrival point, a station's anchor. Kept for its place in the\n";
 		file << "# hierarchy, since the HUD may offer it, but never listed as a body in its own right.\n";
+		file << "# settled=1 means a major settlement is on it - a location keyworded LocTypeSettlement\n";
+		file << "# climbs to this body through its parent locations.\n";
 		file << "# order " << a_fingerprint << "\n";
 		for (const auto& [formID, entry] : a_table)
-			file << std::format("{:08X},{},{},{},{},{},{}\n", formID, entry.galaxy.systemID,
+			file << std::format("{:08X},{},{},{},{},{},{},{}\n", formID, entry.galaxy.systemID,
 				entry.galaxy.parentPlanetID, entry.galaxy.planetID, entry.authored ? 1 : 0,
-				std::to_underlying(entry.planetClass), entry.name);
+				std::to_underlying(entry.planetClass), entry.settled ? 1 : 0, entry.name);
 		REX::INFO("[bodies] cached {} bodies to {}", a_table.size(), kBodyTablePath);
 	}
 
@@ -1114,7 +1358,11 @@ namespace
 				// updated rebuilds it rather than leaving it quietly wrong.
 				if (const auto marker = text.find("order "); marker != std::string::npos) {
 					if (text.substr(marker + 6) != a_fingerprint) {
-						REX::INFO("[bodies] {} was built for a different load order - rebuilding",
+						// The fingerprint carries the format version too, so a
+						// cache written before a column was added lands here and
+						// is rebuilt whole - rather than being read a field short
+						// and rejected line by line.
+						REX::INFO("[bodies] {} was built by a different version or load order - rebuilding",
 							kBodyTablePath);
 						return false;
 					}
@@ -1125,28 +1373,30 @@ namespace
 			if (text.find_first_not_of(" \t\r\n") == std::string::npos)
 				continue;
 
-			// Split on the first four commas only: a real name can contain
-			// spaces ("New Atlantis") and tokenising on whitespace would cut it
-			// in half - which the editor-id names never would have shown.
-			std::string fields[6];
-			std::string name;
+			// Split on the leading commas only: a real name can contain spaces
+			// ("New Atlantis") and tokenising on whitespace would cut it in half
+			// - which the editor-id names never would have shown.
+			constexpr std::size_t kColumns = 7;
+			std::string           fields[kColumns];
+			std::string           name;
 			{
 				std::size_t start = 0;
 				std::size_t which = 0;
-				for (; which < 6; ++which) {
+				for (; which < kColumns; ++which) {
 					const auto comma = text.find(',', start);
 					if (comma == std::string::npos)
 						break;
 					fields[which] = text.substr(start, comma - start);
 					start = comma + 1;
 				}
-				if (which == 6)
+				if (which == kColumns)
 					name = text.substr(start);
 				while (!name.empty() && (name.back() == '\r' || name.back() == ' '))
 					name.pop_back();
 			}
 
-			std::istringstream parse{ std::format("{} {} {} {} {}", fields[1], fields[2], fields[3], fields[4], fields[5]) };
+			std::istringstream parse{ std::format("{} {} {} {} {} {}", fields[1], fields[2], fields[3],
+				fields[4], fields[5], fields[6]) };
 
 			const std::string& idText = fields[0];
 			std::uint32_t      system = 0;
@@ -1154,7 +1404,8 @@ namespace
 			std::uint32_t      planet = 0;
 			int                authored = 1;
 			int                planetClass = 0;
-			if (idText.empty() || !(parse >> system >> parent >> planet >> authored >> planetClass)) {
+			int                settled = 0;
+			if (idText.empty() || !(parse >> system >> parent >> planet >> authored >> planetClass >> settled)) {
 				if (++rejected <= 3)
 					REX::WARN("[bodies] {}:{} could not be read - expected "
 							  "formID,system,parent,planet",
@@ -1175,7 +1426,7 @@ namespace
 
 			a_out.insert_or_assign(formID,
 				BodyEntry{ GalaxyData{ system, parent, planet }, name,
-					static_cast<PlanetClass>(planetClass), authored != 0 });
+					static_cast<PlanetClass>(planetClass), authored != 0, settled != 0 });
 			++loaded;
 		}
 
@@ -1291,6 +1542,7 @@ namespace
 	// `graphics.clear()` was verified to work before this was built on.
 	RE::Scaleform::GFx::Value g_panelIcons[kPanelMaxRowsHard];
 	PlanetClass               g_panelIconClass[kPanelMaxRowsHard]{};
+	bool                      g_panelIconSettled[kPanelMaxRowsHard]{};
 	bool                      g_panelIconDrawn[kPanelMaxRowsHard]{};
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
@@ -3421,7 +3673,7 @@ namespace
 	// guess costs a slightly less round circle rather than a blank icon.
 	std::atomic<int> g_drawCircleWorks{ -1 };  // -1 unknown, 0 no, 1 yes
 
-	void DrawClassIcon(RE::Scaleform::GFx::Value& a_graphics, PlanetClass a_class)
+	void DrawRowIcon(RE::Scaleform::GFx::Value& a_graphics, PlanetClass a_class, bool a_settled)
 	{
 		using V = RE::Scaleform::GFx::Value;
 
@@ -3475,16 +3727,43 @@ namespace
 				{ -a_halfWidth, a_halfHeight } });
 		};
 
-		// ONLY giants get a mark. A glyph on every row was accurate and unhelpful
-		// - a column of icons beside a column of names is noise, since the names
-		// already say which body is which. What earns space is the exception:
-		// the handful you cannot land on.
+		// ONLY the exceptions get a mark. A glyph on every row was accurate and
+		// unhelpful - a column of icons beside a column of names is noise, since
+		// the names already say which body is which. What earns the space is a
+		// body you cannot land on, or one worth going to.
 		const auto ringedGiant = [&](std::uint32_t a_body, std::uint32_t a_ring) {
 			fill(a_body, 0.95);
 			disc(5.5);
 			fill(a_ring, 0.85);
 			bar(9.5, 1.0);
 		};
+
+		// A skyline: three towers on a strip of ground, in the panel's own marker
+		// colour. Drawn rather than typed for the reason the wheel symbols are -
+		// the borrowed font carries only the glyphs its author embedded. The
+		// clip's origin is the middle of the row, and y grows downwards, so the
+		// ground sits below zero and the towers rise above it.
+		const auto rect = [&](double a_left, double a_top, double a_right, double a_bottom) {
+			poly({ { a_left, a_top }, { a_right, a_top }, { a_right, a_bottom }, { a_left, a_bottom } });
+		};
+		const auto settlement = [&] {
+			fill(0x66CCFF, 0.95);
+			constexpr double kGround = 3.0;
+			rect(-6.0, kGround, 6.0, kGround + 1.0);
+			rect(-5.5, kGround - 4.0, -2.5, kGround);
+			rect(-1.5, kGround - 7.0, 1.5, kGround);
+			rect(2.5, kGround - 5.0, 5.5, kGround);
+		};
+
+		// Settlement wins over the giant glyph, and the precedence is stated
+		// rather than left to fall out of the switch. The two should never meet -
+		// a gas giant cannot be landed on, so it cannot hold a city - and if a
+		// record ever claims both, the one that says "there is something here"
+		// is worth more to a pilot than the one that says "keep out".
+		if (a_settled) {
+			settlement();
+			return;
+		}
 
 		switch (a_class) {
 		case PlanetClass::kGasGiant:
@@ -3502,6 +3781,14 @@ namespace
 			(void)diamond;
 			break;
 		}
+	}
+
+	// Whether a body's icon is worth a clip at all - the rows that draw nothing
+	// keep theirs hidden.
+	bool HasRowIcon(PlanetClass a_class, bool a_settled)
+	{
+		return a_settled || a_class == PlanetClass::kGasGiant || a_class == PlanetClass::kHotGasGiant ||
+		       a_class == PlanetClass::kIceGiant;
 	}
 
 	void TryCreatePanel()
@@ -3761,6 +4048,7 @@ namespace
 				g_panelIcons[i].SetMember("visible", V{ false });
 			}
 			g_panelIconClass[i] = PlanetClass::kUnknown;
+			g_panelIconSettled[i] = false;
 			g_panelIconDrawn[i] = false;
 
 			++made;
@@ -3951,22 +4239,27 @@ namespace
 				// rare - scrolling a list, not every frame.
 				if (haveIcon) {
 					PlanetClass rowClass = PlanetClass::kUnknown;
+					bool        rowSettled = false;
 					{
 						std::lock_guard bodies{ g_bodyTableMutex };
-						if (const auto body = g_bodyTable.find(row.id); body != g_bodyTable.end())
+						if (const auto body = g_bodyTable.find(row.id); body != g_bodyTable.end()) {
 							rowClass = body->second.planetClass;
+							rowSettled = body->second.settled;
+						}
 					}
 
-					if (!g_panelIconDrawn[r] || g_panelIconClass[r] != rowClass) {
+					if (!g_panelIconDrawn[r] || g_panelIconClass[r] != rowClass ||
+						g_panelIconSettled[r] != rowSettled) {
 						RE::Scaleform::GFx::Value gfx;
 						if (iconClip.GetMember("graphics", &gfx)) {
 							gfx.Invoke("clear", nullptr, nullptr, 0);
-							DrawClassIcon(gfx, rowClass);
+							DrawRowIcon(gfx, rowClass, rowSettled);
 							g_panelIconClass[r] = rowClass;
+							g_panelIconSettled[r] = rowSettled;
 							g_panelIconDrawn[r] = true;
 						}
 					}
-					iconClip.SetMember("visible", V{ rowClass != PlanetClass::kUnknown });
+					iconClip.SetMember("visible", V{ HasRowIcon(rowClass, rowSettled) });
 				}
 
 				nameField.SetMember("visible", V{ true });
