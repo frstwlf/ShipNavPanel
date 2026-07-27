@@ -96,11 +96,34 @@ These three come before release.
       43 subrecords were dumped and every 4-byte value cross-referenced against
       all 6450 `LCTN` and `WRLD` editor ids; none resolved. The only unexplained
       form reference on a planet is `FNAM = 0005FCD2`, which is neither. So the
-      link runs the other way, from the world down. Next: the tester notes
-      Jemison has a **New Atlantis worldspace holding the location record**, so
-      check whether `WRLD` carries a planet reference and walk
-      settlement → `PNAM` chain → worldspace → planet.
-      `Planet.GetLocation()` existing in Papyrus says the link is there.
+      link runs the other way, from the world down.
+
+      **`WRLD` does not reference a planet either — also ruled out.** The
+      `NewAtlantis` worldspace carries `XLCN` (its own location) and nothing
+      resolving to a `PNDT`.
+
+      **★ The location chain IS the hierarchy, and it is clean.** Climbing
+      `PNAM` from `CityNewAtlantisLocation`:
+
+          CityNewAtlantisLocation
+            -> SAlphaCentauri_PJemison_Surface
+              -> SAlphaCentauri_PJemison    <- planet-level location
+                -> SAlphaCentauri           <- system-level location
+                  -> Universe
+
+      So a settlement's planet is found by climbing `PNAM`. **No location in the
+      chain carries a `PNDT` reference**, so the last step — planet-level
+      location to planet record — is the only part still open. Two leads:
+
+      1. **`XNAM` and `YNAM`.** Present on the planet- and system-level
+         locations and on *neither* the settlement nor `Universe` — two 4-byte
+         values sitting exactly where a system id and a planet id would be
+         wanted. Check against GNAM: Alpha Centauri is system **71456**, Jemison
+         is planet **3**. A match makes the join direct and name-free. *(The
+         probe for this timed out unfinished; it is a small script away.)*
+      2. **The editor id convention** `S<System>_P<Planet>[_Surface]` encodes the
+         mapping outright. Workable as a fallback, but matching on names is the
+         sort of thing this project has been burned by twice — prefer lead 1.
 
       ⚠ **Keywords can be dropped by an overriding master.** The tester sees
       `LocTypeSettlement` on a base record but absent from overrides, which
