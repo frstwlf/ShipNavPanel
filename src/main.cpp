@@ -97,6 +97,7 @@ namespace
 	// input queue is being drained on.
 	std::atomic<bool> g_dumpRequested{ false };
 	std::atomic<bool> g_captureRequested{ false };
+	std::atomic<bool> g_captureHighRequested{ false };
 	std::atomic<bool> g_interposeInstalled{ false };
 	std::atomic<bool> g_interposeFailed{ false };
 	std::atomic<bool> g_subscribed{ false };
@@ -195,8 +196,10 @@ namespace
 				if (userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
 					if (bScaleformReader.GetValue())
 						g_dumpRequested.store(true, std::memory_order_release);
-					if (bInterposeTargetData.GetValue())
+					if (bInterposeTargetData.GetValue()) {
 						g_captureRequested.store(true, std::memory_order_release);
+						g_captureHighRequested.store(true, std::memory_order_release);
+					}
 				}
 			}
 
@@ -359,7 +362,11 @@ namespace
 		"currentLabel", "currentLabels", "currentScene", "doubleClickEnabled", "dropTarget",
 		"filters", "focusRect", "framesLoaded", "graphics", "height", "hitArea",
 		"loaderInfo", "mask", "metaData", "mouseChildren", "mouseEnabled", "mouseX",
-		"mouseY", "name", "numChildren", "opaqueBackground", "parent", "prototype",
+		// "name" deliberately NOT skipped: it is a DisplayObject property, but it
+		// is also the target's actual name on the engine's data entries
+		// (`TargetLow.name` is what the on-screen icons render), and skipping it
+		// hid that from the first schema dump entirely.
+		"mouseY", "numChildren", "opaqueBackground", "parent", "prototype",
 		"root", "rotation", "rotationX", "rotationY", "rotationZ", "scale9Grid",
 		"scaleX", "scaleY", "scaleZ", "scenes", "scrollRect", "soundTransform",
 		"stage", "tabChildren", "tabEnabled", "tabIndex", "textSnapshot", "totalFrames",
@@ -672,9 +679,9 @@ namespace
 					formInfo = "no form";
 			}
 
-			REX::INFO("[nav] [{:>2}] uniqueID={} ({}) uTargetType={} landing={} cruiseLock={}",
-				a_index, field("uniqueID"), formInfo, field("uTargetType"),
-				field("bLandingAllowed"), field("bIsCruiseTargetLock"));
+			REX::INFO("[nav] [{:>2}] name={} uniqueID={} ({}) type={} onScreenOK={} offScreenOK={}",
+				a_index, field("name"), field("uniqueID"), formInfo, field("uTargetType"),
+				field("bAllowedOnScreen"), field("bAllowedOffScreen"));
 
 			// The entry schema is not documented anywhere, so spell the first
 			// one out in full - that is how the remaining field names are found.
@@ -799,6 +806,66 @@ namespace
 
 	DataFeedHandler g_feedHandler;
 
+	// The high-frequency feed carries each target's SCREEN POSITION, which is
+	// what a blip-labelling overlay needs: `screenPositionX/Y` are percentages,
+	// converted by the SWF with GlobalFunc.ConvertScreenPercentsToLocalPoint.
+	constexpr const char* kHighFeed = "TargetHighFrequencyProvider";
+
+	class HighFeedRowVisitor : public RE::Scaleform::GFx::Value::ArrayVisitor
+	{
+	public:
+		void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			RE::Scaleform::GFx::Value entry = a_value;
+			const auto                field = [&](const char* a_name) -> std::string {
+                RE::Scaleform::GFx::Value member;
+                return entry.GetMember(a_name, &member) ? DescribeValue(member) : "-";
+			};
+			REX::INFO("[nav] hi[{:>2}] screenX={} screenY={} onScreen={} distance={}",
+				a_index, field("screenPositionX"), field("screenPositionY"),
+				field("onScreen"), field("distance"));
+			if (a_index == 0) {
+				REX::INFO("[nav] --- full schema of high-freq entry 0 ---");
+				LevelCollector visitor{ "[nav] hi0", nullptr };
+				entry.VisitMembers(&visitor);
+				REX::INFO("[nav] --- end schema ---");
+			}
+		}
+	};
+
+	class HighFeedHandler : public RE::Scaleform::GFx::FunctionHandler
+	{
+	public:
+		void Call(const Params& a_params) override
+		{
+			if (!g_captureHighRequested.exchange(false, std::memory_order_acq_rel))
+				return;
+			if (a_params.argCount < 1 || !a_params.args)
+				return;
+
+			RE::Scaleform::GFx::Value event = a_params.args[0];
+			RE::Scaleform::GFx::Value data;
+			if (!event.IsObject() || !event.GetMember("data", &data))
+				data = event;
+
+			RE::Scaleform::GFx::Value entries;
+			if (!data.GetMember("targetArray", &entries))
+				return;
+			RE::Scaleform::GFx::Value inner;
+			if (entries.GetMember("dataA", &inner) && inner.IsArray())
+				entries = inner;
+			if (!entries.IsArray())
+				return;
+
+			REX::INFO("[nav] ==== high-frequency (screen positions) ====");
+			HighFeedRowVisitor visitor;
+			entries.VisitElements(&visitor);
+			REX::INFO("[nav] ==== end ====");
+		}
+	};
+
+	HighFeedHandler g_highFeedHandler;
+
 	std::atomic<std::uint32_t> g_subscribeAttempts{ 0 };
 
 	void TryInstallSubscriber()
@@ -850,6 +917,14 @@ namespace
 					if (manager.Invoke("Subscribe", nullptr, args, 2)) {
 						g_subscribed.store(true, std::memory_order_release);
 						REX::INFO("[nav] SUBSCRIBED to '{}' via {}.Subscribe", kTargetFeed, path);
+
+						// The screen positions live on the other feed.
+						RE::Scaleform::GFx::Value hiArgs[2];
+						a_root->CreateString(&hiArgs[0], kHighFeed);
+						a_root->CreateFunction(&hiArgs[1], &g_highFeedHandler);
+						REX::INFO("[nav] {} to '{}'",
+							manager.Invoke("Subscribe", nullptr, hiArgs, 2) ? "SUBSCRIBED" : "FAILED to subscribe",
+							kHighFeed);
 						return;
 					}
 					REX::WARN("[nav] '{}.Subscribe' rejected the call", path);
