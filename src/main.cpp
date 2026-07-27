@@ -348,8 +348,59 @@ namespace
 	// rather than once per launch.
 	// ---------------------------------------------------------------------------
 
-	constexpr const char*  kMasterPath = "Data/Starfield.esm";
 	constexpr std::uint32_t kRecordCompressed = 0x00040000;
+
+	// One loaded plugin, as the game has it. Shattered Space adds planets
+	// (Va'ruun'kai among them), so reading Starfield.esm alone misses whole
+	// systems - the whole load order has to be walked.
+	struct PluginInfo
+	{
+		std::string  name;
+		std::uint8_t index{ 0 };
+	};
+
+	// The load order in the game's own words, which is the only account of it
+	// that is certainly right: Plugins.txt can be redirected by a mod manager,
+	// and reconstructing index rules by hand is how this sort of thing goes
+	// quietly wrong.
+	//
+	// TESFile's offsets are hand-mapped in CommonLibSF and this project has been
+	// bitten twice by stale layouts, so the names are sanity-checked before any
+	// of them is trusted. A failure here costs nesting, not correctness.
+	std::vector<PluginInfo> CollectPlugins()
+	{
+		std::vector<PluginInfo> plugins;
+
+		const auto handler = RE::TESDataHandler::GetSingleton();
+		if (!handler) {
+			REX::WARN("[bodies] no data handler - falling back to Starfield.esm alone");
+			return plugins;
+		}
+
+		for (const auto* file : handler->compiledFileCollection.files) {
+			if (!file)
+				continue;
+
+			const char* raw = file->fileName;
+			const auto  length = ::strnlen(raw, sizeof(file->fileName));
+			if (length == 0 || length >= sizeof(file->fileName))
+				break;
+
+			std::string name{ raw, length };
+			const bool  looksLikePlugin = name.ends_with(".esm") || name.ends_with(".esp") ||
+			                             name.ends_with(".esl");
+			if (!looksLikePlugin) {
+				REX::WARN("[bodies] plugin list gave '{}', which is not a plugin name - the file layout "
+						  "is not what was expected, so only Starfield.esm will be read",
+					name);
+				return {};
+			}
+
+			plugins.push_back(PluginInfo{ std::move(name), file->compileIndex });
+		}
+
+		return plugins;
+	}
 
 	struct RecordHeader
 	{
@@ -431,19 +482,55 @@ namespace
 		return false;
 	}
 
-	bool ParseMasterBodies(std::unordered_map<std::uint32_t, BodyEntry>& a_out)
+	// A record's file-local form id keeps its owner in the top byte: an index
+	// into this file's master list, where "one past the last master" means the
+	// file itself. Turning that into the runtime id is a matter of swapping that
+	// index for the owner's place in the load order.
+	std::uint32_t ResolveFormID(std::uint32_t a_localID, const std::vector<std::uint8_t>& a_masterIndices,
+		std::uint8_t a_selfIndex)
 	{
-		std::ifstream file{ kMasterPath, std::ios::binary };
-		if (!file) {
-			REX::WARN("[bodies] cannot open {}", kMasterPath);
+		const auto slot = static_cast<std::size_t>(a_localID >> 24);
+		const auto owner = slot < a_masterIndices.size() ? a_masterIndices[slot] : a_selfIndex;
+		return (static_cast<std::uint32_t>(owner) << 24) | (a_localID & 0x00FFFFFFu);
+	}
+
+	bool ParsePluginBodies(const std::string& a_path, const std::vector<std::uint8_t>& a_masterIndices,
+		std::uint8_t a_selfIndex, bool a_validate, std::unordered_map<std::uint32_t, BodyEntry>& a_out,
+		std::vector<std::string>* a_masterNames)
+	{
+		std::ifstream file{ a_path, std::ios::binary };
+		if (!file)
 			return false;
-		}
 
 		RecordHeader header{};
-		if (!ReadExact(file, &header, sizeof(header)) || std::memcmp(header.signature, "TES4", 4) != 0) {
-			REX::WARN("[bodies] {} does not start with a TES4 record", kMasterPath);
+		if (!ReadExact(file, &header, sizeof(header)) || std::memcmp(header.signature, "TES4", 4) != 0)
 			return false;
+
+		// The header names this file's masters, in the order its own form ids
+		// index them.
+		if (a_masterNames) {
+			std::vector<std::byte> headerData(header.dataSize);
+			if (header.dataSize != 0 && !ReadExact(file, headerData.data(), headerData.size()))
+				return false;
+
+			std::size_t offset = 0;
+			while (offset + 6 <= headerData.size()) {
+				char sig[4];
+				std::memcpy(sig, headerData.data() + offset, 4);
+				std::uint16_t size = 0;
+				std::memcpy(&size, headerData.data() + offset + 4, 2);
+				offset += 6;
+				if (offset + size > headerData.size())
+					break;
+				if (std::memcmp(sig, "MAST", 4) == 0 && size > 1) {
+					a_masterNames->emplace_back(reinterpret_cast<const char*>(headerData.data() + offset),
+						::strnlen(reinterpret_cast<const char*>(headerData.data() + offset), size));
+				}
+				offset += size;
+			}
+			return true;  // header pass only; the caller comes back for the records
 		}
+
 		file.seekg(header.dataSize, std::ios::cur);
 
 		// Top-level groups, until the planets.
@@ -461,10 +548,8 @@ namespace
 			}
 			file.seekg(static_cast<std::streamoff>(groupStart + group.dataSize), std::ios::beg);
 		}
-		if (groupEnd == 0) {
-			REX::WARN("[bodies] no PNDT group in {}", kMasterPath);
-			return false;
-		}
+		if (groupEnd == 0)
+			return true;  // a plugin with no planets is perfectly normal
 
 		std::vector<std::byte> raw;
 		std::vector<std::byte> inflated;
@@ -512,33 +597,110 @@ namespace
 
 			GalaxyData data;
 			std::string name;
-			if (FindGnam(body, bodySize, data, name)) {
-				a_out.insert_or_assign(record.formID, BodyEntry{ data, std::move(name) });
-				++records;
+			if (!FindGnam(body, bodySize, data, name))
+				continue;
+
+			const auto runtimeID = ResolveFormID(record.formID, a_masterIndices, a_selfIndex);
+
+			// Every id is checked against the game before it is kept. If the
+			// load-order arithmetic or a hand-mapped offset is wrong, this
+			// yields nothing rather than something plausible and false - which,
+			// on the evidence of this project, is the failure mode that costs
+			// the least time.
+			if (a_validate) {
+				const auto form = RE::TESForm::LookupByID(runtimeID);
+				if (!form || form->GetFormType() != RE::FormType::kPNDT)
+					continue;
 			}
+
+			// Later plugins override earlier ones, which is what the load order
+			// means.
+			a_out.insert_or_assign(runtimeID, BodyEntry{ data, std::move(name) });
+			++records;
 		}
 
-		REX::INFO("[bodies] read {} bodies from {}", records, kMasterPath);
-		return records > 0;
+		if (records != 0)
+			REX::INFO("[bodies] {} bodies from {}", records, a_path);
+		return true;
 	}
 
-	std::uint64_t MasterFileSize()
+	// Walks the whole load order. Falls back to the master alone if the plugin
+	// list could not be read, which keeps the base game working regardless.
+	bool ParseAllBodies(std::unordered_map<std::uint32_t, BodyEntry>& a_out)
 	{
-		std::error_code error;
-		const auto      size = std::filesystem::file_size(kMasterPath, error);
-		return error ? 0 : static_cast<std::uint64_t>(size);
+		auto plugins = CollectPlugins();
+		bool validate = true;
+
+		if (plugins.empty()) {
+			plugins.push_back(PluginInfo{ "Starfield.esm", 0 });
+			validate = false;  // no runtime list means no forms to check against
+		}
+
+		// Matched case-insensitively: a file's MAST entries carry whatever case
+		// its author typed - Shattered Space names its master "starfield.esm"
+		// while the game calls it "Starfield.esm" - and an exact comparison
+		// silently fails to resolve every override record in the file.
+		const auto fold = [](std::string a_text) {
+			std::transform(a_text.begin(), a_text.end(), a_text.begin(),
+				[](unsigned char a_ch) { return static_cast<char>(std::tolower(a_ch)); });
+			return a_text;
+		};
+
+		std::unordered_map<std::string, std::uint8_t> indexByName;
+		for (const auto& plugin : plugins)
+			indexByName.emplace(fold(plugin.name), plugin.index);
+
+		for (const auto& plugin : plugins) {
+			const auto path = std::format("Data/{}", plugin.name);
+
+			std::vector<std::string> masterNames;
+			if (!ParsePluginBodies(path, {}, plugin.index, false, a_out, &masterNames)) {
+				REX::WARN("[bodies] could not read {}", path);
+				continue;
+			}
+
+			// A master this file names but the game has not loaded cannot be
+			// resolved; index 0 is a harmless placeholder because any record
+			// pointing at it will fail validation.
+			std::vector<std::uint8_t> masterIndices;
+			masterIndices.reserve(masterNames.size());
+			for (const auto& master : masterNames) {
+				const auto found = indexByName.find(fold(master));
+				masterIndices.push_back(found != indexByName.end() ? found->second : std::uint8_t{ 0 });
+			}
+
+			ParsePluginBodies(path, masterIndices, plugin.index, validate, a_out, nullptr);
+		}
+
+		REX::INFO("[bodies] read {} bodies from {} plugin(s)", a_out.size(), plugins.size());
+		return !a_out.empty();
 	}
 
-	void WriteBodyTable(const std::unordered_map<std::uint32_t, BodyEntry>& a_table)
+	// The cache holds RUNTIME form ids, which depend on where each plugin sits
+	// in the load order - so the fingerprint covers the order and the file sizes
+	// together. Install a mod, move one, or update the game, and it rebuilds.
+	std::string LoadOrderFingerprint(const std::vector<PluginInfo>& a_plugins)
+	{
+		std::string print;
+		for (const auto& plugin : a_plugins) {
+			std::error_code error;
+			const auto      size = std::filesystem::file_size(std::format("Data/{}", plugin.name), error);
+			print += std::format("{}:{}:{}|", plugin.name, plugin.index, error ? 0 : size);
+		}
+		return print.empty() ? std::string{ "none" } : print;
+	}
+
+	void WriteBodyTable(const std::unordered_map<std::uint32_t, BodyEntry>& a_table,
+		const std::string& a_fingerprint)
 	{
 		std::ofstream file{ kBodyTablePath, std::ios::trunc };
 		if (!file) {
 			REX::WARN("[bodies] could not write {} - it will be rebuilt next launch", kBodyTablePath);
 			return;
 		}
-		file << "# ShipNavPanel body table - generated from " << kMasterPath << "\n";
-		file << "# Delete this to have it rebuilt. formID,systemID,parentPlanetID,planetID\n";
-		file << "# master " << MasterFileSize() << "\n";
+		file << "# ShipNavPanel body table - generated from the load order\n";
+		file << "# Delete this to have it rebuilt. formID,systemID,parentPlanetID,planetID,name\n";
+		file << "# order " << a_fingerprint << "\n";
 		for (const auto& [formID, entry] : a_table)
 			file << std::format("{:08X},{},{},{},{}\n", formID, entry.galaxy.systemID,
 				entry.galaxy.parentPlanetID, entry.galaxy.planetID, entry.name);
@@ -548,7 +710,7 @@ namespace
 	// `formID,systemID,parentPlanetID,planetID` per line, `#` for comments and
 	// blank lines ignored. Returns false when the cache is missing or was built
 	// against a different master file.
-	bool ReadBodyTable(std::unordered_map<std::uint32_t, BodyEntry>& a_out)
+	bool ReadBodyTable(std::unordered_map<std::uint32_t, BodyEntry>& a_out, const std::string& a_fingerprint)
 	{
 		std::ifstream file{ kBodyTablePath };
 		if (!file)
@@ -557,23 +719,22 @@ namespace
 		std::size_t loaded = 0;
 		std::size_t line = 0;
 		std::size_t rejected = 0;
+		bool        sawFingerprint = false;
 		std::string text;
 
 		while (std::getline(file, text)) {
 			++line;
 			if (const auto hash = text.find('#'); hash != std::string::npos) {
-				// The cache records which master it was built from, so a game
-				// update rebuilds it rather than going quietly stale.
-				if (const auto marker = text.find("master "); marker != std::string::npos) {
-					try {
-						if (std::stoull(text.substr(marker + 7)) != MasterFileSize()) {
-							REX::INFO("[bodies] {} was built against a different {} - rebuilding",
-								kBodyTablePath, kMasterPath);
-							return false;
-						}
-					} catch (...) {
+				// The cache holds runtime form ids, so it is only valid for the
+				// load order that produced it. Anything installed, moved or
+				// updated rebuilds it rather than leaving it quietly wrong.
+				if (const auto marker = text.find("order "); marker != std::string::npos) {
+					if (text.substr(marker + 6) != a_fingerprint) {
+						REX::INFO("[bodies] {} was built for a different load order - rebuilding",
+							kBodyTablePath);
 						return false;
 					}
+					sawFingerprint = true;
 				}
 				text.erase(hash);
 			}
@@ -612,7 +773,9 @@ namespace
 			++loaded;
 		}
 
-		if (loaded == 0)
+		// A cache with no fingerprint predates load-order awareness, so its ids
+		// cannot be trusted against anything but the base game.
+		if (loaded == 0 || !sawFingerprint)
 			return false;
 
 		REX::INFO("[bodies] loaded {} bodies from {}{}", loaded, kBodyTablePath,
@@ -631,14 +794,15 @@ namespace
 
 		std::thread{ [] {
 			std::unordered_map<std::uint32_t, BodyEntry> table;
+			const auto fingerprint = LoadOrderFingerprint(CollectPlugins());
 
-			if (!ReadBodyTable(table)) {
+			if (!ReadBodyTable(table, fingerprint)) {
 				table.clear();
-				if (!ParseMasterBodies(table)) {
+				if (!ParseAllBodies(table)) {
 					REX::WARN("[bodies] could not read the planet hierarchy - moons will not be nested");
 					return;
 				}
-				WriteBodyTable(table);
+				WriteBodyTable(table, fingerprint);
 			}
 
 			std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> bySystem;

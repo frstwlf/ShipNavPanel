@@ -200,6 +200,18 @@ Each of these cost real time; the reasoning is in the findings docs.
     *next planet's record*, which is why every scan turned up pointers and float
     bit patterns. **Do not go looking for it in memory again.** The plugin reads
     GNAM out of `Starfield.esm` itself instead.
+  - **Read the WHOLE load order, not just the master.** Shattered Space adds 11
+    bodies in system 119226 — Va'ruun'kai is a *moon* of Kavnyk I — and mods can
+    add more. Plugin list and indices come from
+    `TESDataHandler::compiledFileCollection.files`; a record's top byte indexes
+    that file's own master list, where "one past the last master" means the file
+    itself, so the runtime id is that slot swapped for the owner's load-order
+    index. **MAST names are matched case-insensitively** — Shattered Space calls
+    its master `starfield.esm` while the game says `Starfield.esm`, and an exact
+    compare silently fails to resolve every override in the file. Every resolved
+    id is checked with `LookupByID` → `kPNDT`, so bad arithmetic or a stale
+    `TESFile` offset loses entries instead of inventing them. The cache is
+    fingerprinted with the load order because it stores *runtime* ids.
   - **Parsing the ESM: two things that will bite.** Every PNDT record is
     zlib-compressed (1765 of 1765), the stream starting 4 bytes in, after a
     `uint32` inflated size. And **`XXXX` carries the real 32-bit length of the
