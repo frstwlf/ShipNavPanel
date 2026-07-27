@@ -99,7 +99,27 @@ retired; the HUD's Scaleform layer is the API.**
             (one FF-prefixed). `0x5E30E` = Bondar, confirmed in xEdit. The whole
             list — names included — resolves in C++.
 
-### What is left
+### Phase 1 data: COMPLETE (2026-07-27)
+
+Names, form ids, types, distances, screen positions and **`angleToCrosshair`**
+all read from the two subscribed feeds. Verified in cruise: five planets, a
+star and four POIs, all named. Nothing further is needed to *know* what to show.
+
+- [ ] **Build the panel as a LIST, not blip labels.** `screenPositionX/Y` is
+      `-1` (unprojectable) for anything behind the player — which is precisely
+      the case the feature exists for — and `OffScreenIcon` has no text field to
+      label anyway. `angleToCrosshair` is populated for every target, so a
+      single multi-line field showing **name + angle + distance, sorted by
+      |angle|** works universally and answers "turn 12° right for Bondar"
+      rather than merely "that blip is Bondar".
+      - [ ] Rendering: one `flash.text.TextField` created via `CreateObject`
+            and `addChild`ed to the reticle, positioned at a screen edge. One
+            field, not N positioned labels.
+      - [ ] Re-assert on high-frequency updates; the HUD rebuilds constantly.
+      - [ ] Filter to `uTargetType` 7/1 (planets, star) by default; POIs and
+            ships optional.
+
+### Still open (not needed for the list panel)
 
 **How targeting actually picks (2026-07-27, from play):** the target key takes
 whatever is **closest to screen centre**, and that reticle is *fixed*. The mouse

@@ -320,6 +320,43 @@ Worth knowing before that work starts: vanilla simply cannot target a distant
 planet while cruising, so the panel is adding a capability the base game lacks,
 not re-exposing a hidden one.
 
+### ✅ Everything a nav panel needs is now readable (2026-07-27)
+
+Both feeds subscribed, captured in cruise. Per target:
+
+| field | feed | |
+|---|---|---|
+| `name` | low | **"Jemison", "Bondar", "Gagarin", "Kurtz", "Olivas"** (planets), "Masada" (star), "The Eye", "Starstation RE-939", "Deimos Armored Transport", "Ship" |
+| `uniqueID` | low | form id (kPNDT / kSTDT / kREFR) |
+| `uTargetType` | low | TT_PLANET=7, TT_STAR=1, TT_POI=4 |
+| `distance` | high | metres |
+| **`angleToCrosshair`** | high | **degrees off-centre — the key field** |
+| `screenPositionX/Y` | high | screen percentages, **`-1` when unprojectable** |
+| `leadingPointScreenPositionX/Y`, `fTargetMaxAnglePercent`, `TargetComponentsA` | high | |
+
+*(`name` was in the low-freq feed all along; an earlier schema dump hid it
+because `"name"` sat in this reader's boilerplate denylist as a DisplayObject
+property. Removed — on a data object it is real content.)*
+
+### ★ Screen positions do NOT cover the targets that matter; `angleToCrosshair` does
+
+Four of the ten entries came back `screenPositionX/Y = -1` — the sentinel for
+"not projectable", i.e. **behind the camera** — including Jemison and Kurtz.
+Others sat far outside the viewport (`-7.08`, `-15.17`).
+
+That is decisive for the design: **an overlay drawn at screen positions would
+fail for exactly the planets the player cannot see**, which is the whole point
+of the feature. `angleToCrosshair` is populated regardless (`-155°` for a body
+behind the ship), so it is the field to build on.
+
+It also suggests a better shape than labelling blips. `OffScreenIcon` has no
+text field, so labels would mean creating and positioning `flash.text.TextField`
+objects per blip — and they would be unplaceable for anything behind the player
+anyway. A single multi-line panel listing **name + angle + distance, sorted by
+|angle|**, is far less code, works for every target including those behind, and
+arguably answers the question better: not just "which blip is Bondar" but
+"turn 12° right for Bondar".
+
 ### The lock-course action is still fully specified (for later, opt-in)
 
 `CustomEvent`'s constructor takes the payload as its **second** argument and
