@@ -11,18 +11,27 @@ drawn, no input is consumed. The panel itself does not exist yet, by design —
 Phase 0 exists to answer the questions that decide whether it can be built, and
 to answer them before any effort is spent on Scaleform.
 
-> ### ✅ v0.1.2 — it works
+> ### ✅ v0.1.5 — working
 >
-> In cruise, the **scanner key** cycles through the system's planets and an
-> arrow points at the selected one, rotating live as the ship steers. Verified
-> in game: arrow on Jemison, log agrees.
+> In cruise, the **scanner key** cycles through the system's planets. An arrow
+> points at the selected one with its **name and distance** beside it, all
+> updating live as the ship steers. Outside cruise the panel is idle and the
+> scanner key keeps its vanilla job.
 >
 > It rests on `angleToCrosshair` from the ship HUD's high-frequency data feed
 > being a **screen bearing**, so the arrow is one rotation per update — the same
 > field vanilla's own off-screen blips use. That is why it stays correct for
 > bodies *behind* the ship, where screen coordinates are unusable.
 >
-> Outside cruise the panel is idle and the scanner key keeps its vanilla job.
+> Solving the original goal — targeting a body straight from a list — turned out
+> to be impossible without engine-side reverse engineering: the UI layer has no
+> by-id "set target" at all (see [PHASE1-SWF-FINDINGS.md](PHASE1-SWF-FINDINGS.md)
+> §"There is NO by-id set target"). Pointing at the body and letting the player
+> steer and target manually solves the actual problem — knowing which blip is
+> which — without any of that.
+>
+> The fuller panel (list, icons, W/S navigation) is specced in
+> [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md), graded by what has been proven.
 
 > ### ✅ Phase 0 is answered — see [PHASE0-FINDINGS.md](PHASE0-FINDINGS.md)
 >
