@@ -66,7 +66,7 @@ namespace
 	REX::TIniSetting<float> fMaxTargetLightSeconds{ "Panel", "fMaxTargetLightSeconds", 20000.0f };
 	REX::TIniSetting<float> fArrowAngleOffset{ "Panel", "fArrowAngleOffset", 0.0f };
 	REX::TIniSetting<bool>  bArrowInvertAngle{ "Panel", "bArrowInvertAngle", false };
-	REX::TIniSetting<bool>  bLabel{ "Panel", "bLabel", false };
+	REX::TIniSetting<bool>  bLabel{ "Panel", "bLabel", true };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -136,6 +136,7 @@ namespace
 	std::atomic<std::uint32_t> g_subscribeAttempts{ 0 };
 	RE::Scaleform::GFx::Value  g_arrowClip;
 	RE::Scaleform::GFx::Value  g_labelField;
+	RE::Scaleform::GFx::Value  g_labelFormat;
 	std::atomic<bool>          g_labelReady{ false };
 
 	// Cruise state. The scanner key keeps its vanilla job outside cruise, so the
@@ -384,6 +385,7 @@ namespace
 			g_arrowFailed.store(false, std::memory_order_release);
 			g_arrowClip = RE::Scaleform::GFx::Value{};
 			g_labelField = RE::Scaleform::GFx::Value{};
+			g_labelFormat = RE::Scaleform::GFx::Value{};
 			g_labelReady.store(false, std::memory_order_release);
 			{
 				std::lock_guard lock{ g_candidateMutex };
@@ -1103,6 +1105,11 @@ namespace
 						                std::format("{}  {:.0f} km", selectedName, selectedDistance / 1000.0);
 
 						g_labelField.SetMember("text", V{ labelText.c_str() });
+						// defaultTextFormat only applies to text present when it
+						// was set, so re-apply after each assignment or the new
+						// characters fall back to no font.
+						if (g_labelFormat.IsObject())
+							g_labelField.Invoke("setTextFormat", nullptr, &g_labelFormat, 1);
 						g_labelField.SetMember("x", V{ radius * std::sin(radians) });
 						g_labelField.SetMember("y", V{ -radius * std::cos(radians) });
 					}
@@ -1429,14 +1436,45 @@ namespace
 			g_labelField.SetMember("selectable", V{ false });
 			g_labelField.SetMember("mouseEnabled", V{ false });
 			g_labelField.SetMember("autoSize", V{ "center" });
-			g_labelField.SetMember("textColor", V{ static_cast<std::uint32_t>(0x66CCFF) });
 
-			RE::Scaleform::GFx::Value format;
-			root->CreateObject(&format, "flash.text.TextFormat");
-			if (format.IsObject()) {
-				format.SetMember("size", V{ 22.0 });
-				format.SetMember("bold", V{ true });
-				g_labelField.SetMember("defaultTextFormat", format);
+			// A TextField created at runtime has no font, so every glyph renders
+			// as a placeholder box - which is exactly what the first attempt did.
+			// The HUD's own fields carry fonts embedded at author time and it
+			// never names one in code, so there is no font name to copy: borrow
+			// the whole format off a field the HUD already owns instead. That
+			// inherits a font guaranteed to exist in this movie.
+			const std::string base = std::string{ rootPath ? rootPath : "root" };
+			const char*       donors[]{
+                ".Reticle_mc.ShipReticle_mc.LockOn_mc.LockText_tf",
+                ".Reticle_mc.ShipReticle_mc.Distance_tf",
+                ".DebugText_tf",
+			};
+
+			bool haveFormat = false;
+			for (const auto* suffix : donors) {
+				RE::Scaleform::GFx::Value donor;
+				if (!root->GetVariable(&donor, (base + suffix).c_str()))
+					continue;
+				if (!donor.Invoke("getTextFormat", &g_labelFormat) || !g_labelFormat.IsObject())
+					continue;
+
+				RE::Scaleform::GFx::Value fontName;
+				if (g_labelFormat.GetMember("font", &fontName) && fontName.IsString())
+					REX::INFO("[arrow] borrowed font '{}' from {}", SafeStr(fontName.GetString()), suffix);
+				else
+					REX::INFO("[arrow] borrowed a text format from {}", suffix);
+
+				g_labelFormat.SetMember("size", V{ 22.0 });
+				g_labelFormat.SetMember("bold", V{ true });
+				g_labelFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x66CCFF) });
+				g_labelField.SetMember("embedFonts", V{ true });
+				g_labelField.SetMember("defaultTextFormat", g_labelFormat);
+				haveFormat = true;
+				break;
+			}
+			if (!haveFormat) {
+				g_labelField.SetMember("textColor", V{ static_cast<std::uint32_t>(0x66CCFF) });
+				REX::WARN("[arrow] no donor TextField found - the label will likely render as boxes");
 			}
 
 			RE::Scaleform::GFx::Value added;
