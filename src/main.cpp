@@ -3128,7 +3128,8 @@ namespace
 
 					// The locked body is marked in the list itself, so the panel
 					// says what the HUD is showing without having to be closed.
-					const char* mark = (locked != 0 && row.id == locked) ? "> " : "  ";
+					const bool  isLocked = locked != 0 && row.id == locked;
+					const char* mark = isLocked ? "> " : "  ";
 					const auto  name = std::format("{}{}", mark, row.name);
 					nameField.SetMember("text", V{ name.c_str() });
 					// defaultTextFormat only applies to text present when it was
@@ -3140,12 +3141,20 @@ namespace
 					// Light-seconds once kilometres stop being readable. A dash
 					// marks a body the game is not currently tracking: it is
 					// really there, but there is no distance to give and the
-					// arrow cannot point at it.
+					// pointer cannot aim at it.
+					//
+					// Locking one of those is allowed and useful - you can set a
+					// destination before the game will follow it - so it gets
+					// "..." rather than a dash, to say the lock is real and
+					// waiting rather than doing nothing. The lock is held as a
+					// form id and re-resolved against the feed every update, so
+					// it starts guiding the moment the body is tracked, with no
+					// need to lock it again.
 					const double lightSeconds = row.distance / kMetersPerLightSecond;
-					const auto   dist = !row.fromFeed        ? std::string{ "-" } :
-					                    row.distance <= 0.0  ? std::string{} :
-					                    lightSeconds >= 1.0  ? std::format("{:.0f} LS", lightSeconds) :
-					                                           std::format("{:.0f} km", row.distance / 1000.0);
+					const auto   dist = !row.fromFeed       ? std::string{ isLocked ? "..." : "-" } :
+					                    row.distance <= 0.0 ? std::string{} :
+					                    lightSeconds >= 1.0 ? std::format("{:.0f} LS", lightSeconds) :
+					                                          std::format("{:.0f} km", row.distance / 1000.0);
 					distField.SetMember("text", V{ dist.c_str() });
 					if (g_panelDistFormat.IsObject())
 						distField.Invoke("setTextFormat", nullptr, &g_panelDistFormat, 1);
