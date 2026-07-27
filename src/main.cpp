@@ -60,6 +60,10 @@ namespace
 	// the answer is not tangled up with the arrow's behaviour.
 	REX::TIniSetting<bool> bSuppressThrottleTest{ "Recon", "bSuppressThrottleTest", false };
 
+	// Survey which button events reach the mod during cruise, one compact line
+	// per distinct event rather than the flood bLogInput produces.
+	REX::TIniSetting<bool> bSurveyCruiseKeys{ "Recon", "bSurveyCruiseKeys", false };
+
 	// Scaleform reader: dumps the ship HUD's ActionScript data model on demand.
 	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", false };
 	REX::TIniSetting<bool>          bInterposeTargetData{ "Scaleform", "bInterposeTargetData", true };
@@ -254,6 +258,110 @@ namespace
 		return false;
 	}
 
+	// ---------------------------------------------------------------------------
+	// The cruise key survey.
+	//
+	// The panel cannot take W/S from the ship - v0.2.1 settled that - so it has
+	// to be built on keys the game already ignores in cruise. `SHMonocle` is one
+	// such, found by accident in Phase 0. This looks for the others.
+	//
+	// The plugin can only answer half the question: which events REACH us during
+	// cruise, and whether they arrive already disabled. Whether the game then
+	// acts on one is only visible on screen, so the output is a short candidate
+	// list to test by hand - not an answer. One line per distinct event, printed
+	// the moment it is first seen, so it can be read against what just happened.
+	// ---------------------------------------------------------------------------
+
+	struct SurveyEntry
+	{
+		std::string   name;
+		std::uint32_t idCode{ 0 };
+		std::uint32_t presses{ 0 };
+		bool          seenEnabled{ false };
+		bool          seenDisabled{ false };
+	};
+
+	std::mutex               g_surveyMutex;
+	std::vector<SurveyEntry> g_survey;
+
+	constexpr std::size_t kSurveyMaxEntries = 64;
+
+	// What is already known, so nobody is sent off to re-test a key whose
+	// behaviour in cruise is settled. Anything NOT listed here is the
+	// interesting case - that is the whole point of the survey.
+	const char* SurveyNote(const char* a_name)
+	{
+		struct Known
+		{
+			const char* name;
+			const char* note;
+		};
+		static constexpr Known kKnown[]{
+			{ "SHMonocle", "INERT in cruise - the mod's existing trigger" },
+			{ "Forward", "active - throttle, and cannot be suppressed" },
+			{ "Back", "active - throttle, and cannot be suppressed" },
+			{ "StrafeLeft", "active - strafe" },
+			{ "StrafeRight", "active - strafe" },
+			{ "Cruise", "active - toggles cruise, leave alone" },
+			{ "SelectTarget", "active - cycles target" },
+			{ "QuickMap", "active - opens the star map" },
+			{ "DataMenu", "active - opens the data menu" },
+			{ "Console", "active - opens the console" },
+		};
+		for (const auto& known : kKnown) {
+			if (std::strcmp(a_name, known.name) == 0)
+				return known.note;
+		}
+		return "UNKNOWN - press it in cruise and watch whether anything happens";
+	}
+
+	void SurveyRecord(const char* a_name, std::uint32_t a_idCode, bool a_disabled)
+	{
+		if (!a_name || !a_name[0])
+			return;  // unbound in this context; nothing to name it by
+
+		std::lock_guard lock{ g_surveyMutex };
+
+		for (auto& entry : g_survey) {
+			if (entry.name == a_name) {
+				++entry.presses;
+				(a_disabled ? entry.seenDisabled : entry.seenEnabled) = true;
+				return;
+			}
+		}
+
+		if (g_survey.size() >= kSurveyMaxEntries)
+			return;
+
+		SurveyEntry entry;
+		entry.name = a_name;
+		entry.idCode = a_idCode;
+		entry.presses = 1;
+		(a_disabled ? entry.seenDisabled : entry.seenEnabled) = true;
+		g_survey.push_back(entry);
+
+		REX::INFO("[survey] NEW in cruise: '{}' id={} disabled={}  <- {}",
+			a_name, a_idCode, a_disabled, SurveyNote(a_name));
+	}
+
+	void SurveyDump()
+	{
+		std::lock_guard lock{ g_surveyMutex };
+		if (g_survey.empty())
+			return;
+
+		REX::INFO("[survey] --- {} distinct button events seen in cruise ---", g_survey.size());
+		for (const auto& entry : g_survey) {
+			const char* arrival = (entry.seenEnabled && entry.seenDisabled) ? "enabled+disabled" :
+			                      entry.seenEnabled                         ? "enabled" :
+			                                                                  "disabled";
+			REX::INFO("[survey]   '{}' id={} presses={} arrived {}  <- {}",
+				entry.name, entry.idCode, entry.presses, arrival, SurveyNote(entry.name.c_str()));
+		}
+		REX::INFO("[survey] --- an UNKNOWN line that arrived 'enabled' and does nothing on screen "
+				  "is a free verb for the panel ---");
+	}
+
 	// Toggling is a compare-exchange rather than load-then-store because the
 	// input queue is not guaranteed to be drained by the same thread every
 	// frame, and a lost toggle here leaves the throttle suppressed.
@@ -349,6 +457,12 @@ namespace
 			const char* userEvent = button->strUserEvent.c_str();
 
 			// --- functional work: never skipped by a logging filter ---
+
+			// Recorded before the suppression block below, so the survey never
+			// reads back this plugin's own write to `disabled`.
+			if (down && firstFrame && bSurveyCruiseKeys.GetValue() &&
+				g_inCruise.load(std::memory_order_acquire))
+				SurveyRecord(userEvent, button->idCode, button->disabled);
 
 			// Suppression has to see HELD frames. Throttle is a key held down,
 			// so disabling only its first frame would still let the ship
@@ -1459,6 +1573,9 @@ namespace
 				if (g_panelUp.exchange(false, std::memory_order_acq_rel))
 					REX::INFO("[suppress] panel forced DOWN - left cruise ({} events suppressed)",
 						g_suppressedCount.load(std::memory_order_acquire));
+				// Recap the survey while the cruise it describes is still fresh.
+				if (bSurveyCruiseKeys.GetValue())
+					SurveyDump();
 			}
 		}
 	}
@@ -1712,6 +1829,11 @@ namespace
 			bLogInput.GetValue(), bLogInputHeldFrames.GetValue(), bLogInputNonButton.GetValue(),
 			uMaxInputLines.GetValue(), bLogMenus.GetValue(), bLogHeartbeat.GetValue(),
 			fHeartbeatSeconds.GetValue(), bVerifyVTableID.GetValue(), bSuppressThrottleTest.GetValue());
+		REX::INFO("config: bSurveyCruiseKeys={}", bSurveyCruiseKeys.GetValue());
+
+		if (bSurveyCruiseKeys.GetValue())
+			REX::INFO("[survey] cruise key survey ON - enter cruise, then press every key you can spare. "
+					  "Each new one prints a line; the recap prints when you leave cruise.");
 
 		if (!bInputTap.GetValue())
 			REX::WARN("bInputTap is off - the scanner key cannot reach the mod, so no body will be "
