@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <format>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,6 +57,12 @@ namespace
 	REX::TIniSetting<std::uint32_t> uScaleformDepth{ "Scaleform", "uScaleformDepth", 8 };
 	REX::TIniSetting<std::uint32_t> uScaleformMaxLines{ "Scaleform", "uScaleformMaxLines", 3000 };
 	REX::TIniSetting<std::uint32_t> uScaleformMaxChildren{ "Scaleform", "uScaleformMaxChildren", 60 };
+	REX::TIniSetting<bool>          bLogTargetCaptures{ "Scaleform", "bLogTargetCaptures", false };
+
+	// The pointer arrow.
+	REX::TIniSetting<bool>  bArrow{ "Panel", "bArrow", true };
+	REX::TIniSetting<float> fArrowRadius{ "Panel", "fArrowRadius", 150.0f };
+	REX::TIniSetting<float> fMaxTargetLightSeconds{ "Panel", "fMaxTargetLightSeconds", 20000.0f };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -104,6 +111,36 @@ namespace
 	std::atomic<bool> g_subscribeFailed{ false };
 
 	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
+
+	// One entry per feed slot, index-aligned with both feeds: the low-frequency
+	// one supplies id/type/name, the high-frequency one distance and angle. That
+	// alignment is how a name gets matched to a bearing.
+	struct Candidate
+	{
+		std::uint32_t id{ 0 };
+		std::uint32_t type{ 0 };
+		double        distance{ 0.0 };
+		std::string   name;
+	};
+
+	std::mutex                 g_candidateMutex;
+	std::vector<Candidate>     g_candidates;
+	std::atomic<std::uint32_t> g_selectedID{ 0 };
+	std::atomic<bool>          g_cycleRequested{ false };
+	std::atomic<bool>          g_arrowReady{ false };
+	std::atomic<bool>          g_arrowFailed{ false };
+	RE::Scaleform::GFx::Value  g_arrowClip;
+
+	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
+	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
+	constexpr double kMetersPerLightSecond = 299792458.0;
+
+	bool IsLocalBody(std::uint32_t a_type, double a_distanceMeters)
+	{
+		if (a_type != 7 /* TT_PLANET */ && a_type != 1 /* TT_STAR */)
+			return false;
+		return a_distanceMeters <= static_cast<double>(fMaxTargetLightSeconds.GetValue()) * kMetersPerLightSecond;
+	}
 
 	// The user event that requests a data-model dump: the scanner key, i.e. the
 	// same trigger the finished panel will use.
@@ -196,7 +233,9 @@ namespace
 				if (userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
 					if (bScaleformReader.GetValue())
 						g_dumpRequested.store(true, std::memory_order_release);
-					if (bInterposeTargetData.GetValue()) {
+					if (bArrow.GetValue())
+						g_cycleRequested.store(true, std::memory_order_release);
+					if (bLogTargetCaptures.GetValue()) {
 						g_captureRequested.store(true, std::memory_order_release);
 						g_captureHighRequested.store(true, std::memory_order_release);
 					}
@@ -428,6 +467,19 @@ namespace
 		if (used == cap)
 			REX::WARN("[sf] line cap ({}) reached - raise uScaleformMaxLines to see more", cap);
 		return false;
+	}
+
+	// Feed values arrive as int, uint or number depending on the field, and the
+	// typed getters assert if asked for the wrong one.
+	double AsNumber(const RE::Scaleform::GFx::Value& a_value)
+	{
+		if (a_value.IsNumber())
+			return a_value.GetNumber();
+		if (a_value.IsInt())
+			return static_cast<double>(a_value.GetInt());
+		if (a_value.IsUInt())
+			return static_cast<double>(a_value.GetUInt());
+		return 0.0;
 	}
 
 	std::string DescribeValue(const RE::Scaleform::GFx::Value& a_value)
@@ -784,23 +836,80 @@ namespace
 		"root.BSUIDataManager",
 	};
 
+	// Pulls the entry array out of a feed payload; LowFreq nests it under
+	// `.dataA`, the others pass a bare array.
+	bool GetEntryArray(RE::Scaleform::GFx::Value& a_data, RE::Scaleform::GFx::Value& a_out)
+	{
+		if (!a_data.GetMember("targetArray", &a_out))
+			return false;
+		RE::Scaleform::GFx::Value inner;
+		if (a_out.GetMember("dataA", &inner) && inner.IsArray())
+			a_out = inner;
+		return a_out.IsArray();
+	}
+
+	class CandidateCollector : public RE::Scaleform::GFx::Value::ArrayVisitor
+	{
+	public:
+		std::vector<Candidate> rows;
+
+		void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			RE::Scaleform::GFx::Value entry = a_value;
+			RE::Scaleform::GFx::Value member;
+			Candidate                 row;
+			if (entry.GetMember("uniqueID", &member))
+				row.id = static_cast<std::uint32_t>(AsNumber(member));
+			if (entry.GetMember("uTargetType", &member))
+				row.type = static_cast<std::uint32_t>(AsNumber(member));
+			if (entry.GetMember("name", &member) && member.IsString()) {
+				const char* str = member.GetString();
+				row.name = str ? str : "";
+			}
+			if (rows.size() <= a_index)
+				rows.resize(a_index + 1);
+			rows[a_index] = std::move(row);
+		}
+	};
+
 	class DataFeedHandler : public RE::Scaleform::GFx::FunctionHandler
 	{
 	public:
 		void Call(const Params& a_params) override
 		{
-			if (!g_captureRequested.exchange(false, std::memory_order_acq_rel))
-				return;
 			if (a_params.argCount < 1 || !a_params.args)
 				return;
 
 			// The callback receives a FromClientDataEvent; the payload is `.data`.
 			RE::Scaleform::GFx::Value event = a_params.args[0];
 			RE::Scaleform::GFx::Value data;
-			if (event.IsObject() && event.GetMember("data", &data))
+			if (!event.IsObject() || !event.GetMember("data", &data))
+				data = event;
+
+			// Rebuild the candidate list on every update - this is what the arrow
+			// points at, so it cannot be gated on a capture request. The list is
+			// index-aligned with the high-frequency feed, which is how a name gets
+			// matched to an angle.
+			RE::Scaleform::GFx::Value entries;
+			if (GetEntryArray(data, entries)) {
+				CandidateCollector collector;
+				entries.VisitElements(&collector);
+				std::lock_guard lock{ g_candidateMutex };
+				const auto      previous = std::move(g_candidates);
+				g_candidates = std::move(collector.rows);
+				// Carry distances over; they come from the other feed.
+				for (auto& row : g_candidates) {
+					for (const auto& old : previous) {
+						if (old.id == row.id) {
+							row.distance = old.distance;
+							break;
+						}
+					}
+				}
+			}
+
+			if (g_captureRequested.exchange(false, std::memory_order_acq_rel))
 				CaptureTargetData(data);
-			else
-				CaptureTargetData(event);
 		}
 	};
 
@@ -833,13 +942,36 @@ namespace
 		}
 	};
 
+	class BearingCollector : public RE::Scaleform::GFx::Value::ArrayVisitor
+	{
+	public:
+		struct Row
+		{
+			double angle{ 0.0 };
+			double distance{ 0.0 };
+		};
+		std::vector<Row> rows;
+
+		void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			RE::Scaleform::GFx::Value entry = a_value;
+			RE::Scaleform::GFx::Value member;
+			Row                       row;
+			if (entry.GetMember("angleToCrosshair", &member))
+				row.angle = AsNumber(member);
+			if (entry.GetMember("distance", &member))
+				row.distance = AsNumber(member);
+			if (rows.size() <= a_index)
+				rows.resize(a_index + 1);
+			rows[a_index] = row;
+		}
+	};
+
 	class HighFeedHandler : public RE::Scaleform::GFx::FunctionHandler
 	{
 	public:
 		void Call(const Params& a_params) override
 		{
-			if (!g_captureHighRequested.exchange(false, std::memory_order_acq_rel))
-				return;
 			if (a_params.argCount < 1 || !a_params.args)
 				return;
 
@@ -849,18 +981,72 @@ namespace
 				data = event;
 
 			RE::Scaleform::GFx::Value entries;
-			if (!data.GetMember("targetArray", &entries))
-				return;
-			RE::Scaleform::GFx::Value inner;
-			if (entries.GetMember("dataA", &inner) && inner.IsArray())
-				entries = inner;
-			if (!entries.IsArray())
+			if (!GetEntryArray(data, entries))
 				return;
 
-			REX::INFO("[nav] ==== high-frequency (screen positions) ====");
-			HighFeedRowVisitor visitor;
-			entries.VisitElements(&visitor);
-			REX::INFO("[nav] ==== end ====");
+			BearingCollector bearings;
+			entries.VisitElements(&bearings);
+
+			bool        haveSelected = false;
+			double      selectedAngle = 0.0;
+			std::string selectedName;
+
+			{
+				std::lock_guard lock{ g_candidateMutex };
+				const auto      count = std::min(g_candidates.size(), bearings.rows.size());
+				for (std::size_t i = 0; i < count; ++i)
+					g_candidates[i].distance = bearings.rows[i].distance;
+
+				if (g_cycleRequested.exchange(false, std::memory_order_acq_rel)) {
+					// Advance to the next local body after the current one, so
+					// repeated presses walk the system in a stable order.
+					const auto current = g_selectedID.load(std::memory_order_acquire);
+					std::size_t start = 0;
+					for (std::size_t i = 0; i < count; ++i) {
+						if (g_candidates[i].id == current) {
+							start = i + 1;
+							break;
+						}
+					}
+					std::uint32_t picked = 0;
+					for (std::size_t n = 0; n < count; ++n) {
+						const auto& row = g_candidates[(start + n) % count];
+						if (IsLocalBody(row.type, row.distance)) {
+							picked = row.id;
+							selectedName = row.name;
+							break;
+						}
+					}
+					g_selectedID.store(picked, std::memory_order_release);
+					if (picked)
+						REX::INFO("[arrow] selected '{}' (uniqueID={})", selectedName, picked);
+					else
+						REX::WARN("[arrow] no local body to select among {} targets", count);
+				}
+
+				const auto selected = g_selectedID.load(std::memory_order_acquire);
+				for (std::size_t i = 0; i < count; ++i) {
+					if (selected != 0 && g_candidates[i].id == selected) {
+						haveSelected = true;
+						selectedAngle = bearings.rows[i].angle;
+						break;
+					}
+				}
+			}
+
+			if (g_arrowReady.load(std::memory_order_acquire)) {
+				using V = RE::Scaleform::GFx::Value;
+				g_arrowClip.SetMember("visible", V{ haveSelected });
+				if (haveSelected)
+					g_arrowClip.SetMember("rotation", V{ selectedAngle + 180.0 });
+			}
+
+			if (g_captureHighRequested.exchange(false, std::memory_order_acq_rel)) {
+				REX::INFO("[nav] ==== high-frequency (bearings) ====");
+				HighFeedRowVisitor visitor;
+				entries.VisitElements(&visitor);
+				REX::INFO("[nav] ==== end ====");
+			}
 		}
 	};
 
@@ -1026,6 +1212,97 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
+	// The pointer arrow.
+	//
+	// `angleToCrosshair` is a 2D screen bearing, not a cone angle - vanilla's own
+	// off-screen blips do `rotation = angleToCrosshair + 180` and nothing else
+	// (OffScreenIcon.SetTargetHighInfo). So an arrow that points at a chosen body
+	// is that one line, recomputed on every high-frequency update, which makes it
+	// live while the ship steers. It also works for targets *behind* the player,
+	// where `screenPositionX/Y` is the -1 "unprojectable" sentinel - the case a
+	// screen-position overlay could never have handled.
+	// ---------------------------------------------------------------------------
+
+	void TryCreateArrow()
+	{
+		if (!bArrow.GetValue() || g_arrowReady.load(std::memory_order_acquire) || g_arrowFailed.load(std::memory_order_acquire))
+			return;
+		if (!g_subscribed.load(std::memory_order_acquire))
+			return;  // no feed yet, so nothing to point at
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud))
+			return;
+		const auto menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return;
+
+		auto*             root = menu->uiMovie->asMovieRoot.get();
+		const char*       rootPath = menu->GetRootPath();
+		const std::string reticlePath = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc";
+
+		RE::Scaleform::GFx::Value reticle;
+		if (!root->GetVariable(&reticle, reticlePath.c_str()))
+			return;
+
+		const auto giveUp = [&](const char* a_why) {
+			REX::WARN("[arrow] not created: {}", a_why);
+			g_arrowFailed.store(true, std::memory_order_release);
+		};
+
+		// CreateEmptyMovieClip is the AS2-era call and may not exist on an AS3
+		// display object, so fall back to constructing a Sprite and adding it.
+		bool made = reticle.CreateEmptyMovieClip(&g_arrowClip, "ShipNavPanelArrow", 20000);
+		REX::INFO("[arrow] CreateEmptyMovieClip: {}", made ? "ok" : "failed, trying Sprite");
+		if (!made) {
+			root->CreateObject(&g_arrowClip, "flash.display.Sprite");
+			if (!g_arrowClip.IsObject() && !g_arrowClip.IsDisplayObject()) {
+				giveUp("neither CreateEmptyMovieClip nor flash.display.Sprite produced an object");
+				return;
+			}
+			RE::Scaleform::GFx::Value added;
+			if (!reticle.Invoke("addChild", &added, &g_arrowClip, 1)) {
+				giveUp("addChild rejected the sprite");
+				return;
+			}
+			REX::INFO("[arrow] Sprite created and added to the reticle");
+		}
+
+		RE::Scaleform::GFx::Value gfx;
+		if (!g_arrowClip.GetMember("graphics", &gfx)) {
+			giveUp("the clip has no 'graphics' member to draw into");
+			return;
+		}
+
+		// A triangle with its tip out at radius R, so rotating the clip about its
+		// own origin sweeps it around the crosshair pointing outward - the same
+		// arrangement the vanilla off-screen indicators use.
+		const double r = static_cast<double>(fArrowRadius.GetValue());
+		using V = RE::Scaleform::GFx::Value;
+
+		V fill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 1.0 } };
+		gfx.Invoke("beginFill", nullptr, fill, 2);
+		V p0[]{ V{ 0.0 }, V{ -r } };
+		gfx.Invoke("moveTo", nullptr, p0, 2);
+		V p1[]{ V{ -11.0 }, V{ -r + 24.0 } };
+		gfx.Invoke("lineTo", nullptr, p1, 2);
+		V p2[]{ V{ 11.0 }, V{ -r + 24.0 } };
+		gfx.Invoke("lineTo", nullptr, p2, 2);
+		gfx.Invoke("lineTo", nullptr, p0, 2);
+		gfx.Invoke("endFill", nullptr, nullptr, 0);
+
+		g_arrowClip.SetMember("x", V{ 0.0 });
+		g_arrowClip.SetMember("y", V{ 0.0 });
+		g_arrowClip.SetMember("visible", V{ false });
+
+		g_arrowReady.store(true, std::memory_order_release);
+		REX::INFO("[arrow] ready (radius {}) - press the scanner key to cycle targets", r);
+	}
+
+	// ---------------------------------------------------------------------------
 	// Tap 3: context heartbeat, for correlating with the input log.
 	// ---------------------------------------------------------------------------
 
@@ -1087,7 +1364,7 @@ namespace
 		// on anything the sealed class permits, so it runs independently of the
 		// interposer rather than behind its give-up flag.
 		TryInstallSubscriber();
-		TryInstallInterposer();
+		TryCreateArrow();
 
 		// Single-winner exchange: the dump is expensive and must not run twice
 		// concurrently if this task lands on two threads in the same frame.
