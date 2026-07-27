@@ -125,7 +125,18 @@ answered this. Everything below is verified in game.
 |---|---|---|---|
 | Scanner key | `SHMonocle` | open / close the panel | arrives undisabled in cruise and the game declines to act on it (Phase 0) |
 | Mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight | drives the camera, and the camera can be made not to see it (below) |
-| — | — | confirm | **not needed**: the arrow follows the highlight live, so closing the panel simply keeps the selection |
+| R | `XButton` | lock the highlight / clear it | free in cruise |
+
+> **`SelectTarget` (E) is NOT free** — tested in game on v0.3.0: it still cycles
+> targets in cruise, so it would do both jobs at once. It was the first choice
+> and it had to be swapped out. My earlier note that Phase 0 "never established
+> it was active in cruise" was correct as far as it went, but the answer turned
+> out to be that it *is* active.
+>
+> The confirm key is **required**, not optional as an earlier draft of this plan
+> assumed. Without it the highlight would always become the selection on close,
+> and there would be no way to clear a target without picking a different one.
+> Closing without confirming reverts the arrow; that is the whole design.
 
 `Quickkey2` / `Quickkey3` (keys 2 and 3) reach the mod undisabled in cruise and
 are free. `XButton` (key R) is a further untested candidate. `RepairShip` sits

@@ -84,8 +84,15 @@ namespace
 	// The list panel, and the key that locks the highlighted body or clears it
 	// again. The confirm key is a NAME, matched against the user event, so it
 	// follows a rebind - never write an id code here.
-	REX::TIniSetting<bool>          bPanel{ "Panel", "bPanel", true };
-	REX::TIniSetting<std::string>   sConfirmEvent{ "Panel", "sConfirmEvent", "SelectTarget" };
+	REX::TIniSetting<bool>        bPanel{ "Panel", "bPanel", true };
+	REX::TIniSetting<std::string> sConfirmEvent{ "Panel", "sConfirmEvent", "XButton" };
+
+	// The control hint along the bottom. The label is a separate setting because
+	// the mod knows the confirm key's user-event NAME, not which physical key it
+	// is bound to - `XButton` happens to be R on the bindings this was built
+	// against, and anyone who has moved it needs to say so here.
+	REX::TIniSetting<bool>        bPanelHints{ "Panel", "bPanelHints", true };
+	REX::TIniSetting<std::string> sConfirmKeyLabel{ "Panel", "sConfirmKeyLabel", "R" };
 
 	// Hide the mouse wheel from the camera while the panel is open, so scrolling
 	// the list does not swing the point of view. Verified in game (v0.2.3); the
@@ -203,6 +210,8 @@ namespace
 	RE::Scaleform::GFx::Value  g_panelHighlight;
 	RE::Scaleform::GFx::Value  g_panelRows[kPanelMaxRowsHard];
 	RE::Scaleform::GFx::Value  g_panelFormat;
+	RE::Scaleform::GFx::Value  g_panelHint;
+	RE::Scaleform::GFx::Value  g_panelHintFormat;
 	std::atomic<bool>          g_panelReady{ false };
 	std::atomic<bool>          g_panelFailed{ false };
 	std::atomic<std::uint32_t> g_panelRowCount{ 0 };
@@ -897,6 +906,8 @@ namespace
 			g_panelClip = RE::Scaleform::GFx::Value{};
 			g_panelHighlight = RE::Scaleform::GFx::Value{};
 			g_panelFormat = RE::Scaleform::GFx::Value{};
+			g_panelHint = RE::Scaleform::GFx::Value{};
+			g_panelHintFormat = RE::Scaleform::GFx::Value{};
 			for (auto& row : g_panelRows)
 				row = RE::Scaleform::GFx::Value{};
 			g_panelRowCount.store(0, std::memory_order_release);
@@ -1949,10 +1960,15 @@ namespace
 			return;
 		}
 
-		const auto rows = std::clamp<std::size_t>(uPanelMaxRows.GetValue(), 1, kPanelMaxRowsHard);
+		const auto   rows = std::clamp<std::size_t>(uPanelMaxRows.GetValue(), 1, kPanelMaxRowsHard);
 		const double rowHeight = static_cast<double>(fPanelRowHeight.GetValue());
 		const double width = static_cast<double>(fPanelWidth.GetValue());
-		const double height = rowHeight * static_cast<double>(rows) + 12.0;
+
+		const bool   hints = bPanelHints.GetValue();
+		const double listBottom = 6.0 + rowHeight * static_cast<double>(rows);
+		const double hintHeight = 22.0;
+		const double hintTop = listBottom + 6.0;
+		const double height = hints ? (hintTop + hintHeight + 4.0) : (listBottom + 6.0);
 
 		// Background: a flat panel at 55% so the starfield still reads through.
 		RE::Scaleform::GFx::Value gfx;
@@ -1972,6 +1988,47 @@ namespace
 		gfx.Invoke("lineTo", nullptr, bg3, 2);
 		gfx.Invoke("lineTo", nullptr, bg0, 2);
 		gfx.Invoke("endFill", nullptr, nullptr, 0);
+
+		// The control hint's symbols are DRAWN, not typed. The font here is
+		// borrowed from the HUD and embedded, which means it carries only the
+		// glyphs its author included - arrows like U+25B2 would very likely come
+		// out as blank boxes. Triangles from the graphics API cannot.
+		double hintTextX = 12.0;
+		if (hints) {
+			// A hairline above the hint, to set it apart from the list.
+			V ruleFill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 0.20 } };
+			gfx.Invoke("beginFill", nullptr, ruleFill, 2);
+			V r0[]{ V{ 10.0 }, V{ listBottom + 2.0 } };
+			gfx.Invoke("moveTo", nullptr, r0, 2);
+			V r1[]{ V{ width - 10.0 }, V{ listBottom + 2.0 } };
+			gfx.Invoke("lineTo", nullptr, r1, 2);
+			V r2[]{ V{ width - 10.0 }, V{ listBottom + 3.0 } };
+			gfx.Invoke("lineTo", nullptr, r2, 2);
+			V r3[]{ V{ 10.0 }, V{ listBottom + 3.0 } };
+			gfx.Invoke("lineTo", nullptr, r3, 2);
+			gfx.Invoke("lineTo", nullptr, r0, 2);
+			gfx.Invoke("endFill", nullptr, nullptr, 0);
+
+			// Two small triangles, up then down: the wheel, both ways.
+			const double midY = hintTop + hintHeight * 0.5;
+			const auto   triangle = [&](double a_cx, bool a_up) {
+                V fill[]{ V{ static_cast<std::uint32_t>(0x99D6FF) }, V{ 0.85 } };
+                gfx.Invoke("beginFill", nullptr, fill, 2);
+                const double tip = a_up ? midY - 4.5 : midY + 4.5;
+                const double base = a_up ? midY + 3.0 : midY - 3.0;
+                V p0[]{ V{ a_cx }, V{ tip } };
+                gfx.Invoke("moveTo", nullptr, p0, 2);
+                V p1[]{ V{ a_cx - 5.0 }, V{ base } };
+                gfx.Invoke("lineTo", nullptr, p1, 2);
+                V p2[]{ V{ a_cx + 5.0 }, V{ base } };
+                gfx.Invoke("lineTo", nullptr, p2, 2);
+                gfx.Invoke("lineTo", nullptr, p0, 2);
+                gfx.Invoke("endFill", nullptr, nullptr, 0);
+			};
+			triangle(17.0, true);
+			triangle(32.0, false);
+			hintTextX = 44.0;
+		}
 
 		// The highlight is its own clip so moving it is one property write per
 		// wheel notch rather than a redraw.
@@ -2039,6 +2096,42 @@ namespace
 		}
 		if (made < rows)
 			REX::WARN("[panel] only {} of {} rows could be created", made, rows);
+
+		// The hint is static text, so it is written once here rather than on
+		// every refresh.
+		if (hints) {
+			root->CreateObject(&g_panelHint, "flash.text.TextField");
+			if (g_panelHint.IsObject() || g_panelHint.IsDisplayObject()) {
+				g_panelHint.SetMember("selectable", V{ false });
+				g_panelHint.SetMember("mouseEnabled", V{ false });
+				g_panelHint.SetMember("multiline", V{ false });
+				g_panelHint.SetMember("width", V{ width - hintTextX - 8.0 });
+				g_panelHint.SetMember("height", V{ hintHeight });
+				g_panelHint.SetMember("x", V{ hintTextX });
+				g_panelHint.SetMember("y", V{ hintTop + 2.0 });
+
+				if (BorrowTextFormat(root, rootPath, g_panelHintFormat, "[panel-hint]")) {
+					g_panelHintFormat.SetMember("size", V{ 14.0 });
+					g_panelHintFormat.SetMember("bold", V{ false });
+					g_panelHintFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x7FA8C4) });
+					g_panelHint.SetMember("embedFonts", V{ true });
+					g_panelHint.SetMember("defaultTextFormat", g_panelHintFormat);
+				} else {
+					g_panelHint.SetMember("textColor", V{ static_cast<std::uint32_t>(0x7FA8C4) });
+				}
+
+				const auto hintText = std::format("browse     {}  lock / clear", sConfirmKeyLabel.GetValue());
+				g_panelHint.SetMember("text", V{ hintText.c_str() });
+				if (g_panelHintFormat.IsObject())
+					g_panelHint.Invoke("setTextFormat", nullptr, &g_panelHintFormat, 1);
+
+				RE::Scaleform::GFx::Value added;
+				if (!g_panelClip.Invoke("addChild", &added, &g_panelHint, 1))
+					REX::WARN("[panel] hint addChild failed - the list will run without it");
+			} else {
+				REX::WARN("[panel] could not create the hint TextField - the list will run without it");
+			}
+		}
 
 		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
 		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
@@ -2353,9 +2446,12 @@ namespace
 		iniStore->Init("Data/SFSE/Plugins/ShipNavPanel.ini", "Data/SFSE/Plugins/ShipNavPanelCustom.ini");
 		iniStore->Load();
 
-		REX::INFO("config: bInputTap={} bArrow={} bLabel={} bPanel={} bWheelFilter={} sConfirmEvent='{}'",
+		REX::INFO("config: bInputTap={} bArrow={} bLabel={} bPanel={} bWheelFilter={}",
 			bInputTap.GetValue(), bArrow.GetValue(), bLabel.GetValue(), bPanel.GetValue(),
-			bWheelFilter.GetValue(), sConfirmEvent.GetValue());
+			bWheelFilter.GetValue());
+		REX::INFO("config: sConfirmEvent='{}' shown as '{}' (bPanelHints={}) - if the hint names the wrong "
+				  "key, correct sConfirmKeyLabel; it cannot be derived from the event name",
+			sConfirmEvent.GetValue(), sConfirmKeyLabel.GetValue(), bPanelHints.GetValue());
 		REX::INFO("config: bLogInput={} bLogInputHeldFrames={} bLogInputNonButton={} uMaxInputLines={} "
 				  "bLogMenus={} bLogHeartbeat={} fHeartbeatSeconds={} bVerifyVTableID={} bSuppressThrottleTest={}",
 			bLogInput.GetValue(), bLogInputHeldFrames.GetValue(), bLogInputNonButton.GetValue(),

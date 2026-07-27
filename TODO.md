@@ -8,11 +8,14 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.2.1 — two regressions fixed, one Phase 2 test built, none of it yet
-confirmed in game.** In cruise, the scanner key cycles the system's planets; an
-arrow points at the selected one with its name and distance, updating live as
-the ship steers. Outside cruise the mod is idle and the scanner key keeps its
-vanilla job.
+**v0.3.1 — the Phase 2 panel works in game.** In cruise the scanner key opens a
+list of the system's bodies; the mouse wheel moves the highlight and the arrow
+previews it; R locks the highlighted body onto the HUD, or clears it if it is
+already locked. Closing without confirming changes nothing. Outside cruise the
+mod is idle and the scanner key keeps its vanilla job.
+
+Confirmed in game on v0.3.0 ("works exactly as advertised"); v0.3.1 swapped the
+confirm key and added the control hint, and its hint row is not yet eyeballed.
 
 > **v0.2.0 was inert and nobody had run it.** Packaging flipped the recon
 > defaults off, and two pieces of load-bearing machinery were sitting behind
@@ -67,12 +70,12 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Phase 2 panel — the input model is settled, the drawing is not.** The
-      recon is finished: scanner key opens and closes, mouse wheel moves the
-      highlight, no confirm key needed. Table and reasoning in
-      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md). What remains is the panel
-      itself — frame, rows, highlight — driven by the candidate list the arrow
-      already maintains, then icons, then polish.
+- [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
+      giants last, since that needs the PNDT layout. See the verdict table in
+      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
+- [ ] **Cosmetics pass on the panel** — position and size were guessed against
+      one resolution. `fPanelOffsetX`/`fPanelOffsetY`/`fPanelWidth` exist for
+      exactly this.
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
       default confirm — it engages the cruise **autopilot**. Build a params
       object `{uBodyID: <uniqueID>}`, construct `Shared.AS3.Events.CustomEvent`
