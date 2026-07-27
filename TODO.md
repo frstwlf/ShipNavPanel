@@ -8,10 +8,28 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.2.0 beta — working, packaged, not released.** In cruise, the scanner key
-cycles the system's planets; an arrow points at the selected one with its name
-and distance, updating live as the ship steers. Outside cruise the mod is idle
-and the scanner key keeps its vanilla job.
+**v0.2.1 — two regressions fixed, one Phase 2 test built, none of it yet
+confirmed in game.** In cruise, the scanner key cycles the system's planets; an
+arrow points at the selected one with its name and distance, updating live as
+the ship steers. Outside cruise the mod is idle and the scanner key keeps its
+vanilla job.
+
+> **v0.2.0 was inert and nobody had run it.** Packaging flipped the recon
+> defaults off, and two pieces of load-bearing machinery were sitting behind
+> those flags:
+>
+> - `TryInstallInputTap()` was gated on `bLogInput`, so with logging off the tap
+>   was never installed — nothing set the cycle request, no body was ever
+>   selected, and the arrow never appeared at all.
+> - `menus->Register(&OnMenuMovieCreated)` sat inside `if (bLogMenus)`, so the
+>   stale-handle teardown never ran and a rebuilt HUD movie left the plugin
+>   writing rotation into a destroyed clip.
+>
+> Both now install unconditionally and log only if asked. The lesson worth
+> keeping: **a debug flag must never gate anything the mod needs to work.** When
+> promoting recon code to infrastructure, move it out from behind its flag in
+> the same commit. Grep for `GetValue()` guarding a `Register`, an install or a
+> hook before packaging again.
 
 Build and deploy: `xmake -y` installs straight into the game
 (`XSE_SF_GAME_PATH` is set at User scope). `xmake package -y` only when handing
@@ -49,10 +67,16 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
+- [ ] **Test the v0.2.1 build in game — this is the next thing to do.** Two
+      stages, in order, both described in
+      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md): first confirm on the default
+      ini that the scanner key cycles again (proves the tap installs), then set
+      `bSuppressThrottleTest=true` and check whether W/S still drive the throttle
+      while the panel state is up. Confirm the version on the log's first line.
 - [ ] **Phase 2 panel** — list, icons, W/S navigation. Specced and graded in
-      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md). Start with the one piece that
-      can fail outright: suppressing throttle input by setting `disabled = true`
-      on `ButtonEvent`s inside the input tap we already own.
+      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md). Blocked on the suppression
+      answer above: it decides whether the panel can own W/S or has to be
+      designed around the scanner key.
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
       default confirm — it engages the cruise **autopilot**. Build a params
       object `{uBodyID: <uniqueID>}`, construct `Shared.AS3.Events.CustomEvent`
@@ -64,6 +88,9 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Release checklist
 
+- [ ] **Discard `build/packages/ShipNavPanel-0.2.0.zip`** — that archive is the
+      inert build described above. Never hand it to anyone; re-package from
+      0.2.1 or later, and only after the in-game test above has actually passed.
 - [ ] Flip `frstwlf/ShipNavPanel` public — **GPL obligation** once a DLL is
       distributed (CommonLibSF is GPL-3.0-or-later).
 - [ ] Scan history first for `C:\Users\<you>\...` paths and log excerpts; deleting

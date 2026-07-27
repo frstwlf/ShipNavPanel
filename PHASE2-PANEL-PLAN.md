@@ -44,6 +44,38 @@ that are not flight-bound (the scanner key already cycles perfectly well).
 **Do this first.** It is the only piece that can fail outright, and the whole
 interaction design depends on the answer.
 
+### Built in v0.2.1 — awaiting the in-game answer
+
+The test ships behind `bSuppressThrottleTest` (off by default, `[Recon]`). The
+throttle names are `Forward` / `Back`, matched by name — the id codes in
+[PHASE0-FINDINGS.md](PHASE0-FINDINGS.md) section 2 are one tester's own rebinds
+and must never be baked in.
+
+**Run it in two stages, in this order.** Stage 1 is what makes stage 2 mean
+anything: without it, a dead throttle key is indistinguishable from a tap that
+was never installed.
+
+1. **Default ini.** In cruise, press the scanner key and confirm a body is
+   selected and the arrow appears. That proves the tap installs with
+   `bLogInput=false` — the v0.2.0 regression.
+2. **`bSuppressThrottleTest=true`.** In cruise the scanner key now toggles the
+   panel state instead of cycling. Raise it, hold W and S, and watch whether the
+   ship still accelerates. The log carries `[suppress]` lines for the press, the
+   release and the running count.
+
+Reading the result:
+
+- Ship does **not** accelerate → the flag works, the interaction model is safe,
+  and the panel can own W/S.
+- Ship accelerates anyway → `disabled` is advisory for flight input. Fall back
+  to non-flight keys and redesign the navigation around the scanner key.
+- No `[suppress]` lines at all → the events do not carry those names in cruise.
+  Turn on `bLogInput` and read what W/S actually arrive as while cruising.
+
+Safety: leaving cruise always forces the panel down, and suppression is gated on
+cruise a second time at the point of the write, so the throttle cannot be left
+suppressed in normal flight.
+
 ## Suggested order
 
 1. Input suppression test (above). Small, isolated, decisive.

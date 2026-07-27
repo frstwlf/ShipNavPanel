@@ -54,6 +54,12 @@ namespace
 	REX::TIniSetting<float>         fHeartbeatSeconds{ "Recon", "fHeartbeatSeconds", 5.0f };
 	REX::TIniSetting<bool>          bVerifyVTableID{ "Recon", "bVerifyVTableID", false };
 
+	// Phase 2's one real unknown: can the panel stop the ship acting on W/S by
+	// marking those button events disabled as they pass the tap? While this is
+	// on, the scanner key toggles a bare "panel up" state instead of cycling, so
+	// the answer is not tangled up with the arrow's behaviour.
+	REX::TIniSetting<bool> bSuppressThrottleTest{ "Recon", "bSuppressThrottleTest", false };
+
 	// Scaleform reader: dumps the ship HUD's ActionScript data model on demand.
 	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", false };
 	REX::TIniSetting<bool>          bInterposeTargetData{ "Scaleform", "bInterposeTargetData", true };
@@ -62,6 +68,12 @@ namespace
 	REX::TIniSetting<std::uint32_t> uScaleformMaxLines{ "Scaleform", "uScaleformMaxLines", 3000 };
 	REX::TIniSetting<std::uint32_t> uScaleformMaxChildren{ "Scaleform", "uScaleformMaxChildren", 60 };
 	REX::TIniSetting<bool>          bLogTargetCaptures{ "Scaleform", "bLogTargetCaptures", false };
+
+	// The input tap. This is not diagnostics: the scanner key reaches the mod
+	// through it, so with it off nothing selects a body and the arrow never
+	// appears. It is a setting at all only so a tester chasing a conflict can
+	// take the mod's one vtable write out of the picture without unloading it.
+	REX::TIniSetting<bool> bInputTap{ "Panel", "bInputTap", true };
 
 	// The pointer arrow.
 	REX::TIniSetting<bool>  bArrow{ "Panel", "bArrow", true };
@@ -146,6 +158,13 @@ namespace
 	// panel must stay out of the way there - the gate identified back in Phase 0.
 	std::atomic<bool> g_inCruise{ false };
 
+	// "The panel is up": while this is set, throttle events are marked disabled
+	// on their way past the tap. Nothing is drawn yet - this build exists to
+	// answer whether the suppression works at all, which is the piece Phase 2
+	// can fail outright on.
+	std::atomic<bool>          g_panelUp{ false };
+	std::atomic<std::uint32_t> g_suppressedCount{ 0 };
+
 	// Defined further down, but called from the data-feed callbacks above them.
 	bool WorldSettled();
 	void TryCreateArrow();
@@ -165,6 +184,19 @@ namespace
 	// The user event that requests a data-model dump: the scanner key, i.e. the
 	// same trigger the finished panel will use.
 	constexpr const char* kDumpTriggerEvent = "SHMonocle";
+
+	// Throttle in the pilot seat is W/S, which arrive under the in-ship names
+	// `Forward` and `Back` (PHASE0-FINDINGS.md, section 2). Matched by NAME and
+	// never by id code: the ids in that table are one tester's own rebinds, and
+	// the same id carries different names depending on the active context.
+	constexpr const char* kThrottleUpEvent = "Forward";
+	constexpr const char* kThrottleDownEvent = "Back";
+
+	bool IsThrottleEvent(const char* a_userEvent)
+	{
+		return a_userEvent && (std::strcmp(a_userEvent, kThrottleUpEvent) == 0 ||
+								  std::strcmp(a_userEvent, kThrottleDownEvent) == 0);
+	}
 
 	const char* DeviceName(RE::InputEvent::DeviceType a_type)
 	{
@@ -222,14 +254,87 @@ namespace
 		return false;
 	}
 
-	void LogInputQueue(const RE::InputEvent* a_head)
+	// Toggling is a compare-exchange rather than load-then-store because the
+	// input queue is not guaranteed to be drained by the same thread every
+	// frame, and a lost toggle here leaves the throttle suppressed.
+	void TogglePanelForTest()
 	{
+		bool wasUp = g_panelUp.load(std::memory_order_acquire);
+		while (!g_panelUp.compare_exchange_weak(wasUp, !wasUp, std::memory_order_acq_rel))
+			;
+
+		if (!wasUp) {
+			g_suppressedCount.store(0, std::memory_order_release);
+			REX::INFO("[suppress] panel UP - '{}' and '{}' will be marked disabled. "
+					  "Hold W and S now: the question is whether the ship still accelerates.",
+				kThrottleUpEvent, kThrottleDownEvent);
+		} else {
+			REX::INFO("[suppress] panel DOWN - {} throttle events were marked disabled while it was up",
+				g_suppressedCount.load(std::memory_order_acquire));
+		}
+	}
+
+	void SuppressThrottleEvent(const RE::ButtonEvent* a_button, bool a_down, bool a_firstFrame)
+	{
+		// The engine mutates these events in place as they travel the chain -
+		// `disabled` is the same flag it sets itself for a binding it has
+		// switched off - so this writes a field the game expects to be written.
+		// It is the only engine memory this plugin touches outside its own
+		// vtable slot.
+		const bool was = a_button->disabled;
+		const_cast<RE::ButtonEvent*>(a_button)->disabled = true;
+
+		const auto n = g_suppressedCount.fetch_add(1, std::memory_order_relaxed) + 1;
+
+		// A held key produces one event per frame, so only the edges are logged;
+		// the count carries the middle.
+		if (a_down && a_firstFrame)
+			REX::INFO("[suppress] '{}' PRESS - disabled {} -> true",
+				SafeStr(a_button->strUserEvent.c_str()), was);
+		else if (!a_down)
+			REX::INFO("[suppress] '{}' RELEASE after {} suppressed events",
+				SafeStr(a_button->strUserEvent.c_str()), n);
+	}
+
+	// The scanner key's initial press. Only flags are set here - the movie is
+	// touched from the per-frame task, and the captured data is read on the UI
+	// thread by the interposer.
+	void OnTriggerPressed()
+	{
+		if (bScaleformReader.GetValue())
+			g_dumpRequested.store(true, std::memory_order_release);
+		if (bLogTargetCaptures.GetValue()) {
+			g_captureRequested.store(true, std::memory_order_release);
+			g_captureHighRequested.store(true, std::memory_order_release);
+		}
+
+		// Only hijack the scanner key while cruising; outside cruise it still
+		// opens the vanilla ship scanner.
+		if (!g_inCruise.load(std::memory_order_acquire))
+			return;
+
+		if (bSuppressThrottleTest.GetValue()) {
+			TogglePanelForTest();
+			return;
+		}
+
+		if (bArrow.GetValue())
+			g_cycleRequested.store(true, std::memory_order_release);
+	}
+
+	// Walks the frame's input queue. This runs on every build, logging or not:
+	// the scanner key reaches the mod through here, and so does the throttle
+	// suppression. Everything below is ordered so that the functional work
+	// happens before any logging filter can skip an event.
+	void ProcessInputQueue(const RE::InputEvent* a_head)
+	{
+		const bool logInput = bLogInput.GetValue();
 		const bool logHeld = bLogInputHeldFrames.GetValue();
 		const bool logOther = bLogInputNonButton.GetValue();
 
 		for (const RE::InputEvent* event = a_head; event; event = event->next) {
 			if (event->eventType != RE::InputEvent::EventType::kButton) {
-				if (logOther && InputBudgetOk())
+				if (logInput && logOther && InputBudgetOk())
 					REX::INFO("[input] {:<9} {}", EventTypeName(event->eventType), DeviceName(event->deviceType));
 				continue;
 			}
@@ -241,31 +346,31 @@ namespace
 			const auto* button = static_cast<const RE::ButtonEvent*>(event);
 			const bool  down = button->value != 0.0f;
 			const bool  firstFrame = button->heldDownSecs == 0.0f;
+			const char* userEvent = button->strUserEvent.c_str();
 
+			// --- functional work: never skipped by a logging filter ---
+
+			// Suppression has to see HELD frames. Throttle is a key held down,
+			// so disabling only its first frame would still let the ship
+			// accelerate. The cruise check is deliberately redundant with the
+			// one that raises the panel: a throttle stuck off is the worst
+			// failure this mod could have, so it is gated twice.
+			if (g_panelUp.load(std::memory_order_acquire) &&
+				g_inCruise.load(std::memory_order_acquire) &&
+				IsThrottleEvent(userEvent))
+				SuppressThrottleEvent(button, down, firstFrame);
+
+			if (down && firstFrame && userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0)
+				OnTriggerPressed();
+
+			// --- logging only, from here down ---
+
+			if (!logInput)
+				continue;
 			if (down && !firstFrame && !logHeld)
 				continue;  // held-down repeat
-
-			// Request a dump/capture on the trigger key's initial press. Only
-			// flags are set here - the movie is touched from the per-frame task,
-			// and the captured data is read on the UI thread by the interposer.
-			if (down && firstFrame) {
-				const char* userEvent = button->strUserEvent.c_str();
-				if (userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
-					if (bScaleformReader.GetValue())
-						g_dumpRequested.store(true, std::memory_order_release);
-					// Only hijack the scanner key while cruising; outside cruise
-					// it still opens the vanilla ship scanner.
-					if (bArrow.GetValue() && g_inCruise.load(std::memory_order_acquire))
-						g_cycleRequested.store(true, std::memory_order_release);
-					if (bLogTargetCaptures.GetValue()) {
-						g_captureRequested.store(true, std::memory_order_release);
-						g_captureHighRequested.store(true, std::memory_order_release);
-					}
-				}
-			}
-
 			if (!InputBudgetOk())
-				return;
+				continue;  // `continue`, not `return`: the walk must go on
 
 			REX::INFO("[input] button   {:<8} user='{}' id={:<4} disabled={} {} value={:.2f} held={:.3f}s",
 				DeviceName(button->deviceType),
@@ -280,8 +385,7 @@ namespace
 
 	void PerformInputProcessingHook(RE::BSInputEventReceiver* a_this, const RE::InputEvent* a_queueHead)
 	{
-		if (bLogInput.GetValue())
-			LogInputQueue(a_queueHead);
+		ProcessInputQueue(a_queueHead);
 
 		if (const auto original = g_origPerformInputProcessing.load(std::memory_order_acquire))
 			original(a_this, a_queueHead);
@@ -291,9 +395,16 @@ namespace
 	// exchange: two threads patching the same vtable entry would leave the hook
 	// calling itself, so this must not be a plain bool (the SeamlessGravJumps
 	// double-fire was exactly this shape of bug).
+	//
+	// This used to be gated on `bLogInput`, from Phase 0 when the tap existed
+	// only to log. Once the scanner key started arriving through it the gate was
+	// a live bug, and flipping that default off for the v0.2.0 package shipped
+	// it: no tap, so nothing ever set the cycle request, so no body was ever
+	// selected and the arrow stayed invisible. The tap is infrastructure now and
+	// installs on its own setting; logging is a separate question.
 	void TryInstallInputTap()
 	{
-		if (!bLogInput.GetValue() || g_inputTapClaimed.load(std::memory_order_acquire))
+		if (!bInputTap.GetValue() || g_inputTapClaimed.load(std::memory_order_acquire))
 			return;
 
 		const auto ui = RE::UI::GetSingleton();
@@ -1342,8 +1453,13 @@ namespace
 		const bool                was = g_inCruise.exchange(cruising, std::memory_order_acq_rel);
 		if (was != cruising) {
 			REX::INFO("[arrow] cruise {}", cruising ? "entered - panel active" : "left - panel idle");
-			if (!cruising)
+			if (!cruising) {
 				g_selectedID.store(0, std::memory_order_release);
+				// Leaving cruise must never strand the throttle suppressed.
+				if (g_panelUp.exchange(false, std::memory_order_acq_rel))
+					REX::INFO("[suppress] panel forced DOWN - left cruise ({} events suppressed)",
+						g_suppressedCount.load(std::memory_order_acquire));
+			}
 		}
 	}
 
@@ -1590,12 +1706,35 @@ namespace
 		iniStore->Init("Data/SFSE/Plugins/ShipNavPanel.ini", "Data/SFSE/Plugins/ShipNavPanelCustom.ini");
 		iniStore->Load();
 
+		REX::INFO("config: bInputTap={} bArrow={} bLabel={}", bInputTap.GetValue(), bArrow.GetValue(), bLabel.GetValue());
 		REX::INFO("config: bLogInput={} bLogInputHeldFrames={} bLogInputNonButton={} uMaxInputLines={} "
-				  "bLogMenus={} bLogHeartbeat={} fHeartbeatSeconds={} bVerifyVTableID={}",
+				  "bLogMenus={} bLogHeartbeat={} fHeartbeatSeconds={} bVerifyVTableID={} bSuppressThrottleTest={}",
 			bLogInput.GetValue(), bLogInputHeldFrames.GetValue(), bLogInputNonButton.GetValue(),
 			uMaxInputLines.GetValue(), bLogMenus.GetValue(), bLogHeartbeat.GetValue(),
-			fHeartbeatSeconds.GetValue(), bVerifyVTableID.GetValue());
+			fHeartbeatSeconds.GetValue(), bVerifyVTableID.GetValue(), bSuppressThrottleTest.GetValue());
 
+		if (!bInputTap.GetValue())
+			REX::WARN("bInputTap is off - the scanner key cannot reach the mod, so no body will be "
+					  "selected and the arrow will never appear");
+		if (bSuppressThrottleTest.GetValue())
+			REX::INFO("[suppress] throttle-suppression test ON - in cruise, the scanner key toggles the "
+					  "panel state instead of cycling targets");
+
+		// The movie-created callback is NOT diagnostics, whatever its position
+		// in this function once suggested: it drops the stale Scaleform handles
+		// when the HUD's movie is rebuilt, which happens often. Registering it
+		// only when menu logging was on - as this did - meant a shipped build
+		// kept writing rotation into a destroyed movie's clip. It registers
+		// always now, and logs only if asked.
+		if (const auto menus = SFSE::GetMenuInterface()) {
+			menus->Register(&OnMenuMovieCreated);
+			REX::INFO("[menu] SFSE movie-created callback registered");
+		} else {
+			REX::WARN("[menu] SFSE menu interface unavailable; movie-created callback not registered "
+					  "- the arrow will not survive a HUD movie rebuild");
+		}
+
+		// The open/close sink, by contrast, only ever logs.
 		if (bLogMenus.GetValue()) {
 			if (const auto ui = RE::UI::GetSingleton()) {
 				ui->RegisterSink(&g_menuSink);
@@ -1603,17 +1742,10 @@ namespace
 			} else {
 				REX::WARN("[menu] UI singleton unavailable; open/close sink not registered");
 			}
-
-			if (const auto menus = SFSE::GetMenuInterface()) {
-				menus->Register(&OnMenuMovieCreated);
-				REX::INFO("[menu] SFSE movie-created callback registered");
-			} else {
-				REX::WARN("[menu] SFSE menu interface unavailable; movie-created callback not registered");
-			}
 		}
 
 		SFSE::GetTaskInterface()->AddPermanentTask(OnFrame);
-		REX::INFO("recon task registered - this build only observes, it changes nothing");
+		REX::INFO("per-frame task registered");
 	}
 }
 
