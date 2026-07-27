@@ -283,7 +283,11 @@ namespace
 	struct BodyEntry
 	{
 		GalaxyData  galaxy;
-		std::string name;  // empty for bodies the game generates
+		std::string name;
+		// False for bodies the game generates rather than authors. They are kept
+		// for their place in the hierarchy - a body the HUD offers may be one of
+		// them - but never listed in their own right.
+		bool authored{ true };
 	};
 
 	std::mutex                                   g_bodyTableMutex;
@@ -435,12 +439,29 @@ namespace
 	// Returning nothing is not the same as discarding the body: it stays in the
 	// table so its place in the hierarchy can still be read. It is only kept out
 	// of the list, and if the HUD offers it, the HUD names it properly.
+	// Whether this is a body the game AUTHORED, as opposed to one it generates
+	// to hang something off - an orbital marker, a grav-jump arrival point, a
+	// station's anchor. Only authored bodies belong in the list.
+	//
+	// This is deliberately kept apart from whether a name is available. v0.5.0
+	// conflated the two - a generated body had no name, so filtering on "no
+	// name" happened to filter out generated bodies - and then resolving FULL
+	// gave them names and they walked straight into the list. The Eye turned up
+	// nested under Jemison as though it were a moon while the station itself
+	// was still listed below, which is also a reminder that the two are
+	// different forms entirely: the HUD offers The Eye as a kREFR, the record is
+	// a kPNDT, so no amount of id matching would have caught the duplicate.
+	bool IsAuthoredBody(std::string_view a_editorID)
+	{
+		constexpr std::string_view kSuffix = "PlanetData";
+		return !a_editorID.empty() && a_editorID.front() != '_' &&
+		       a_editorID.size() > kSuffix.size() && a_editorID.ends_with(kSuffix);
+	}
+
 	std::string NameFromEditorID(std::string_view a_editorID)
 	{
 		constexpr std::string_view kSuffix = "PlanetData";
-		if (a_editorID.empty() || a_editorID.front() == '_')
-			return {};
-		if (a_editorID.size() <= kSuffix.size() || !a_editorID.ends_with(kSuffix))
+		if (!IsAuthoredBody(a_editorID))
 			return {};
 		a_editorID.remove_suffix(kSuffix.size());
 		return std::string{ a_editorID };
@@ -595,7 +616,7 @@ namespace
 
 	// Walks one record's subrecords looking for GNAM.
 	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out, std::string& a_name,
-		std::uint32_t& a_fullID)
+		std::uint32_t& a_fullID, bool& a_authored)
 	{
 		std::size_t   offset = 0;
 		std::uint32_t pending = 0;
@@ -628,8 +649,9 @@ namespace
 				return false;
 
 			if (std::memcmp(sig, "EDID", 4) == 0 && size > 1) {
-				a_name = NameFromEditorID(
-					std::string_view{ reinterpret_cast<const char*>(a_data + offset), size - 1 });
+				const std::string_view editorID{ reinterpret_cast<const char*>(a_data + offset), size - 1 };
+				a_authored = IsAuthoredBody(editorID);
+				a_name = NameFromEditorID(editorID);
 			} else if (std::memcmp(sig, "FULL", 4) == 0 && size == 4 && a_fullID == 0) {
 				// The localised name's id. It sits inside a component block but
 				// reads as an ordinary subrecord, and comes before GNAM.
@@ -762,10 +784,13 @@ namespace
 			GalaxyData data;
 			std::string   name;
 			std::uint32_t fullID = 0;
-			if (!FindGnam(body, bodySize, data, name, fullID))
+			bool          authored = false;
+			if (!FindGnam(body, bodySize, data, name, fullID, authored))
 				continue;
 
-			// A real, localised name beats one derived from the editor id.
+			// A real, localised name beats one derived from the editor id - but
+			// having a name says nothing about whether the body belongs in the
+			// list, which is what `authored` is for.
 			if (fullID != 0) {
 				if (const auto found = a_strings.find(fullID); found != a_strings.end())
 					name = found->second;
@@ -786,7 +811,7 @@ namespace
 
 			// Later plugins override earlier ones, which is what the load order
 			// means.
-			a_out.insert_or_assign(runtimeID, BodyEntry{ data, std::move(name) });
+			a_out.insert_or_assign(runtimeID, BodyEntry{ data, std::move(name), authored });
 			++records;
 		}
 
@@ -875,13 +900,15 @@ namespace
 			return;
 		}
 		file << "# ShipNavPanel body table - generated from the load order\n";
-		file << "# Delete this to have it rebuilt. formID,systemID,parentPlanetID,planetID,name\n";
-		file << "# A blank name is deliberate: the game generates that body rather than naming it,\n";
-		file << "# so it is kept for its place in the hierarchy but never shown with an invented name.\n";
+		file << "# Delete this to have it rebuilt.\n";
+		file << "# formID,systemID,parentPlanetID,planetID,authored,name\n";
+		file << "# authored=0 means the game generates that body rather than authoring it - an orbital\n";
+		file << "# marker, a grav-jump arrival point, a station's anchor. Kept for its place in the\n";
+		file << "# hierarchy, since the HUD may offer it, but never listed as a body in its own right.\n";
 		file << "# order " << a_fingerprint << "\n";
 		for (const auto& [formID, entry] : a_table)
-			file << std::format("{:08X},{},{},{},{}\n", formID, entry.galaxy.systemID,
-				entry.galaxy.parentPlanetID, entry.galaxy.planetID, entry.name);
+			file << std::format("{:08X},{},{},{},{},{}\n", formID, entry.galaxy.systemID,
+				entry.galaxy.parentPlanetID, entry.galaxy.planetID, entry.authored ? 1 : 0, entry.name);
 		REX::INFO("[bodies] cached {} bodies to {}", a_table.size(), kBodyTablePath);
 	}
 
@@ -922,31 +949,32 @@ namespace
 			// Split on the first four commas only: a real name can contain
 			// spaces ("New Atlantis") and tokenising on whitespace would cut it
 			// in half - which the editor-id names never would have shown.
-			std::string fields[4];
+			std::string fields[5];
 			std::string name;
 			{
 				std::size_t start = 0;
 				std::size_t which = 0;
-				for (; which < 4; ++which) {
+				for (; which < 5; ++which) {
 					const auto comma = text.find(',', start);
 					if (comma == std::string::npos)
 						break;
 					fields[which] = text.substr(start, comma - start);
 					start = comma + 1;
 				}
-				if (which == 4)
+				if (which == 5)
 					name = text.substr(start);
 				while (!name.empty() && (name.back() == '\r' || name.back() == ' '))
 					name.pop_back();
 			}
 
-			std::istringstream parse{ std::format("{} {} {}", fields[1], fields[2], fields[3]) };
+			std::istringstream parse{ std::format("{} {} {} {}", fields[1], fields[2], fields[3], fields[4]) };
 
 			const std::string& idText = fields[0];
 			std::uint32_t      system = 0;
 			std::uint32_t      parent = 0;
 			std::uint32_t      planet = 0;
-			if (idText.empty() || !(parse >> system >> parent >> planet)) {
+			int                authored = 1;
+			if (idText.empty() || !(parse >> system >> parent >> planet >> authored)) {
 				if (++rejected <= 3)
 					REX::WARN("[bodies] {}:{} could not be read - expected "
 							  "formID,system,parent,planet",
@@ -965,7 +993,8 @@ namespace
 			if (formID == 0 || planet == 0)
 				continue;
 
-			a_out.insert_or_assign(formID, BodyEntry{ GalaxyData{ system, parent, planet }, name });
+			a_out.insert_or_assign(formID,
+				BodyEntry{ GalaxyData{ system, parent, planet }, name, authored != 0 });
 			++loaded;
 		}
 
@@ -2492,7 +2521,7 @@ namespace
 
 		for (const auto formID : found->second) {
 			const auto entry = g_bodyTable.find(formID);
-			if (entry == g_bodyTable.end() || entry->second.name.empty())
+			if (entry == g_bodyTable.end() || !entry->second.authored || entry->second.name.empty())
 				continue;  // generated bodies are the HUD's business, not ours
 
 			const auto already = std::find_if(a_rows.begin(), a_rows.end(),

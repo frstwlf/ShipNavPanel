@@ -220,6 +220,16 @@ Each of these cost real time; the reasoning is in the findings docs.
     null-terminated UTF-8. Verified before implementing: 43005 → Jemison,
     42692 → Kurtz. Editor-id names remain the fallback where a plugin ships no
     archive.
+  - **"Has a name" and "belongs in the list" are separate questions.** Keep them
+    apart, because they *look* interchangeable: generated bodies had no editor-id
+    name, so filtering on "no name" happened to exclude them — until v0.5.0
+    resolved `FULL` and gave them names, at which point The Eye appeared nested
+    under Jemison as a moon. Listing is decided by the editor-id convention
+    (`BodyEntry::authored`), never by whether a name exists.
+  - **A body can exist twice as two different form types.** The HUD offers The
+    Eye as a `kREFR` (`0x28FBA9`); its record is a `kPNDT` (`0x2900AC`). No
+    amount of form-id matching will dedupe those, so the panel must avoid
+    listing the record rather than hope to catch the collision.
   - **Parsing the ESM: two things that will bite.** Every PNDT record is
     zlib-compressed (1765 of 1765), the stream starting 4 bytes in, after a
     `uint32` inflated size. And **`XXXX` carries the real 32-bit length of the
