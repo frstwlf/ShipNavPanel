@@ -105,6 +105,30 @@ and subscription whenever the movie-created callback fires, and drop stale
       target. Mention `fArrowAngleOffset` / `bArrowInvertAngle` as the first
       thing to try if anyone reports the arrow pointing wrongly.
 
+## Save safety
+
+**The mod writes nothing into your save, and creates no forms.** Worth stating
+plainly, since it holds form ids and Starfield has a history of runtime forms
+accumulating in saves. Audited 2026-07-27:
+
+- **No forms are ever created** — no `PlaceAtMe`, no ref handles, no spawning.
+  Every id comes from `TESForm::LookupByID`, i.e. reading a record the game
+  already has.
+- **No co-save data.** No serialization callbacks are registered, and SFSE
+  0.2.21 compiles those hooks out regardless.
+- **The selections are plain C++ atomics**, gone when the process exits — which
+  is also why a lock does not survive a restart.
+- **The only file written** is `ShipNavPanelBodies.txt` in `Data\SFSE\Plugins`,
+  outside the save entirely and safe to delete.
+- **Engine writes are two vtable slots** (in-memory, never serialised) and, only
+  with the default-off throttle test on, the `disabled` flag of a transient
+  input event.
+
+The one real hazard of holding an id is **FF-prefixed runtime forms** — ships
+and spawned POIs, whose ids the engine can recycle. A lock on one is dropped
+after 60 seconds out of the feed (v0.4.4) so it cannot silently follow whatever
+inherits the number. Static bodies are unaffected.
+
 ## Settled — do not re-derive
 
 Each of these cost real time; the reasoning is in the findings docs.

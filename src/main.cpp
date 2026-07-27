@@ -2388,6 +2388,38 @@ namespace
 				                          g_highlightID.load(std::memory_order_acquire) :
 				                          g_lockedID.load(std::memory_order_acquire);
 
+				// A lock on a RUNTIME form is the one case where holding an id
+				// can go wrong. FF-prefixed ids belong to things the game
+				// created on the fly - a ship, a spawned point of interest - and
+				// once the engine lets one go the id can be handed to something
+				// else entirely. A lock left on it would then quietly follow
+				// whatever inherited the number.
+				//
+				// Static bodies never expire, so this touches nothing that comes
+				// out of the master file: planets and moons keep their locks
+				// indefinitely, including the "locked and waiting" case.
+				{
+					const auto lockedID = g_lockedID.load(std::memory_order_acquire);
+					if (lockedID >= 0xFF000000) {
+						bool present = false;
+						for (std::size_t i = 0; i < count && !present; ++i)
+							present = g_candidates[i].id == lockedID;
+
+						using clock = std::chrono::steady_clock;
+						static clock::time_point s_lastSeen{};
+						const auto               now = clock::now();
+						if (present || s_lastSeen == clock::time_point{}) {
+							s_lastSeen = now;
+						} else if (std::chrono::duration<float>(now - s_lastSeen).count() > 60.0f) {
+							g_lockedID.store(0, std::memory_order_release);
+							s_lastSeen = clock::time_point{};
+							REX::INFO("[panel] cleared the lock on {:08X} - a runtime form the game has "
+									  "let go of, whose id could be reused",
+								lockedID);
+						}
+					}
+				}
+
 				for (std::size_t i = 0; i < count; ++i) {
 					if (selected != 0 && g_candidates[i].id == selected) {
 						haveSelected = true;
