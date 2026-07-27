@@ -64,6 +64,12 @@ namespace
 	// per distinct event rather than the flood bLogInput produces.
 	REX::TIniSetting<bool> bSurveyCruiseKeys{ "Recon", "bSurveyCruiseKeys", false };
 
+	// The mouse wheel is the natural input for a list, but in the ship it drives
+	// the camera's point of view. This hides the wheel events from the camera
+	// while the panel is up - by unlinking them from the queue rather than by
+	// flagging them, since flagging is exactly what failed for the throttle.
+	REX::TIniSetting<bool> bWheelFilterTest{ "Recon", "bWheelFilterTest", false };
+
 	// Scaleform reader: dumps the ship HUD's ActionScript data model on demand.
 	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", false };
 	REX::TIniSetting<bool>          bInterposeTargetData{ "Scaleform", "bInterposeTargetData", true };
@@ -168,6 +174,7 @@ namespace
 	// can fail outright on.
 	std::atomic<bool>          g_panelUp{ false };
 	std::atomic<std::uint32_t> g_suppressedCount{ 0 };
+	std::atomic<std::uint32_t> g_wheelRemovedCount{ 0 };
 
 	// Defined further down, but called from the data-feed callbacks above them.
 	bool WorldSettled();
@@ -200,6 +207,17 @@ namespace
 	{
 		return a_userEvent && (std::strcmp(a_userEvent, kThrottleUpEvent) == 0 ||
 								  std::strcmp(a_userEvent, kThrottleDownEvent) == 0);
+	}
+
+	// The mouse wheel, which the cruise survey found arriving undisabled. It
+	// drives the camera's point of view rather than anything about flight.
+	constexpr const char* kWheelUpEvent = "ZoomIn";
+	constexpr const char* kWheelDownEvent = "ZoomOut";
+
+	bool IsWheelEvent(const char* a_userEvent)
+	{
+		return a_userEvent && (std::strcmp(a_userEvent, kWheelUpEvent) == 0 ||
+								  std::strcmp(a_userEvent, kWheelDownEvent) == 0);
 	}
 
 	const char* DeviceName(RE::InputEvent::DeviceType a_type)
@@ -373,12 +391,20 @@ namespace
 
 		if (!wasUp) {
 			g_suppressedCount.store(0, std::memory_order_release);
-			REX::INFO("[suppress] panel UP - '{}' and '{}' will be marked disabled. "
-					  "Hold W and S now: the question is whether the ship still accelerates.",
-				kThrottleUpEvent, kThrottleDownEvent);
+			g_wheelRemovedCount.store(0, std::memory_order_release);
+			REX::INFO("[panel] UP");
+			if (bSuppressThrottleTest.GetValue())
+				REX::INFO("[panel]   '{}' and '{}' will be marked disabled - hold W and S and watch "
+						  "whether the ship still accelerates",
+					kThrottleUpEvent, kThrottleDownEvent);
+			if (bWheelFilterTest.GetValue())
+				REX::INFO("[panel]   '{}' and '{}' will be hidden from the camera - spin the wheel and "
+						  "watch whether the point of view still changes",
+					kWheelUpEvent, kWheelDownEvent);
 		} else {
-			REX::INFO("[suppress] panel DOWN - {} throttle events were marked disabled while it was up",
-				g_suppressedCount.load(std::memory_order_acquire));
+			REX::INFO("[panel] DOWN - {} throttle events marked disabled, {} wheel events hidden",
+				g_suppressedCount.load(std::memory_order_acquire),
+				g_wheelRemovedCount.load(std::memory_order_acquire));
 		}
 	}
 
@@ -421,7 +447,8 @@ namespace
 		if (!g_inCruise.load(std::memory_order_acquire))
 			return;
 
-		if (bSuppressThrottleTest.GetValue()) {
+		// Either test needs the panel-up state, so either one claims the key.
+		if (bSuppressThrottleTest.GetValue() || bWheelFilterTest.GetValue()) {
 			TogglePanelForTest();
 			return;
 		}
@@ -503,6 +530,131 @@ namespace
 
 		if (const auto original = g_origPerformInputProcessing.load(std::memory_order_acquire))
 			original(a_this, a_queueHead);
+	}
+
+	// ---------------------------------------------------------------------------
+	// Tap 6: the camera's own input receiver.
+	//
+	// `PlayerCamera` is a `BSInputEventReceiver` in its own right, so it can be
+	// hooked with the same live-vtable trick as `RE::UI`. The point is to hide
+	// the wheel from it while the panel is up, so the wheel can drive a list
+	// without swinging the point of view.
+	//
+	// This does NOT set `disabled` - that is precisely what failed for the
+	// throttle. It unlinks the wheel events from the queue for the duration of
+	// the camera's call and relinks them immediately after, so the camera cannot
+	// act on events it never sees, and every other receiver still gets the whole
+	// chain intact.
+	// ---------------------------------------------------------------------------
+
+	std::atomic<PerformInputProcessing_t> g_origCameraInputProcessing{ nullptr };
+	std::atomic<bool>                     g_cameraTapClaimed{ false };
+
+	void PerformCameraInputProcessingHook(RE::BSInputEventReceiver* a_this, const RE::InputEvent* a_queueHead)
+	{
+		const auto original = g_origCameraInputProcessing.load(std::memory_order_acquire);
+
+		const bool filtering = bWheelFilterTest.GetValue() &&
+		                       g_panelUp.load(std::memory_order_acquire) &&
+		                       g_inCruise.load(std::memory_order_acquire);
+
+		if (!filtering) {
+			if (original)
+				original(a_this, a_queueHead);
+			return;
+		}
+
+		// Every link changed is recorded with the value it held, and they are
+		// put back in reverse order - which is what makes repeated edits to the
+		// same node (consecutive wheel notches) unwind correctly.
+		struct LinkFix
+		{
+			RE::InputEvent* node;
+			RE::InputEvent* previousNext;
+		};
+		constexpr std::size_t kMaxFixes = 32;
+		LinkFix               fixes[kMaxFixes]{};
+		std::size_t           fixCount = 0;
+
+		const RE::InputEvent* head = a_queueHead;
+		RE::InputEvent*       prev = nullptr;
+		std::uint32_t         removed = 0;
+
+		for (const RE::InputEvent* event = a_queueHead; event;) {
+			RE::InputEvent* nextEvent = event->next;
+
+			bool drop = false;
+			if (event->eventType == RE::InputEvent::EventType::kButton) {
+				const auto* button = static_cast<const RE::ButtonEvent*>(event);
+				drop = IsWheelEvent(button->strUserEvent.c_str());
+			}
+
+			if (drop && fixCount < kMaxFixes) {
+				if (prev) {
+					fixes[fixCount++] = { prev, prev->next };
+					prev->next = nextEvent;
+				} else {
+					head = nextEvent;  // the head itself is being dropped
+				}
+				++removed;
+				// `prev` deliberately not advanced: the dropped node is out of
+				// the chain, so the last survivor remains the predecessor.
+			} else {
+				prev = const_cast<RE::InputEvent*>(event);
+			}
+
+			event = nextEvent;
+		}
+
+		if (original)
+			original(a_this, head);
+
+		// Relink before anything else walks the chain.
+		for (std::size_t i = fixCount; i-- > 0;)
+			fixes[i].node->next = fixes[i].previousNext;
+
+		if (removed) {
+			const auto total = g_wheelRemovedCount.fetch_add(removed, std::memory_order_relaxed) + removed;
+			REX::INFO("[wheel] hid {} wheel event(s) from the camera (total {})", removed, total);
+		}
+	}
+
+	void TryInstallCameraTap()
+	{
+		if (!bWheelFilterTest.GetValue() || g_cameraTapClaimed.load(std::memory_order_acquire))
+			return;
+
+		const auto camera = RE::PlayerCamera::GetSingleton();
+		if (!camera)
+			return;  // too early - try again next frame
+
+		bool claimed = false;
+		if (!g_cameraTapClaimed.compare_exchange_strong(claimed, true, std::memory_order_acq_rel))
+			return;
+
+		// PlayerCamera inherits TESCamera first and BSInputEventReceiver at
+		// 0x48, so the upcast - not a hand-written offset - is what finds the
+		// receiver subobject whose first qword is its vtable.
+		auto*      receiver = static_cast<RE::BSInputEventReceiver*>(camera);
+		const auto vtableAddr = *reinterpret_cast<std::uintptr_t*>(receiver);
+		if (!vtableAddr) {
+			REX::WARN("[wheel] PlayerCamera has no vtable pointer - camera tap not installed");
+			return;
+		}
+
+		constexpr std::size_t kPerformInputProcessing = 1;
+
+		const auto slot = vtableAddr + sizeof(void*) * kPerformInputProcessing;
+		const auto original = *reinterpret_cast<std::uintptr_t*>(slot);
+		g_origCameraInputProcessing.store(
+			reinterpret_cast<PerformInputProcessing_t>(original), std::memory_order_release);
+
+		REL::Relocation<std::uintptr_t> vtable{ vtableAddr };
+		vtable.write_vfunc(kPerformInputProcessing, &PerformCameraInputProcessingHook);
+
+		REX::INFO("[wheel] camera tap installed on PlayerCamera::PerformInputProcessing "
+				  "(vtable {:016X}, original {:016X})",
+			vtableAddr, original);
 	}
 
 	// Called every frame until it succeeds once. The claim is a single-winner
@@ -1571,8 +1723,10 @@ namespace
 				g_selectedID.store(0, std::memory_order_release);
 				// Leaving cruise must never strand the throttle suppressed.
 				if (g_panelUp.exchange(false, std::memory_order_acq_rel))
-					REX::INFO("[suppress] panel forced DOWN - left cruise ({} events suppressed)",
-						g_suppressedCount.load(std::memory_order_acquire));
+					REX::INFO("[panel] forced DOWN - left cruise ({} throttle events marked, "
+							  "{} wheel events hidden)",
+						g_suppressedCount.load(std::memory_order_acquire),
+						g_wheelRemovedCount.load(std::memory_order_acquire));
 				// Recap the survey while the cruise it describes is still fresh.
 				if (bSurveyCruiseKeys.GetValue())
 					SurveyDump();
@@ -1787,6 +1941,7 @@ namespace
 	void OnFrame()
 	{
 		TryInstallInputTap();
+		TryInstallCameraTap();
 
 		// Only the subscription bootstrap happens here, and only once the world
 		// has settled. Everything else that touches the movie - creating the
@@ -1829,7 +1984,12 @@ namespace
 			bLogInput.GetValue(), bLogInputHeldFrames.GetValue(), bLogInputNonButton.GetValue(),
 			uMaxInputLines.GetValue(), bLogMenus.GetValue(), bLogHeartbeat.GetValue(),
 			fHeartbeatSeconds.GetValue(), bVerifyVTableID.GetValue(), bSuppressThrottleTest.GetValue());
-		REX::INFO("config: bSurveyCruiseKeys={}", bSurveyCruiseKeys.GetValue());
+		REX::INFO("config: bSurveyCruiseKeys={} bWheelFilterTest={}",
+			bSurveyCruiseKeys.GetValue(), bWheelFilterTest.GetValue());
+
+		if (bWheelFilterTest.GetValue())
+			REX::INFO("[wheel] wheel filter test ON - in cruise the scanner key raises the panel state; "
+					  "spin the wheel while it is up and watch whether the point of view changes");
 
 		if (bSurveyCruiseKeys.GetValue())
 			REX::INFO("[survey] cruise key survey ON - enter cruise, then press every key you can spare. "
