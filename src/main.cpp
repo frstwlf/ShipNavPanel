@@ -134,6 +134,11 @@ namespace
 	std::atomic<std::uint32_t> g_subscribeAttempts{ 0 };
 	RE::Scaleform::GFx::Value  g_arrowClip;
 
+	// Cruise state, refreshed from the per-frame task. The scanner key keeps its
+	// vanilla job outside cruise, so the panel must stay out of the way there -
+	// this is the gate identified back in Phase 0.
+	std::atomic<bool> g_inCruise{ false };
+
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
 	constexpr double kMetersPerLightSecond = 299792458.0;
@@ -236,7 +241,9 @@ namespace
 				if (userEvent && std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
 					if (bScaleformReader.GetValue())
 						g_dumpRequested.store(true, std::memory_order_release);
-					if (bArrow.GetValue())
+					// Only hijack the scanner key while cruising; outside cruise
+					// it still opens the vanilla ship scanner.
+					if (bArrow.GetValue() && g_inCruise.load(std::memory_order_acquire))
 						g_cycleRequested.store(true, std::memory_order_release);
 					if (bLogTargetCaptures.GetValue()) {
 						g_captureRequested.store(true, std::memory_order_release);
@@ -1052,6 +1059,7 @@ namespace
 
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
+				haveSelected = haveSelected && g_inCruise.load(std::memory_order_acquire);
 				g_arrowClip.SetMember("visible", V{ haveSelected });
 				if (haveSelected) {
 					// Vanilla uses `angle + 180` because its icon art points the
@@ -1250,6 +1258,34 @@ namespace
 	// screen-position overlay could never have handled.
 	// ---------------------------------------------------------------------------
 
+	void RefreshCruiseState()
+	{
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud)) {
+			g_inCruise.store(false, std::memory_order_release);
+			return;
+		}
+		const auto menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return;
+
+		auto*             root = menu->uiMovie->asMovieRoot.get();
+		const char*       rootPath = menu->GetRootPath();
+		const std::string path = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc.CruiseModeHUDActive";
+
+		RE::Scaleform::GFx::Value flag;
+		const bool                cruising = root->GetVariable(&flag, path.c_str()) && flag.IsBoolean() && flag.GetBoolean();
+		const bool                was = g_inCruise.exchange(cruising, std::memory_order_acq_rel);
+		if (was != cruising) {
+			REX::INFO("[arrow] cruise {}", cruising ? "entered - panel active" : "left - panel idle");
+			if (!cruising)
+				g_selectedID.store(0, std::memory_order_release);
+		}
+	}
+
 	void TryCreateArrow()
 	{
 		if (!bArrow.GetValue() || g_arrowReady.load(std::memory_order_acquire) || g_arrowFailed.load(std::memory_order_acquire))
@@ -1392,6 +1428,7 @@ namespace
 		// interposer rather than behind its give-up flag.
 		TryInstallSubscriber();
 		TryCreateArrow();
+		RefreshCruiseState();
 
 		// Single-winner exchange: the dump is expensive and must not run twice
 		// concurrently if this task lands on two threads in the same frame.

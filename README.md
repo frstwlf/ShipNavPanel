@@ -11,6 +11,19 @@ drawn, no input is consumed. The panel itself does not exist yet, by design —
 Phase 0 exists to answer the questions that decide whether it can be built, and
 to answer them before any effort is spent on Scaleform.
 
+> ### ✅ v0.1.2 — it works
+>
+> In cruise, the **scanner key** cycles through the system's planets and an
+> arrow points at the selected one, rotating live as the ship steers. Verified
+> in game: arrow on Jemison, log agrees.
+>
+> It rests on `angleToCrosshair` from the ship HUD's high-frequency data feed
+> being a **screen bearing**, so the arrow is one rotation per update — the same
+> field vanilla's own off-screen blips use. That is why it stays correct for
+> bodies *behind* the ship, where screen coordinates are unusable.
+>
+> Outside cruise the panel is idle and the scanner key keeps its vanilla job.
+
 > ### ✅ Phase 0 is answered — see [PHASE0-FINDINGS.md](PHASE0-FINDINGS.md)
 >
 > Test run 2026-07-26. **The mod is buildable.** The ship scanner key
