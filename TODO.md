@@ -70,18 +70,11 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Moons nested under their planet** (indented, e.g. `- Jemison` /
-      `-- Kurtz`). **Blocked on finding the parent relationship.** It is *not*
-      in `BGSPlanet::PlanetData` — that record is temperature, density, surface
-      tree and orbital angle, with no relational field at all — and moons come
-      through the feed as plain `TT_PLANET` entries indistinguishable from
-      planets. Next step: v0.3.2 widened the capture to dump every entry's full
-      schema (it previously dumped entry 0 only, which happened to be a POI and
-      so could never have shown this). Run one capture in cruise and look for a
-      parent/primary id among the ~15 fields Phase 1 never enumerated. If it is
-      not there, the routes left are `BGSPlanet::Manager` (unmapped past
-      `currentPlanetFormId`) or the unmapped tail of the PNDT record — both
-      real digs.
+- [ ] **Verify moon nesting in a multi-planet system (Sol).** Implemented in
+      v0.3.3 but on a heuristic that one system cannot falsify — see the
+      "settled" note below. Alpha Centauri has exactly one parent body, so it
+      cannot show the case that would break it: a childless *planet* listed
+      after a parent and its moons would be indented as though it were a moon.
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
@@ -117,6 +110,19 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 Each of these cost real time; the reasoning is in the findings docs.
 
+- **The feed says which bodies HAVE moons, never which planet a moon belongs
+  to.** `bIsCelestialParentBody` is a bool on the entry, true on a planet with
+  moons; moons themselves arrive typed `TT_PLANET`, identical to planets. The
+  parent id is not in `BGSPlanet::PlanetData` either — that record is
+  temperature, density, a surface tree and an orbital angle, nothing relational.
+  So nesting works from **list order**: the game emits a parent immediately
+  followed by its moons (Alpha Centauri: Jemison, then Bondar, Gagarin, Kurtz,
+  Olivas), and a childless body following a parent is taken to be its moon. A
+  childless *planet* in that position would be indented wrongly — unverified,
+  since the only system captured has one parent body.
+- **A borrowed `TextFormat` carries the DONOR's alignment.** The donor is the
+  HUD's centred lock-on caption, so any field using it is centred until `align`
+  is set explicitly. Cost one build: the panel shipped with centred names.
 - **To suppress an input, hook the receiver that consumes it and splice the
   event out of the queue — do not flag it and hope.** Proven both ways on the
   same day: flagging failed for the throttle, splicing worked for the mouse

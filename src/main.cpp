@@ -99,7 +99,9 @@ namespace
 	// than of destinations.
 	REX::TIniSetting<bool> bIncludePOI{ "Panel", "bIncludePOI", true };
 	REX::TIniSetting<bool> bIncludeShips{ "Panel", "bIncludeShips", false };
-	REX::TIniSetting<bool> bPanelRowSeparators{ "Panel", "bPanelRowSeparators", true };
+	REX::TIniSetting<bool>  bPanelRowSeparators{ "Panel", "bPanelRowSeparators", true };
+	REX::TIniSetting<bool>  bNestMoons{ "Panel", "bNestMoons", true };
+	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel from the camera while the panel is open, so scrolling
 	// the list does not swing the point of view. Verified in game (v0.2.3); the
@@ -177,6 +179,11 @@ namespace
 		std::uint32_t type{ 0 };
 		double        distance{ 0.0 };
 		std::string   name;
+		// `bIsCelestialParentBody` from the feed: true on a planet that has
+		// moons. It does NOT name the children - see NestsUnderPrevious().
+		bool isParentBody{ false };
+		// Derived at display time, not from the feed.
+		bool isMoon{ false };
 	};
 
 	std::mutex             g_candidateMutex;
@@ -461,19 +468,48 @@ namespace
 
 	// One entry per line the player sees, in display order: bodies first in feed
 	// order, then stations and landing sites. Caller holds g_candidateMutex.
+	//
+	// Moon nesting is a HEURISTIC and worth understanding before trusting it.
+	// The feed says whether a body HAS moons (`bIsCelestialParentBody`) but
+	// never which planet a moon belongs to, and moons arrive typed exactly like
+	// planets. What the one captured system showed is that the game emits a
+	// parent immediately followed by its moons - Jemison, then Bondar, Gagarin,
+	// Kurtz, Olivas - so a body that follows a parent and has no moons of its
+	// own is taken to be one of its moons.
+	//
+	// Where this would be wrong: a system listing a childless PLANET after a
+	// parent and its moons would indent that planet too. Alpha Centauri, the
+	// only system captured, has exactly one parent body and so cannot show the
+	// difference. Needs checking somewhere like Sol.
 	void CollectLocalRows(std::vector<std::size_t>& a_out)
 	{
 		a_out.clear();
+
+		const bool nest = bNestMoons.GetValue();
+		bool       afterParent = false;
+
 		for (int pass = 0; pass < 2; ++pass) {
 			const bool wantSecondary = pass == 1;
 			for (std::size_t i = 0; i < g_candidates.size(); ++i) {
-				const auto& row = g_candidates[i];
+				auto& row = g_candidates[i];
 				if (!IsLocalBody(row.type, row.distance))
 					continue;
+
+				// Tracked across the whole feed order, not just the rows that
+				// survive filtering, so a hidden entry cannot break the run.
+				if (!wantSecondary && row.type == kTargetTypePlanet) {
+					if (row.isParentBody)
+						afterParent = true;
+					row.isMoon = nest && afterParent && !row.isParentBody;
+				} else {
+					row.isMoon = false;
+				}
+
 				if (IsSecondaryRow(row.type) != wantSecondary)
 					continue;
 				a_out.push_back(i);
 			}
+			afterParent = false;
 		}
 	}
 
@@ -1476,6 +1512,8 @@ namespace
 				const char* str = member.GetString();
 				row.name = str ? str : "";
 			}
+			if (entry.GetMember("bIsCelestialParentBody", &member))
+				row.isParentBody = member.IsBoolean() && member.GetBoolean();
 			if (rows.size() <= a_index)
 				rows.resize(a_index + 1);
 			rows[a_index] = std::move(row);
@@ -2145,6 +2183,10 @@ namespace
 			g_panelFormat.SetMember("size", V{ 17.0 });
 			g_panelFormat.SetMember("bold", V{ false });
 			g_panelFormat.SetMember("color", V{ static_cast<std::uint32_t>(0xCCE6FF) });
+			// A borrowed format brings the DONOR's alignment with it, and the
+			// donor here is the HUD's centred lock-on caption. Without this the
+			// names sit centred in their column, which is what v0.3.2 shipped.
+			g_panelFormat.SetMember("align", V{ "left" });
 		} else {
 			REX::WARN("[panel] no donor TextField found - rows will likely render as boxes");
 		}
@@ -2253,10 +2295,14 @@ namespace
 					REX::WARN("[panel] {} hint addChild failed", a_tag);
 			};
 
-			const double leftWidth = std::max(60.0, width * 0.45 - hintTextX);
+			// Sized from the right hint's needs rather than a percentage split:
+			// the 45/55 split in v0.3.2 left the browse hint too narrow and it
+			// truncated mid-word.
+			const double rightWidth = std::min(150.0, std::max(90.0, width * 0.36));
+			const double leftWidth = std::max(60.0, width - hintTextX - rightWidth - 14.0);
 			makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
 				std::string{ "wheel to browse" }, "left");
-			makeHint(g_panelHintRight, g_panelHintRightFormat, width * 0.45, width * 0.55 - 10.0, "right",
+			makeHint(g_panelHintRight, g_panelHintRightFormat, width - rightWidth - 10.0, rightWidth, "right",
 				std::format("{}  lock / clear", sConfirmKeyLabel.GetValue()), "right");
 		}
 
@@ -2335,6 +2381,12 @@ namespace
 				}
 
 				if (refreshText) {
+					// Moons sit indented under their planet. Done by moving the
+					// field rather than padding the string, so it does not
+					// depend on the width of a space in a borrowed font.
+					nameField.SetMember("x",
+						V{ 10.0 + (row.isMoon ? static_cast<double>(fPanelMoonIndent.GetValue()) : 0.0) });
+
 					// The locked body is marked in the list itself, so the panel
 					// says what the HUD is showing without having to be closed.
 					const char* mark = (locked != 0 && row.id == locked) ? "> " : "  ";
