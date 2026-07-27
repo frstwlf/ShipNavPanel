@@ -1,4 +1,4 @@
-#include "SFSE/SFSE.h"
+﻿#include "SFSE/SFSE.h"
 
 #include "REX/TIniSetting.h"
 
@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <string>
 #include <utility>
 #include <vector>
@@ -656,9 +657,24 @@ namespace
                 return entry.GetMember(a_name, &member) ? DescribeValue(member) : "-";
 			};
 
-			REX::INFO("[nav] [{:>2}] uniqueID={} uTargetType={} name={} landing={}",
-				a_index, field("uniqueID"), field("uTargetType"),
-				field("sTargetName"), field("bLandingAllowed"));
+			// The low-frequency payload carries no name, but the ids look like
+			// form ids: the five planets came back sequential (0x5E30E..0x5E313,
+			// sibling records) and a dynamically spawned POI came back
+			// FF-prefixed. If that holds, names resolve in C++ and the panel
+			// needs nothing more from Scaleform.
+			RE::Scaleform::GFx::Value idValue;
+			std::string               formInfo = "-";
+			if (entry.GetMember("uniqueID", &idValue)) {
+				const auto id = static_cast<std::uint32_t>(idValue.IsUInt() ? idValue.GetUInt() : static_cast<std::uint32_t>(idValue.GetNumber()));
+				if (const auto form = RE::TESForm::LookupByID(id))
+					formInfo = std::format("formType={:02X}", std::to_underlying(form->GetFormType()));
+				else
+					formInfo = "no form";
+			}
+
+			REX::INFO("[nav] [{:>2}] uniqueID={} ({}) uTargetType={} landing={} cruiseLock={}",
+				a_index, field("uniqueID"), formInfo, field("uTargetType"),
+				field("bLandingAllowed"), field("bIsCruiseTargetLock"));
 
 			// The entry schema is not documented anywhere, so spell the first
 			// one out in full - that is how the remaining field names are found.
