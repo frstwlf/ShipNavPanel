@@ -70,10 +70,10 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Generate `ShipNavPanelBodies.txt`** with `tools/ExportBodies.pas` in
-      xEdit and drop it in `Data\SFSE\Plugins\`. That is all moon nesting needs
-      now — the log reports how many bodies loaded, and `[galaxy]` shows the
-      hierarchy per system. Ship the generated file with the mod.
+- [ ] **Confirm moon nesting in game (v0.4.1).** Nothing to set up — the plugin
+      reads the hierarchy out of `Starfield.esm` on a background thread shortly
+      after load and caches it. Look for `[bodies] read N bodies` (first run) or
+      `loaded N bodies` (later), then check Kurtz sits indented under Jemison.
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
@@ -134,8 +134,16 @@ Each of these cost real time; the reasoning is in the findings docs.
     −83.0 Olivas), `density` 0x48, `periAngleInDegrees` 0x4C (186.0),
     `resourceCreationSpeed` 0x50, **form id 0x54**. Anything past 0x58 is the
     *next planet's record*, which is why every scan turned up pointers and float
-    bit patterns. **Do not go looking for it in memory again.** The hierarchy now
-    comes from a table generated out of the ESM by `tools/ExportBodies.pas`.
+    bit patterns. **Do not go looking for it in memory again.** The plugin reads
+    GNAM out of `Starfield.esm` itself instead.
+  - **Parsing the ESM: two things that will bite.** Every PNDT record is
+    zlib-compressed (1765 of 1765), the stream starting 4 bytes in, after a
+    `uint32` inflated size. And **`XXXX` carries the real 32-bit length of the
+    *next* subrecord**, whose own 16-bit size field then reads 0 — miss that and
+    the walk desyncs into the middle of a large payload. It silently cost 1134
+    of 1765 records in the prototype, Kurtz among them, while still *looking*
+    like a working parse. `tools/ExportBodies.pas` remains as an xEdit-side
+    alternative but is no longer needed.
   - **`BGSPlanet::PlanetData`'s member comments are stale AND the struct is
     incomplete.** The comments start at `0x30`, but they were written against a
     `0x30`-byte `TESForm` and `TESForm` is now `0x38` — so the compiler places

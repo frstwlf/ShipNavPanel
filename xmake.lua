@@ -5,12 +5,16 @@ set_config("commonlib_ini", true)
 -- SDK clone two levels up (this project lives in M:\Starfield\Mods\<name>)
 includes("../../commonlibsf")
 
+-- ESM records are zlib-compressed, and the plugin reads the planet/moon
+-- hierarchy straight out of the master file
+add_requires("zlib")
+
 -- set minimum xmake version
 set_xmakever("3.0.0")
 
 -- set project constants
 set_project("ShipNavPanel")
-set_version("0.4.0")
+set_version("0.4.1")
 set_license("GPL-3.0-or-later")
 
 set_arch("x64")
@@ -31,14 +35,13 @@ target("ShipNavPanel", function()
 
     add_files("src/**.cpp")
     add_includedirs("src")
+    add_packages("zlib")
 
     -- ship the default config next to the DLL
     add_installfiles("ShipNavPanel.ini", { prefixdir = "SFSE/Plugins" })
 
-    -- the planet/moon table, if it has been generated (see tools/ExportBodies.pas)
-    if os.isfile("ShipNavPanelBodies.txt") then
-        add_installfiles("ShipNavPanelBodies.txt", { prefixdir = "SFSE/Plugins" })
-    end
+    -- ShipNavPanelBodies.txt is NOT shipped: the plugin builds it from the
+    -- player's own Starfield.esm on first run, so it always matches their game
 
     -- without XSE_SF_GAME_PATH / XSE_SF_MODS_PATH set, deploy into the build tree
     if not os.getenv("XSE_SF_MODS_PATH") and not os.getenv("XSE_SF_GAME_PATH") then

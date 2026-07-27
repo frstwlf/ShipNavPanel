@@ -17,10 +17,14 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <thread>
+
+#include <zlib.h>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -311,32 +315,229 @@ namespace
 		return bytes;
 	}
 
-	// `formID,systemID,parentPlanetID,planetID` per line, `#` for comments and
-	// blank lines ignored. Read once at startup; absence is not an error, it
-	// just means no nesting.
-	void LoadBodyTable()
-	{
-		if (g_bodyTableLoaded.exchange(true, std::memory_order_acq_rel))
-			return;
+	// ---------------------------------------------------------------------------
+	// Reading the hierarchy out of the master file.
+	//
+	// GNAM is not in the runtime record, but it is plainly in the ESM - so the
+	// plugin reads it there itself rather than asking anyone to generate a
+	// table. Validated offline against the tester's own layout before a line of
+	// this was written: all 1765 PNDT records parse, Jemison comes back planet 3
+	// with no parent, and Kurtz comes back parent 3.
+	//
+	// The file is only walked as far as the PNDT group. Top-level groups carry
+	// their own size, so reaching it is a hundred seeks rather than a 1.4 GB
+	// read, and the result is cached beside the plugin so even that happens once
+	// rather than once per launch.
+	// ---------------------------------------------------------------------------
 
-		std::ifstream file{ kBodyTablePath };
+	constexpr const char*  kMasterPath = "Data/Starfield.esm";
+	constexpr std::uint32_t kRecordCompressed = 0x00040000;
+
+	struct RecordHeader
+	{
+		char          signature[4];
+		std::uint32_t dataSize;
+		std::uint32_t flagsOrLabel;  // a GRUP keeps its label here
+		std::uint32_t formID;
+		std::uint32_t unk10;
+		std::uint32_t unk14;
+	};
+	static_assert(sizeof(RecordHeader) == 24);
+
+	bool ReadExact(std::ifstream& a_file, void* a_dest, std::size_t a_size)
+	{
+		a_file.read(reinterpret_cast<char*>(a_dest), static_cast<std::streamsize>(a_size));
+		return a_file.gcount() == static_cast<std::streamsize>(a_size);
+	}
+
+	// Walks one record's subrecords looking for GNAM.
+	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out)
+	{
+		std::size_t   offset = 0;
+		std::uint32_t pending = 0;
+
+		while (offset + 6 <= a_size) {
+			char sig[4];
+			std::memcpy(sig, a_data + offset, 4);
+			std::uint16_t size16 = 0;
+			std::memcpy(&size16, a_data + offset + 4, 2);
+			offset += 6;
+
+			std::uint32_t size = size16;
+
+			// XXXX carries the real 32-bit length of the NEXT subrecord, whose
+			// own size field then reads zero. Skipping that rule desyncs the
+			// walk into the middle of a large payload - in the prototype it
+			// silently lost 1134 of 1765 records, Kurtz among them.
+			if (std::memcmp(sig, "XXXX", 4) == 0 && size == 4) {
+				if (offset + 4 > a_size)
+					return false;
+				std::memcpy(&pending, a_data + offset, 4);
+				offset += 4;
+				continue;
+			}
+			if (pending != 0) {
+				size = pending;
+				pending = 0;
+			}
+			if (offset + size > a_size)
+				return false;
+
+			if (std::memcmp(sig, "GNAM", 4) == 0 && size >= 12) {
+				std::uint32_t values[3];
+				std::memcpy(values, a_data + offset, sizeof(values));
+				a_out = GalaxyData{ values[0], values[1], values[2] };
+				return true;
+			}
+			offset += size;
+		}
+		return false;
+	}
+
+	bool ParseMasterBodies(std::unordered_map<std::uint32_t, GalaxyData>& a_out)
+	{
+		std::ifstream file{ kMasterPath, std::ios::binary };
 		if (!file) {
-			REX::INFO("[bodies] no {} - moons will not be nested. Generate it with "
-					  "tools/ExportBodies.pas in xEdit.",
-				kBodyTablePath);
-			return;
+			REX::WARN("[bodies] cannot open {}", kMasterPath);
+			return false;
 		}
 
-		std::size_t     loaded = 0;
-		std::size_t     line = 0;
-		std::size_t     rejected = 0;
-		std::string     text;
-		std::lock_guard lock{ g_bodyTableMutex };
+		RecordHeader header{};
+		if (!ReadExact(file, &header, sizeof(header)) || std::memcmp(header.signature, "TES4", 4) != 0) {
+			REX::WARN("[bodies] {} does not start with a TES4 record", kMasterPath);
+			return false;
+		}
+		file.seekg(header.dataSize, std::ios::cur);
+
+		// Top-level groups, until the planets.
+		std::uint64_t groupEnd = 0;
+		while (file) {
+			const auto   groupStart = static_cast<std::uint64_t>(file.tellg());
+			RecordHeader group{};
+			if (!ReadExact(file, &group, sizeof(group)) || std::memcmp(group.signature, "GRUP", 4) != 0)
+				break;
+			// A group's size counts its own header; its label sits where a
+			// record keeps its flags.
+			if (std::memcmp(&group.flagsOrLabel, "PNDT", 4) == 0) {
+				groupEnd = groupStart + group.dataSize;
+				break;
+			}
+			file.seekg(static_cast<std::streamoff>(groupStart + group.dataSize), std::ios::beg);
+		}
+		if (groupEnd == 0) {
+			REX::WARN("[bodies] no PNDT group in {}", kMasterPath);
+			return false;
+		}
+
+		std::vector<std::byte> raw;
+		std::vector<std::byte> inflated;
+		std::size_t            records = 0;
+
+		while (file && static_cast<std::uint64_t>(file.tellg()) + sizeof(RecordHeader) < groupEnd) {
+			const auto   recordStart = static_cast<std::uint64_t>(file.tellg());
+			RecordHeader record{};
+			if (!ReadExact(file, &record, sizeof(record)))
+				break;
+
+			if (std::memcmp(record.signature, "GRUP", 4) == 0) {
+				file.seekg(static_cast<std::streamoff>(recordStart + record.dataSize), std::ios::beg);
+				continue;
+			}
+			if (std::memcmp(record.signature, "PNDT", 4) != 0) {
+				file.seekg(record.dataSize, std::ios::cur);
+				continue;
+			}
+
+			raw.resize(record.dataSize);
+			if (record.dataSize != 0 && !ReadExact(file, raw.data(), raw.size()))
+				break;
+
+			const std::byte* body = raw.data();
+			std::size_t      bodySize = raw.size();
+
+			if ((record.flagsOrLabel & kRecordCompressed) != 0) {
+				if (raw.size() < 5)
+					continue;
+				std::uint32_t inflatedSize = 0;
+				std::memcpy(&inflatedSize, raw.data(), sizeof(inflatedSize));
+				if (inflatedSize == 0 || inflatedSize > 64u * 1024u * 1024u)
+					continue;
+
+				inflated.resize(inflatedSize);
+				uLongf produced = inflatedSize;
+				if (::uncompress(reinterpret_cast<Bytef*>(inflated.data()), &produced,
+						reinterpret_cast<const Bytef*>(raw.data() + 4),
+						static_cast<uLong>(raw.size() - 4)) != Z_OK)
+					continue;
+				body = inflated.data();
+				bodySize = produced;
+			}
+
+			GalaxyData data;
+			if (FindGnam(body, bodySize, data)) {
+				a_out.insert_or_assign(record.formID, data);
+				++records;
+			}
+		}
+
+		REX::INFO("[bodies] read {} bodies from {}", records, kMasterPath);
+		return records > 0;
+	}
+
+	std::uint64_t MasterFileSize()
+	{
+		std::error_code error;
+		const auto      size = std::filesystem::file_size(kMasterPath, error);
+		return error ? 0 : static_cast<std::uint64_t>(size);
+	}
+
+	void WriteBodyTable(const std::unordered_map<std::uint32_t, GalaxyData>& a_table)
+	{
+		std::ofstream file{ kBodyTablePath, std::ios::trunc };
+		if (!file) {
+			REX::WARN("[bodies] could not write {} - it will be rebuilt next launch", kBodyTablePath);
+			return;
+		}
+		file << "# ShipNavPanel body table - generated from " << kMasterPath << "\n";
+		file << "# Delete this to have it rebuilt. formID,systemID,parentPlanetID,planetID\n";
+		file << "# master " << MasterFileSize() << "\n";
+		for (const auto& [formID, data] : a_table)
+			file << std::format("{:08X},{},{},{}\n", formID, data.systemID, data.parentPlanetID, data.planetID);
+		REX::INFO("[bodies] cached {} bodies to {}", a_table.size(), kBodyTablePath);
+	}
+
+	// `formID,systemID,parentPlanetID,planetID` per line, `#` for comments and
+	// blank lines ignored. Returns false when the cache is missing or was built
+	// against a different master file.
+	bool ReadBodyTable(std::unordered_map<std::uint32_t, GalaxyData>& a_out)
+	{
+		std::ifstream file{ kBodyTablePath };
+		if (!file)
+			return false;
+
+		std::size_t loaded = 0;
+		std::size_t line = 0;
+		std::size_t rejected = 0;
+		std::string text;
 
 		while (std::getline(file, text)) {
 			++line;
-			if (const auto hash = text.find('#'); hash != std::string::npos)
+			if (const auto hash = text.find('#'); hash != std::string::npos) {
+				// The cache records which master it was built from, so a game
+				// update rebuilds it rather than going quietly stale.
+				if (const auto marker = text.find("master "); marker != std::string::npos) {
+					try {
+						if (std::stoull(text.substr(marker + 7)) != MasterFileSize()) {
+							REX::INFO("[bodies] {} was built against a different {} - rebuilding",
+								kBodyTablePath, kMasterPath);
+							return false;
+						}
+					} catch (...) {
+						return false;
+					}
+				}
 				text.erase(hash);
+			}
 			if (text.find_first_not_of(" \t\r\n") == std::string::npos)
 				continue;
 
@@ -366,12 +567,42 @@ namespace
 			if (formID == 0 || planet == 0)
 				continue;
 
-			g_bodyTable.insert_or_assign(formID, GalaxyData{ system, parent, planet });
+			a_out.insert_or_assign(formID, GalaxyData{ system, parent, planet });
 			++loaded;
 		}
 
+		if (loaded == 0)
+			return false;
+
 		REX::INFO("[bodies] loaded {} bodies from {}{}", loaded, kBodyTablePath,
 			rejected ? std::format(" ({} lines rejected)", rejected) : "");
+		return true;
+	}
+
+	// Off the main thread: reaching the planets means seeking most of the way
+	// through a 1.4 GB file and inflating ~1700 records, which is a second or
+	// two the game should not be made to wait for. Nesting simply starts working
+	// shortly after load, and the table is cached so later launches are instant.
+	void LoadBodyTable()
+	{
+		if (g_bodyTableLoaded.exchange(true, std::memory_order_acq_rel))
+			return;
+
+		std::thread{ [] {
+			std::unordered_map<std::uint32_t, GalaxyData> table;
+
+			if (!ReadBodyTable(table)) {
+				table.clear();
+				if (!ParseMasterBodies(table)) {
+					REX::WARN("[bodies] could not read the planet hierarchy - moons will not be nested");
+					return;
+				}
+				WriteBodyTable(table);
+			}
+
+			std::lock_guard lock{ g_bodyTableMutex };
+			g_bodyTable = std::move(table);
+		} }.detach();
 	}
 
 	bool ReadGalaxyData(std::uint32_t a_formID, GalaxyData& a_out)
