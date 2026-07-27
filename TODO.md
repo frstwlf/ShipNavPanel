@@ -101,13 +101,19 @@ retired; the HUD's Scaleform layer is the API.**
 
 ### What is left
 
-- [ ] **The confirm action, end to end.** Fully specified, not yet tested:
-      build a params object (`CreateObject`, `SetMember("uBodyID", <uniqueID>)`),
-      construct `Shared.AS3.Events.CustomEvent` with (type, params) — the
-      payload is its **second** ctor arg and lands in `params` — then
-      `BSUIDataManager.Invoke("dispatchEvent", …)` with
-      `"Reticle_OnCruiseLockCourse"`. Every call involved is already proven.
-      Success looks like `bIsCruiseTargetLock` flipping on the chosen entry.
+- [ ] **★ Set the ship's target from the engine side.** The only remaining
+      unknown. `Reticle_OnCruiseLockCourse` is **not** the answer — it engages
+      the cruise **autopilot** (`bIsCruiseTargetLock` drives a Lock/Clear Course
+      toggle), and the panel should select, not fly. There is no by-id "set
+      target" event anywhere in the UI layer, and `iInfoTargetIndex` is
+      read-only to the SWF, so this has to come from `Spaceship::TargetingMode`.
+      Much more tractable than when first proposed: we know each candidate's
+      **form id**, which is almost certainly the argument such a function takes.
+- [ ] Keep the lock-course dispatch as a **separate, opt-in** panel action —
+      it is fully specified and would be genuinely useful, just never the
+      default confirm. `CustomEvent(type, params)` with `{uBodyID: <uniqueID>}`
+      (payload is the 2nd ctor arg, lands in `params`), dispatched via
+      `BSUIDataManager.dispatchEvent`.
 - [ ] Resolve display names from the form ids (kPNDT/kSTDT/kREFR) — beware
       `GetFormEditorID()` on stubs; prefer the `editorID` member where present.
 - [ ] Then Phase 2: the panel UI itself.

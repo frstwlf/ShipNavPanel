@@ -267,7 +267,60 @@ Per-entry fields: `uniqueID`, `uTargetType`, `bLandingAllowed`,
 `iFaction`, `iLevel`, `fMinArrivalDistance`, `handle`, plus ~15 more.
 Payload-level: `iInfoTargetIndex`, `iHoverTargetIndex`.
 
-### The confirm action is now fully specified
+### ⚠ `bIsCruiseTargetLock` is the AUTOPILOT, not "is targeted" (2026-07-27)
+
+Raised by the tester and confirmed in `FarTravelIconBase`:
+
+```actionscript
+this.CruiseLockButtonHintData.sButtonText =
+    TargetLow.bIsCruiseTargetLock ? CRUISE_CLEAR_COURSE : CRUISE_LOCK_COURSE;
+```
+
+The flag drives a **Lock Course / Clear Course** toggle — cruise's autopilot
+toward a body. So `Reticle_OnCruiseLockCourse` *engages autopilot*, it does not
+merely select something. Using it as the panel's confirm would silently fly the
+ship, which is not what a nav panel should do on a keypress.
+
+### ✖ There is NO by-id "set target" anywhere in the UI layer
+
+The complete vocabulary of parameterised UI→engine events in this SWF:
+
+| event | payload | effect |
+|---|---|---|
+| `Reticle_OnCruiseLockCourse` | `uBodyID` | **engage cruise autopilot** |
+| `ShipHud_FarTravel` | `uValue` | far-travel to it |
+| `ShipHud_DockRequested` | `handle` | dock |
+| `ShipHud_HailShip` / `HailAccepted` / `HailCancelled` | `handle`/`uValue` | hail |
+| `ShipHud_TargetShipSystem` | `uValue` | a *subsystem* of the current target |
+| `ShipHudQuickContainer_TransferItem` | `uHandleID` | cargo |
+
+Plain targeting is **`ShipHud_Target`, parameterless** — "target whatever the
+reticle hovers". And `iInfoTargetIndex` is read-only to the SWF: every one of
+its references reads it, none writes it. **The engine owns target selection
+outright, and exposes no way to request a specific object.**
+
+So the panel's confirm — "make this object the current target" — cannot be done
+through Scaleform at all. Not a tuning problem: the operation does not exist at
+this layer.
+
+### → Targeting has to come from the engine, and that hunt just got much easier
+
+Back to `Spaceship::TargetingMode` (live RTTI/vtable ids, no curated API) — but
+in far better shape than when it was first proposed:
+
+- We know the exact **form id** of every candidate (`uniqueID`), which is
+  almost certainly what an engine-side "set target" takes. That is a concrete
+  signature to search for rather than a blind trawl.
+- Phase 0 proved a target **survives entering cruise**, so setting one is a
+  legal state the engine already supports — the mod is not fighting it.
+- The list, the names, the types and the cruise state are all already solved,
+  so this is the single remaining unknown rather than one of four.
+
+Worth knowing before that work starts: vanilla simply cannot target a distant
+planet while cruising, so the panel is adding a capability the base game lacks,
+not re-exposing a hidden one.
+
+### The lock-course action is still fully specified (for later, opt-in)
 
 `CustomEvent`'s constructor takes the payload as its **second** argument and
 stores it in `params`:
