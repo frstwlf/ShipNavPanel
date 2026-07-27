@@ -326,7 +326,7 @@ Both feeds subscribed, captured in cruise. Per target:
 
 | field | feed | |
 |---|---|---|
-| `name` | low | **"Jemison", "Bondar", "Gagarin", "Kurtz", "Olivas"** (planets), "Masada" (star), "The Eye", "Starstation RE-939", "Deimos Armored Transport", "Ship" |
+| `name` | low | **"Jemison", "Bondar", "Gagarin", "Kurtz", "Olivas"** (planets), "The Eye", "Starstation RE-939", "Deimos Armored Transport", "Ship", and "Masada" — a star **outside** the system, showing as a quest target, *not* the local primary (its `distance` of 8.21e17 m ≈ 87 ly confirms it). `TT_STAR` means "a star", not "this system's star". |
 | `uniqueID` | low | form id (kPNDT / kSTDT / kREFR) |
 | `uTargetType` | low | TT_PLANET=7, TT_STAR=1, TT_POI=4 |
 | `distance` | high | metres |
@@ -349,13 +349,29 @@ fail for exactly the planets the player cannot see**, which is the whole point
 of the feature. `angleToCrosshair` is populated regardless (`-155°` for a body
 behind the ship), so it is the field to build on.
 
-It also suggests a better shape than labelling blips. `OffScreenIcon` has no
-text field, so labels would mean creating and positioning `flash.text.TextField`
-objects per blip — and they would be unplaceable for anything behind the player
-anyway. A single multi-line panel listing **name + angle + distance, sorted by
-|angle|**, is far less code, works for every target including those behind, and
-arguably answers the question better: not just "which blip is Bondar" but
-"turn 12° right for Bondar".
+### ★★ `angleToCrosshair` is a SCREEN BEARING — a pointer arrow is two lines
+
+`OffScreenIcon.SetTargetHighInfo` does exactly this, and nothing more:
+
+```actionscript
+var _loc2_:Number = param1.angleToCrosshair + 180;
+rotation = _loc2_;                      // the whole icon rotates to point at the target
+this.PoiIcon_mc.rotation = -_loc2_;     // inner art counter-rotated to stay upright
+```
+
+So the field is not a cone angle — it is the **2D screen-space bearing**, in
+degrees, and vanilla's own directional blips are driven by it alone. Which
+means a "point me at Bondar" arrow is `rotation = angleToCrosshair + 180`,
+recomputed on every high-frequency update, i.e. **live while the ship steers**.
+
+It works for targets behind the player too, where `screenPositionX/Y` is the
+`-1` sentinel — the case a screen-position overlay could never have handled.
+Note the counter-rotation trick if the arrow contains any art or text that
+should stay upright.
+
+This is a better fit than either blip labels (impossible: `OffScreenIcon` has
+no text field, and unplaceable behind the player) or a static list (readable,
+but does not update as you turn).
 
 ### The lock-course action is still fully specified (for later, opt-in)
 

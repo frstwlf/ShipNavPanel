@@ -105,19 +105,22 @@ Names, form ids, types, distances, screen positions and **`angleToCrosshair`**
 all read from the two subscribed feeds. Verified in cruise: five planets, a
 star and four POIs, all named. Nothing further is needed to *know* what to show.
 
-- [ ] **Build the panel as a LIST, not blip labels.** `screenPositionX/Y` is
-      `-1` (unprojectable) for anything behind the player — which is precisely
-      the case the feature exists for — and `OffScreenIcon` has no text field to
-      label anyway. `angleToCrosshair` is populated for every target, so a
-      single multi-line field showing **name + angle + distance, sorted by
-      |angle|** works universally and answers "turn 12° right for Bondar"
-      rather than merely "that blip is Bondar".
-      - [ ] Rendering: one `flash.text.TextField` created via `CreateObject`
-            and `addChild`ed to the reticle, positioned at a screen edge. One
-            field, not N positioned labels.
+- [ ] **★ Build a POINTER ARROW, live while steering.** `angleToCrosshair` is a
+      2D **screen bearing**, not a cone angle — vanilla's own off-screen blips
+      are driven by `rotation = angleToCrosshair + 180` and nothing else
+      (`OffScreenIcon.SetTargetHighInfo`). So the arrow is that one line,
+      recomputed on each high-frequency update, and it works for targets behind
+      the player where `screenPositionX/Y` is the `-1` sentinel.
+      - [ ] Selection: cycle among `uTargetType` 7 (planet) / 1 (star) entries
+            with the scanner key; name shown in a small label.
+      - [ ] Rendering: `CreateEmptyMovieClip` (live id) + the graphics API to
+            draw a triangle — no font or symbol dependency — parented to the
+            reticle and centred. Counter-rotate any label so it stays upright,
+            as `PoiIcon_mc` does.
       - [ ] Re-assert on high-frequency updates; the HUD rebuilds constantly.
-      - [ ] Filter to `uTargetType` 7/1 (planets, star) by default; POIs and
-            ships optional.
+      - [ ] Beware: a `TT_STAR` entry may be **out of system** (a quest-marked
+            star showed at 87 ly). Filter by distance or by type+proximity, not
+            type alone.
 
 ### Still open (not needed for the list panel)
 
