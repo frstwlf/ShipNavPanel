@@ -67,16 +67,16 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Test the v0.2.1 build in game — this is the next thing to do.** Two
-      stages, in order, both described in
-      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md): first confirm on the default
-      ini that the scanner key cycles again (proves the tap installs), then set
-      `bSuppressThrottleTest=true` and check whether W/S still drive the throttle
-      while the panel state is up. Confirm the version on the log's first line.
-- [ ] **Phase 2 panel** — list, icons, W/S navigation. Specced and graded in
-      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md). Blocked on the suppression
-      answer above: it decides whether the panel can own W/S or has to be
-      designed around the scanner key.
+- [ ] **Phase 2 panel** — list, icons, navigation. Specced and graded in
+      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md). The suppression question is
+      now answered (no), so **the input model has to be chosen before anything
+      is drawn**: the panel cannot take W/S from the ship, and has to be built on
+      keys the game already ignores in cruise. The scanner key is the one such
+      key proven so far; tap-versus-hold on it would give a second and third verb
+      for free, since `heldDownSecs` is already read in the tap.
+- [ ] Optional cheap recon that would widen the options: play a cruise session
+      with `bLogInput=true` and look for other events that arrive undisabled but
+      visibly do nothing. Each one is another free verb.
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
       default confirm — it engages the cruise **autopilot**. Build a params
       object `{uBodyID: <uniqueID>}`, construct `Shared.AS3.Events.CustomEvent`
@@ -105,6 +105,20 @@ and subscription whenever the movie-created callback fires, and drop stale
 ## Settled — do not re-derive
 
 Each of these cost real time; the reasoning is in the findings docs.
+
+- **Ship flight input cannot be suppressed by marking events `disabled`**
+  (tested v0.2.1). The write lands and even persists — the engine pools the
+  event objects, so a later press arrives still carrying the flag — and the ship
+  accelerates regardless. Either the flight consumer runs before `RE::UI` in the
+  receiver chain, or it ignores the flag; the log cannot tell which, and it does
+  not matter. **The panel must use keys the game already ignores in cruise.**
+- **`disableplayercontrols` is not an alternative** — it drops the ship out of
+  cruise without the hidden loading screen, i.e. outside the cruise state
+  machine's normal teardown. Not worth the risk.
+- **Vtable ids are healthy; it is the *function* ids that are placeholders.**
+  `IDs_VTABLE.h` has zero `{ 0 }` entries, `IDs.h` has 505. So a vtable-based
+  hook can use its Address Library id directly — the live-object trick is only
+  needed where a *function* id is missing.
 
 - **Targeting a body by id is impossible from the UI layer.** No such event
   exists; `ShipHud_Target` is parameterless ("target what is hovered") and

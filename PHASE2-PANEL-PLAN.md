@@ -3,10 +3,16 @@
 Parked for later. Everything here is graded against what has actually been
 proven in game, not what looks plausible.
 
-**The target:** a list of the system's bodies with type icons, W/S to move the
-highlight, the arrow following the highlighted entry, the target key pinning
-that arrow to the HUD, ship steering suppressed while the panel is up, and the
-scanner or cancel key dismissing it.
+**The target as originally specced:** a list of the system's bodies with type
+icons, W/S to move the highlight, the arrow following the highlighted entry, the
+target key pinning that arrow to the HUD, ship steering suppressed while the
+panel is up, and the scanner or cancel key dismissing it.
+
+> **The steering-suppression half of that is dead** — tested on v0.2.1 and
+> ruled out (see below). The list, the icons and the arrow-follows-highlight
+> parts are unaffected; what has to change is the *input model*, since the panel
+> cannot take W/S away from the ship. The interaction has to be built on keys
+> the game already ignores in cruise — of which the scanner key is one, proven.
 
 ---
 
@@ -20,7 +26,7 @@ scanner or cancel key dismissing it.
 | Dismiss on scanner / cancel | **feasible** | the input tap already sees both by user-event name |
 | Icons: settlements / POI kinds | **likely** | entries carry `uPoiType`, `uPoiCategory` (43 and 7 for The Eye) — enums unknown, mappable by sampling known locations |
 | Icons: gas giants | **needs research** | body class is not in the feed; the form id reaches a `kPNDT` record, but CommonLibSF's `BGSPlanet::PlanetData` is a stub, so the field must be found |
-| **W/S navigation with steering suppressed** | **★ the one real unknown** | see below |
+| **W/S navigation with steering suppressed** | **ruled out** — tested and failed, see below | — |
 | True menu mode (cursor, focus, full capture) | **blocked** | needs `UI::RegisterMenu` with a real `IMenu`; every `IMenu` vfunc id is an unmapped `{ 0 }` placeholder, and upstream has no remapping in flight |
 
 ## The one real unknown, and how to settle it cheaply
@@ -44,7 +50,38 @@ that are not flight-bound (the scanner key already cycles perfectly well).
 **Do this first.** It is the only piece that can fail outright, and the whole
 interaction design depends on the answer.
 
-### Built in v0.2.1 — awaiting the in-game answer
+### ANSWERED, 2026-07-27: no. `disabled` does not stop the throttle.
+
+Tested in game on v0.2.1. **The suppression fails, and the fallback applies:
+the panel cannot own W/S.**
+
+What the log proves, which is more than a bare failure:
+
+- The names are right. `Forward` and `Back` were matched and marked, in cruise,
+  through the tap — so the tap sees flight input and the Phase 0 names hold.
+- **The write lands and persists.** The first press logged
+  `disabled false -> true`; later presses of the same key logged
+  `disabled true -> true`, i.e. the event arrived already carrying our flag.
+  The engine pools these event objects and our write survived in them.
+- The ship accelerated anyway, on both the `false -> true` and the
+  `true -> true` presses.
+
+So an event reaching the game's chain with `disabled = true` still drives the
+throttle. Two readings remain, and the log cannot separate them: either the
+flight consumer runs *before* `RE::UI` in the receiver chain and had already
+acted, or it simply does not consult the flag. Both mean the same thing for the
+design — **suppression is not available from the UI receiver.**
+
+`disableplayercontrols` is also out: it drops the ship out of cruise *without*
+the hidden loading screen, which means it is tearing down the cruise state
+machine outside its normal path. Not worth the state-corruption risk for a
+convenience feature.
+
+Note if this is ever revisited: because the event objects are pooled and the
+flag was never restored, a build that sets `disabled` should put it back after
+the frame. It is harmless only because nothing on this path honours it.
+
+### The build that answered it (v0.2.1)
 
 The test ships behind `bSuppressThrottleTest` (off by default, `[Recon]`). The
 throttle names are `Forward` / `Back`, matched by name — the id codes in
@@ -78,7 +115,12 @@ suppressed in normal flight.
 
 ## Suggested order
 
-1. Input suppression test (above). Small, isolated, decisive.
+1. ~~Input suppression test.~~ **Done — the answer was no.** Pick the
+   replacement input model before drawing anything; it decides what the panel
+   needs to show. The near-free option is the scanner key alone, with tap
+   versus hold telling next from previous or close: `heldDownSecs` is already
+   read in the tap, and the game itself uses that idiom (`Cruise` is a ~1.5 s
+   hold, not a tap).
 2. Panel frame + rows + highlight, driven by the existing candidate list.
 3. Wire the arrow to the highlight; target key pins.
 4. Icons — settlements first (`uPoiType`/`uPoiCategory` sampling), gas giants
