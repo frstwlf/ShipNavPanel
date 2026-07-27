@@ -63,6 +63,8 @@ namespace
 	REX::TIniSetting<bool>  bArrow{ "Panel", "bArrow", true };
 	REX::TIniSetting<float> fArrowRadius{ "Panel", "fArrowRadius", 150.0f };
 	REX::TIniSetting<float> fMaxTargetLightSeconds{ "Panel", "fMaxTargetLightSeconds", 20000.0f };
+	REX::TIniSetting<float> fArrowAngleOffset{ "Panel", "fArrowAngleOffset", 0.0f };
+	REX::TIniSetting<bool>  bArrowInvertAngle{ "Panel", "bArrowInvertAngle", false };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -129,6 +131,7 @@ namespace
 	std::atomic<bool>          g_cycleRequested{ false };
 	std::atomic<bool>          g_arrowReady{ false };
 	std::atomic<bool>          g_arrowFailed{ false };
+	std::atomic<std::uint32_t> g_subscribeAttempts{ 0 };
 	RE::Scaleform::GFx::Value  g_arrowClip;
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
@@ -357,6 +360,19 @@ namespace
 			g_interposeFailed.store(false, std::memory_order_release);
 			g_subscribed.store(false, std::memory_order_release);
 			g_subscribeFailed.store(false, std::memory_order_release);
+			g_subscribeAttempts.store(0, std::memory_order_release);
+
+			// The arrow belonged to the old movie. Without this the plugin keeps
+			// writing rotation to a clip whose movie has been destroyed - the log
+			// showed exactly that, two subscription rounds against one arrow.
+			g_arrowReady.store(false, std::memory_order_release);
+			g_arrowFailed.store(false, std::memory_order_release);
+			g_arrowClip = RE::Scaleform::GFx::Value{};
+			{
+				std::lock_guard lock{ g_candidateMutex };
+				g_candidates.clear();
+			}
+			g_selectedID.store(0, std::memory_order_release);
 		}
 
 		if (!bLogMenus.GetValue())
@@ -1037,8 +1053,21 @@ namespace
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
 				g_arrowClip.SetMember("visible", V{ haveSelected });
-				if (haveSelected)
-					g_arrowClip.SetMember("rotation", V{ selectedAngle + 180.0 });
+				if (haveSelected) {
+					// Vanilla uses `angle + 180` because its icon art points the
+					// other way by default; this triangle is drawn tip-up, so a
+					// target dead ahead (angle 0) wants rotation 0, not 180.
+					// Kept tunable because the sign convention is unverified.
+					const double rotation = selectedAngle * (bArrowInvertAngle.GetValue() ? -1.0 : 1.0) +
+					                        static_cast<double>(fArrowAngleOffset.GetValue());
+					g_arrowClip.SetMember("rotation", V{ rotation });
+
+					// Rate-limited so the bearing can be correlated with what is
+					// actually on screen without flooding the log.
+					static std::atomic<std::uint32_t> s_tick{ 0 };
+					if ((s_tick.fetch_add(1, std::memory_order_relaxed) % 120) == 0)
+						REX::INFO("[arrow] angleToCrosshair={:.1f} -> rotation={:.1f}", selectedAngle, rotation);
+				}
 			}
 
 			if (g_captureHighRequested.exchange(false, std::memory_order_acq_rel)) {
@@ -1051,8 +1080,6 @@ namespace
 	};
 
 	HighFeedHandler g_highFeedHandler;
-
-	std::atomic<std::uint32_t> g_subscribeAttempts{ 0 };
 
 	void TryInstallSubscriber()
 	{
