@@ -70,10 +70,10 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Confirm moon nesting in game (v0.4.1).** Nothing to set up — the plugin
-      reads the hierarchy out of `Starfield.esm` on a background thread shortly
-      after load and caches it. Look for `[bodies] read N bodies` (first run) or
-      `loaded N bodies` (later), then check Kurtz sits indented under Jemison.
+- [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
+      confirmed working. New: the pointer is a diamond moved around the reticle
+      circle rather than a rotated arrow, and the list now includes every body
+      in the system (dash for distance on ones the HUD is not tracking).
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).

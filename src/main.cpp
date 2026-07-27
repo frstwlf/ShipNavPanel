@@ -116,7 +116,12 @@ namespace
 	// Indent moons under their planet. Has no effect yet: nothing the ship HUD
 	// feed carries identifies a moon's parent, and the guess v0.3.3 shipped was
 	// wrong. Kept wired up because the data exists elsewhere - see the probe.
-	REX::TIniSetting<bool>  bNestMoons{ "Panel", "bNestMoons", true };
+	REX::TIniSetting<bool> bNestMoons{ "Panel", "bNestMoons", true };
+
+	// List every body in the system, not just the ones the HUD happens to be
+	// offering. Bodies the game is not tracking have no distance and cannot be
+	// pointed at, but they show the system's actual shape.
+	REX::TIniSetting<bool> bListWholeSystem{ "Panel", "bListWholeSystem", true };
 
 	// Probe: the star map's own body feed carries `uBodyType` (BT_PLANET,
 	// BT_MOON, BT_SATELLITE...) and `uBodyID`, which is exactly the hierarchy
@@ -229,6 +234,10 @@ namespace
 		// From the PNDT record.
 		GalaxyData galaxy;
 		bool       haveGalaxy{ false };
+		// False for bodies added from the master file rather than offered by the
+		// HUD: they have a name and a place in the tree, but no bearing and no
+		// distance, so the arrow cannot point at one.
+		bool fromFeed{ true };
 		// Derived at display time.
 		bool isMoon{ false };
 	};
@@ -271,9 +280,18 @@ namespace
 	// which four builds of memory archaeology argue is worth something.
 	constexpr const char* kBodyTablePath = "Data/SFSE/Plugins/ShipNavPanelBodies.txt";
 
-	std::mutex                                    g_bodyTableMutex;
-	std::unordered_map<std::uint32_t, GalaxyData> g_bodyTable;
-	std::atomic<bool>                             g_bodyTableLoaded{ false };
+	struct BodyEntry
+	{
+		GalaxyData  galaxy;
+		std::string name;  // empty for bodies the game generates
+	};
+
+	std::mutex                                   g_bodyTableMutex;
+	std::unordered_map<std::uint32_t, BodyEntry> g_bodyTable;
+	// Same entries indexed by star system, which is what listing a whole system
+	// needs - and the HUD only ever offers a handful of a system's bodies.
+	std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> g_bodiesBySystem;
+	std::atomic<bool>                                             g_bodyTableLoaded{ false };
 	constexpr std::size_t                         kGalaxyScanFirst = 0x38;
 
 	std::size_t ReadableBytesFrom(const void* a_base, std::size_t a_want)
@@ -350,8 +368,24 @@ namespace
 		return a_file.gcount() == static_cast<std::streamsize>(a_size);
 	}
 
+	// "BondarPlanetData" -> "Bondar". The record's FULL is a localised string id
+	// rather than text, so the editor id is what there is - and for real bodies
+	// it is simply the name with a suffix. Bodies the game generates rather than
+	// authors are prefixed with an underscore (_TheEyePlanetData,
+	// _JemisonGravJumpArrivalPlanetData); those are left out of the list unless
+	// the HUD itself offers them, where they arrive properly named.
+	std::string NameFromEditorID(std::string_view a_editorID)
+	{
+		if (a_editorID.empty() || a_editorID.front() == '_')
+			return {};
+		constexpr std::string_view kSuffix = "PlanetData";
+		if (a_editorID.size() > kSuffix.size() && a_editorID.ends_with(kSuffix))
+			a_editorID.remove_suffix(kSuffix.size());
+		return std::string{ a_editorID };
+	}
+
 	// Walks one record's subrecords looking for GNAM.
-	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out)
+	bool FindGnam(const std::byte* a_data, std::size_t a_size, GalaxyData& a_out, std::string& a_name)
 	{
 		std::size_t   offset = 0;
 		std::uint32_t pending = 0;
@@ -383,18 +417,21 @@ namespace
 			if (offset + size > a_size)
 				return false;
 
-			if (std::memcmp(sig, "GNAM", 4) == 0 && size >= 12) {
+			if (std::memcmp(sig, "EDID", 4) == 0 && size > 1) {
+				a_name = NameFromEditorID(
+					std::string_view{ reinterpret_cast<const char*>(a_data + offset), size - 1 });
+			} else if (std::memcmp(sig, "GNAM", 4) == 0 && size >= 12) {
 				std::uint32_t values[3];
 				std::memcpy(values, a_data + offset, sizeof(values));
 				a_out = GalaxyData{ values[0], values[1], values[2] };
-				return true;
+				return true;  // EDID precedes GNAM, so the name is already in hand
 			}
 			offset += size;
 		}
 		return false;
 	}
 
-	bool ParseMasterBodies(std::unordered_map<std::uint32_t, GalaxyData>& a_out)
+	bool ParseMasterBodies(std::unordered_map<std::uint32_t, BodyEntry>& a_out)
 	{
 		std::ifstream file{ kMasterPath, std::ios::binary };
 		if (!file) {
@@ -474,8 +511,9 @@ namespace
 			}
 
 			GalaxyData data;
-			if (FindGnam(body, bodySize, data)) {
-				a_out.insert_or_assign(record.formID, data);
+			std::string name;
+			if (FindGnam(body, bodySize, data, name)) {
+				a_out.insert_or_assign(record.formID, BodyEntry{ data, std::move(name) });
 				++records;
 			}
 		}
@@ -491,7 +529,7 @@ namespace
 		return error ? 0 : static_cast<std::uint64_t>(size);
 	}
 
-	void WriteBodyTable(const std::unordered_map<std::uint32_t, GalaxyData>& a_table)
+	void WriteBodyTable(const std::unordered_map<std::uint32_t, BodyEntry>& a_table)
 	{
 		std::ofstream file{ kBodyTablePath, std::ios::trunc };
 		if (!file) {
@@ -501,15 +539,16 @@ namespace
 		file << "# ShipNavPanel body table - generated from " << kMasterPath << "\n";
 		file << "# Delete this to have it rebuilt. formID,systemID,parentPlanetID,planetID\n";
 		file << "# master " << MasterFileSize() << "\n";
-		for (const auto& [formID, data] : a_table)
-			file << std::format("{:08X},{},{},{}\n", formID, data.systemID, data.parentPlanetID, data.planetID);
+		for (const auto& [formID, entry] : a_table)
+			file << std::format("{:08X},{},{},{},{}\n", formID, entry.galaxy.systemID,
+				entry.galaxy.parentPlanetID, entry.galaxy.planetID, entry.name);
 		REX::INFO("[bodies] cached {} bodies to {}", a_table.size(), kBodyTablePath);
 	}
 
 	// `formID,systemID,parentPlanetID,planetID` per line, `#` for comments and
 	// blank lines ignored. Returns false when the cache is missing or was built
 	// against a different master file.
-	bool ReadBodyTable(std::unordered_map<std::uint32_t, GalaxyData>& a_out)
+	bool ReadBodyTable(std::unordered_map<std::uint32_t, BodyEntry>& a_out)
 	{
 		std::ifstream file{ kBodyTablePath };
 		if (!file)
@@ -548,6 +587,7 @@ namespace
 			std::uint32_t system = 0;
 			std::uint32_t parent = 0;
 			std::uint32_t planet = 0;
+			std::string   name;
 			if (!(parse >> idText >> system >> parent >> planet)) {
 				if (++rejected <= 3)
 					REX::WARN("[bodies] {}:{} could not be read - expected "
@@ -567,7 +607,8 @@ namespace
 			if (formID == 0 || planet == 0)
 				continue;
 
-			a_out.insert_or_assign(formID, GalaxyData{ system, parent, planet });
+			parse >> name;  // optional; generated bodies have none
+			a_out.insert_or_assign(formID, BodyEntry{ GalaxyData{ system, parent, planet }, name });
 			++loaded;
 		}
 
@@ -589,7 +630,7 @@ namespace
 			return;
 
 		std::thread{ [] {
-			std::unordered_map<std::uint32_t, GalaxyData> table;
+			std::unordered_map<std::uint32_t, BodyEntry> table;
 
 			if (!ReadBodyTable(table)) {
 				table.clear();
@@ -600,8 +641,29 @@ namespace
 				WriteBodyTable(table);
 			}
 
+			std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> bySystem;
+			for (const auto& [formID, entry] : table)
+				bySystem[entry.galaxy.systemID].push_back(formID);
+
+			// Parent before child, then by planet id, so a system reads as a
+			// tree without any sorting at display time.
+			for (auto& [system, ids] : bySystem) {
+				std::sort(ids.begin(), ids.end(), [&table](std::uint32_t a_lhs, std::uint32_t a_rhs) -> bool {
+					const GalaxyData& lhs = table.at(a_lhs).galaxy;
+					const GalaxyData& rhs = table.at(a_rhs).galaxy;
+					const std::uint32_t lhsRoot = lhs.parentPlanetID ? lhs.parentPlanetID : lhs.planetID;
+					const std::uint32_t rhsRoot = rhs.parentPlanetID ? rhs.parentPlanetID : rhs.planetID;
+					if (lhsRoot != rhsRoot)
+						return lhsRoot < rhsRoot;
+					if ((lhs.parentPlanetID == 0) != (rhs.parentPlanetID == 0))
+						return lhs.parentPlanetID == 0;
+					return lhs.planetID < rhs.planetID;
+				});
+			}
+
 			std::lock_guard lock{ g_bodyTableMutex };
 			g_bodyTable = std::move(table);
+			g_bodiesBySystem = std::move(bySystem);
 		} }.detach();
 	}
 
@@ -611,7 +673,7 @@ namespace
 		const auto      hit = g_bodyTable.find(a_formID);
 		if (hit == g_bodyTable.end())
 			return false;
-		a_out = hit->second;
+		a_out = hit->second.galaxy;
 		return true;
 	}
 
@@ -2037,6 +2099,58 @@ namespace
 		REX::INFO("[dump] ==== end ====");
 	}
 
+	// The HUD offers only the handful of bodies it considers relevant - sitting
+	// in Jemison's gravity well it listed one of Alpha Centauri's eight moons -
+	// which makes for a list that is really "what is near", not "what is here".
+	// The master file knows the whole system, so the rest are added from it.
+	//
+	// They are marked `fromFeed = false`: they can be seen and scrolled past,
+	// but the game gives no bearing or distance for them, so the arrow cannot
+	// point at one and the list says so by leaving the distance blank.
+	//
+	// The entries must go on the END, because everything up to `bearings.rows`
+	// stays index-aligned with the high-frequency feed.
+	void AppendSystemBodies(std::vector<Candidate>& a_rows)
+	{
+		if (!bListWholeSystem.GetValue())
+			return;
+
+		std::uint32_t system = 0;
+		for (const auto& row : a_rows) {
+			if (row.haveGalaxy && row.galaxy.systemID != 0) {
+				system = row.galaxy.systemID;
+				break;
+			}
+		}
+		if (system == 0)
+			return;
+
+		std::lock_guard lock{ g_bodyTableMutex };
+		const auto      found = g_bodiesBySystem.find(system);
+		if (found == g_bodiesBySystem.end())
+			return;
+
+		for (const auto formID : found->second) {
+			const auto entry = g_bodyTable.find(formID);
+			if (entry == g_bodyTable.end() || entry->second.name.empty())
+				continue;  // generated bodies are the HUD's business, not ours
+
+			const auto already = std::find_if(a_rows.begin(), a_rows.end(),
+				[&](const Candidate& a_row) { return a_row.id == formID; });
+			if (already != a_rows.end())
+				continue;
+
+			Candidate row;
+			row.id = formID;
+			row.type = kTargetTypePlanet;
+			row.name = entry->second.name;
+			row.galaxy = entry->second.galaxy;
+			row.haveGalaxy = true;
+			row.fromFeed = false;
+			a_rows.push_back(std::move(row));
+		}
+	}
+
 	// Logged once per system so any bug report carries the hierarchy the mod
 	// believes in, without costing anything in normal play.
 	void ReportGalaxyData(const std::vector<Candidate>& a_rows)
@@ -2104,6 +2218,7 @@ namespace
 						row.haveGalaxy = ReadGalaxyData(row.id, row.galaxy);
 				}
 				ReportGalaxyData(collector.rows);
+				AppendSystemBodies(collector.rows);
 
 				std::lock_guard lock{ g_candidateMutex };
 				const auto      previous = std::move(g_candidates);
@@ -2289,13 +2404,15 @@ namespace
 				haveSelected = haveSelected && g_inCruise.load(std::memory_order_acquire);
 				g_arrowClip.SetMember("visible", V{ haveSelected });
 				if (haveSelected) {
-					// Vanilla uses `angle + 180` because its icon art points the
-					// other way by default; this triangle is drawn tip-up, so a
-					// target dead ahead (angle 0) wants rotation 0, not 180.
-					// Kept tunable because the sign convention is unverified.
-					const double rotation = selectedAngle * (bArrowInvertAngle.GetValue() ? -1.0 : 1.0) +
-					                        static_cast<double>(fArrowAngleOffset.GetValue());
-					g_arrowClip.SetMember("rotation", V{ rotation });
+					// The marker is placed on the circle rather than rotated, so
+					// there is no orientation to be wrong at any bearing.
+					const double bearing = selectedAngle * (bArrowInvertAngle.GetValue() ? -1.0 : 1.0) +
+					                       static_cast<double>(fArrowAngleOffset.GetValue());
+					const double rotation = bearing;
+					const double markerRadians = bearing * 3.14159265358979323846 / 180.0;
+					const double markerRadius = static_cast<double>(fArrowRadius.GetValue());
+					g_arrowClip.SetMember("x", V{ markerRadius * std::sin(markerRadians) });
+					g_arrowClip.SetMember("y", V{ -markerRadius * std::cos(markerRadians) });
 
 					if (g_labelReady.load(std::memory_order_acquire)) {
 						// Place the label just beyond the arrow tip, on the same
@@ -3020,11 +3137,15 @@ namespace
 					if (g_panelFormat.IsObject())
 						nameField.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
 
-					// Light-seconds once kilometres stop being readable.
+					// Light-seconds once kilometres stop being readable. A dash
+					// marks a body the game is not currently tracking: it is
+					// really there, but there is no distance to give and the
+					// arrow cannot point at it.
 					const double lightSeconds = row.distance / kMetersPerLightSecond;
-					const auto   dist = row.distance <= 0.0 ? std::string{} :
-					                    lightSeconds >= 1.0 ? std::format("{:.0f} LS", lightSeconds) :
-					                                          std::format("{:.0f} km", row.distance / 1000.0);
+					const auto   dist = !row.fromFeed        ? std::string{ "-" } :
+					                    row.distance <= 0.0  ? std::string{} :
+					                    lightSeconds >= 1.0  ? std::format("{:.0f} LS", lightSeconds) :
+					                                           std::format("{:.0f} km", row.distance / 1000.0);
 					distField.SetMember("text", V{ dist.c_str() });
 					if (g_panelDistFormat.IsObject())
 						distField.Invoke("setTextFormat", nullptr, &g_panelDistFormat, 1);
@@ -3095,20 +3216,30 @@ namespace
 			return;
 		}
 
-		// A triangle with its tip out at radius R, so rotating the clip about its
-		// own origin sweeps it around the crosshair pointing outward - the same
-		// arrangement the vanilla off-screen indicators use.
+		// A DIAMOND, drawn about the clip's own origin, and moved around an
+		// invisible circle rather than rotated.
+		//
+		// It used to be a triangle whose tip sat out at the radius, swept round
+		// by rotating the clip. That reads wrongly as a target approaches the
+		// centre of the screen: an outward-pointing arrow says "keep turning"
+		// exactly when there is nothing left to turn. A symmetric marker has no
+		// orientation to get wrong - its POSITION alone carries the direction,
+		// which is what an invisible reticle circle needs. Top-right means steer
+		// up and right, and it means that at every angle.
 		const double r = static_cast<double>(fArrowRadius.GetValue());
 		using V = RE::Scaleform::GFx::Value;
 
+		constexpr double kHalf = 13.0;
 		V fill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 1.0 } };
 		gfx.Invoke("beginFill", nullptr, fill, 2);
-		V p0[]{ V{ 0.0 }, V{ -r } };
+		V p0[]{ V{ 0.0 }, V{ -kHalf } };
 		gfx.Invoke("moveTo", nullptr, p0, 2);
-		V p1[]{ V{ -11.0 }, V{ -r + 24.0 } };
+		V p1[]{ V{ kHalf * 0.62 }, V{ 0.0 } };
 		gfx.Invoke("lineTo", nullptr, p1, 2);
-		V p2[]{ V{ 11.0 }, V{ -r + 24.0 } };
+		V p2[]{ V{ 0.0 }, V{ kHalf } };
 		gfx.Invoke("lineTo", nullptr, p2, 2);
+		V p3[]{ V{ -kHalf * 0.62 }, V{ 0.0 } };
+		gfx.Invoke("lineTo", nullptr, p3, 2);
 		gfx.Invoke("lineTo", nullptr, p0, 2);
 		gfx.Invoke("endFill", nullptr, nullptr, 0);
 
