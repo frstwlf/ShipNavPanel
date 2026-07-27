@@ -792,14 +792,6 @@ namespace
 			g_subscribeFailed.load(std::memory_order_acquire))
 			return;
 
-		// The menu can be open before its objects exist, so allow a couple of
-		// seconds of frames before declaring the route exhausted.
-		if (g_subscribeAttempts.fetch_add(1, std::memory_order_relaxed) > 120) {
-			g_subscribeFailed.store(true, std::memory_order_release);
-			REX::WARN("[nav] gave up looking for BSUIDataManager after 120 frames");
-			return;
-		}
-
 		const auto ui = RE::UI::GetSingleton();
 		if (!ui)
 			return;
@@ -811,37 +803,63 @@ namespace
 			return;
 		auto* a_root = menu->uiMovie->asMovieRoot.get();
 
+		// Count only probes that actually had a movie to look at. v0.0.8
+		// incremented on every frame including those before the ship HUD
+		// existed, so it burned its whole budget during the loading screen and
+		// reported "not found" without ever having looked.
+		const auto attempt = g_subscribeAttempts.fetch_add(1, std::memory_order_relaxed);
+		if (attempt > 60) {
+			g_subscribeFailed.store(true, std::memory_order_release);
+			REX::WARN("[nav] BSUIDataManager not reachable after 60 probes of a live movie");
+			return;
+		}
+		const bool verbose = (attempt == 0);  // report the detail once
+
 		bool anyResolved = false;
 		for (const auto* path : kDataManagerPaths) {
+			const bool available = a_root->IsAvailable(path);
 			RE::Scaleform::GFx::Value manager;
-			if (!a_root->GetVariable(&manager, path))
-				continue;  // logged once at give-up time, not every frame
+			const bool resolved = a_root->GetVariable(&manager, path);
 
-			anyResolved = true;
-			REX::INFO("[nav] found something at '{}': {}", path, DescribeValue(manager));
-			if (!manager.HasMember("Subscribe")) {
-				REX::INFO("[nav]   ... but it has no 'Subscribe' member; its members follow:");
-				LevelCollector visitor{ std::string{ "[nav] " } + path, nullptr };
-				RE::Scaleform::GFx::Value copy = manager;
-				copy.VisitMembers(&visitor);
-				continue;
+			if (verbose)
+				REX::INFO("[nav] probe '{}': IsAvailable={} GetVariable={} value={}",
+					path, available, resolved, resolved ? DescribeValue(manager) : "-");
+
+			if (resolved && (manager.IsObject() || manager.IsDisplayObject())) {
+				anyResolved = true;
+				if (manager.HasMember("Subscribe")) {
+					RE::Scaleform::GFx::Value args[2];
+					a_root->CreateString(&args[0], kTargetFeed);
+					a_root->CreateFunction(&args[1], &g_feedHandler);
+					if (manager.Invoke("Subscribe", nullptr, args, 2)) {
+						g_subscribed.store(true, std::memory_order_release);
+						REX::INFO("[nav] SUBSCRIBED to '{}' via {}.Subscribe", kTargetFeed, path);
+						return;
+					}
+					REX::WARN("[nav] '{}.Subscribe' rejected the call", path);
+				} else if (verbose) {
+					REX::INFO("[nav]   no 'Subscribe' member; its members follow:");
+					LevelCollector visitor{ std::string{ "[nav] " } + path, nullptr };
+					RE::Scaleform::GFx::Value copy = manager;
+					copy.VisitMembers(&visitor);
+				}
 			}
 
+			// Path-based Invoke resolves differently from GetVariable, so a
+			// class the latter cannot see may still be callable this way.
 			RE::Scaleform::GFx::Value args[2];
 			a_root->CreateString(&args[0], kTargetFeed);
 			a_root->CreateFunction(&args[1], &g_feedHandler);
-
-			if (manager.Invoke("Subscribe", nullptr, args, 2)) {
+			const std::string method = std::string{ path } + ".Subscribe";
+			if (a_root->Invoke(method.c_str(), nullptr, args, 2)) {
 				g_subscribed.store(true, std::memory_order_release);
-				REX::INFO("[nav] SUBSCRIBED to '{}' via {}.Subscribe - press the scanner key to capture",
-					kTargetFeed, path);
+				REX::INFO("[nav] SUBSCRIBED to '{}' via path-invoke '{}'", kTargetFeed, method);
 				return;
 			}
-			REX::WARN("[nav] '{}.Subscribe' rejected the call", path);
+			if (verbose)
+				REX::INFO("[nav]   path-invoke '{}' failed too", method);
 		}
 
-		// A path that resolved but could not be used is a real answer; nothing
-		// resolving at all just means the menu may still be building.
 		if (anyResolved) {
 			g_subscribeFailed.store(true, std::memory_order_release);
 			REX::WARN("[nav] reached a data manager but could not subscribe - route exhausted");
