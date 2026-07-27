@@ -122,6 +122,12 @@ namespace
 	// bounds how much is considered.
 	REX::TIniSetting<std::uint32_t> uGalaxyScanBytes{ "Panel", "uGalaxyScanBytes", 0x200 };
 
+	// Dumps each planet record's raw words side by side, so the layout can be
+	// read off the log instead of guessed at. Three guesses have now been wrong;
+	// this is the diagnostic that should have come first.
+	REX::TIniSetting<bool>          bDumpPlanetRecords{ "Recon", "bDumpPlanetRecords", false };
+	REX::TIniSetting<std::uint32_t> uDumpPlanetBytes{ "Recon", "uDumpPlanetBytes", 0x400 };
+
 	REX::TIniSetting<bool>        bProbeStarmapFeed{ "Recon", "bProbeStarmapFeed", false };
 	REX::TIniSetting<std::string> sStarmapFeed{ "Recon", "sStarmapFeed", "StarmapSystemBodyInfoProvider" };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
@@ -187,6 +193,7 @@ namespace
 	std::atomic<bool>          g_captureRequested{ false };
 	std::atomic<bool>          g_captureHighRequested{ false };
 	std::atomic<bool>          g_starmapDumpRequested{ false };
+	std::atomic<bool>          g_dumpPlanetsRequested{ false };
 	std::atomic<std::uint32_t> g_starmapCallbacks{ 0 };
 	std::atomic<bool> g_interposeInstalled{ false };
 	std::atomic<bool> g_interposeFailed{ false };
@@ -824,6 +831,8 @@ namespace
 		}
 		if (bProbeStarmapFeed.GetValue())
 			g_starmapDumpRequested.store(true, std::memory_order_release);
+		if (bDumpPlanetRecords.GetValue())
+			g_dumpPlanetsRequested.store(true, std::memory_order_release);
 
 		// Only hijack the scanner key while cruising; outside cruise it still
 		// opens the vanilla ship scanner.
@@ -1843,6 +1852,66 @@ namespace
 		}
 	}
 
+	// Prints the planet records as a table - one row per word offset, one column
+	// per body - so the hierarchy can be found by looking rather than by
+	// predicting where it ought to be. With the bodies side by side, the system
+	// id is the column that never varies, the planet id is the one that is small
+	// and distinct, and the parent is the one that is mostly zero.
+	void DumpPlanetRecords(const std::vector<Candidate>& a_rows)
+	{
+		struct Entry
+		{
+			std::string            name;
+			std::uint32_t          id;
+			std::vector<std::byte> bytes;
+		};
+
+		std::vector<Entry> entries;
+		for (const auto& row : a_rows) {
+			if (row.type != kTargetTypePlanet || entries.size() >= 8)
+				continue;
+			const auto* form = LookupPlanet(row.id);
+			if (!form)
+				continue;
+			auto bytes = SnapshotForm(form, static_cast<std::size_t>(uDumpPlanetBytes.GetValue()));
+			if (bytes.empty())
+				continue;
+			entries.push_back(Entry{ row.name, row.id, std::move(bytes) });
+		}
+
+		if (entries.empty()) {
+			REX::WARN("[dump] no planet records could be read");
+			return;
+		}
+
+		REX::INFO("[dump] ==== planet records ====");
+		std::string header = std::format("[dump] {:>6}", "offset");
+		for (const auto& entry : entries)
+			header += std::format("  {:>10.10}", entry.name);
+		REX::INFO("{}", header);
+
+		std::string ids = std::format("[dump] {:>6}", "formID");
+		std::size_t smallest = entries.front().bytes.size();
+		for (const auto& entry : entries) {
+			ids += std::format("  {:>10X}", entry.id);
+			smallest = std::min(smallest, entry.bytes.size());
+		}
+		REX::INFO("{}", ids);
+		REX::INFO("[dump] readable from each record: {} bytes (common {})",
+			entries.front().bytes.size(), smallest);
+
+		for (std::size_t offset = 0x30; offset + 4 <= smallest; offset += 4) {
+			std::string line = std::format("[dump] +{:04X}", offset);
+			for (const auto& entry : entries) {
+				std::uint32_t value{};
+				std::memcpy(&value, entry.bytes.data() + offset, sizeof(value));
+				line += std::format("  {:10}", value);
+			}
+			REX::INFO("{}", line);
+		}
+		REX::INFO("[dump] ==== end ====");
+	}
+
 	// Logged once per system so any bug report carries the hierarchy the mod
 	// believes in, without costing anything in normal play.
 	void ReportGalaxyData(const std::vector<Candidate>& a_rows)
@@ -1911,6 +1980,9 @@ namespace
 
 				// Find GNAM if it is not yet known, then read it - in that
 				// order, since the search needs the whole set as evidence.
+				if (g_dumpPlanetsRequested.exchange(false, std::memory_order_acq_rel))
+					DumpPlanetRecords(collector.rows);
+
 				DetectGalaxyOffset(collector.rows);
 				for (auto& row : collector.rows) {
 					if (row.id)
