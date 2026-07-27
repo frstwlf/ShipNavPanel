@@ -87,16 +87,30 @@ retired; the HUD's Scaleform layer is the API.**
       - [x] `uniqueID` is **not** on the icon clips — it is the key of a private
             array (`GetClip` does `param1[uniqueID]`). Names and types are
             readable; the id is not.
-      - [ ] **NEXT: interpose on `Reticle_mc.UpdateLowFrequencyData`.** It is a
-            *public* function, so `asMovieRoot->CreateFunction` +
-            `Value::SetMember` can replace it with a native handler that
-            captures `args[0].targetArray` (uniqueIDs included) and then calls
-            the saved original. Same pattern as
-            `GameMenuBase::RegisterNativeFunction`, all live ids, no SWF patch.
-            Yields the list *and* the ids in one step.
-      - [ ] Raise the line cap or start the walk at
-            `ShipReticle_mc.OffScreenIndicatorParent_mc` — the census only
-            reached `OnScreenIcon` clips, so off-screen planets were missed.
+      - [x] ~~Interpose on `UpdateLowFrequencyData`~~ — **impossible**:
+            `ShipReticle` is a sealed AS3 class, so its methods are read-only
+            fixed traits. Tested step by step in game.
+      - [x] **✅ SOLVED — subscribed to the engine's data feed.**
+            `Shared.AS3.Data.BSUIDataManager.Subscribe("TargetLowFrequency\
+            Provider", <native fn>)` delivers the same payload the reticle gets.
+            AS3 class objects resolve only by fully-qualified package path.
+      - [x] **✅ `uniqueID` is a form id.** Every entry resolved via
+            `TESForm::LookupByID`: planets kPNDT, star kSTDT, POIs kREFR
+            (one FF-prefixed). `0x5E30E` = Bondar, confirmed in xEdit. The whole
+            list — names included — resolves in C++.
+
+### What is left
+
+- [ ] **The confirm action, end to end.** Fully specified, not yet tested:
+      build a params object (`CreateObject`, `SetMember("uBodyID", <uniqueID>)`),
+      construct `Shared.AS3.Events.CustomEvent` with (type, params) — the
+      payload is its **second** ctor arg and lands in `params` — then
+      `BSUIDataManager.Invoke("dispatchEvent", …)` with
+      `"Reticle_OnCruiseLockCourse"`. Every call involved is already proven.
+      Success looks like `bIsCruiseTargetLock` flipping on the chosen entry.
+- [ ] Resolve display names from the form ids (kPNDT/kSTDT/kREFR) — beware
+      `GetFormEditorID()` on stubs; prefer the `editorID` member where present.
+- [ ] Then Phase 2: the panel UI itself.
 - [x] **1. Cruise detection — SOLVED 2026-07-27, no Ghidra.** Reads `true` while
       cruising at `root1.Menu_mc.Reticle_mc.CruiseModeHUDActive` (public getter);
       `CanActivateCruiseMode` sits beside it.

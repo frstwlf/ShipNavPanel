@@ -215,17 +215,92 @@ system than the two captured, the census is a floor, not a total.
 clip. So the display list gives names and types but not the id that
 `Reticle_OnCruiseLockCourse` needs.
 
-### → Next: interpose on `UpdateLowFrequencyData`
+### ✅✅ SOLVED — subscribe to the engine's data feed (2026-07-27)
 
-The engine hands the data in through **public** functions on `ShipReticle`
-(`UpdateLowFrequencyData`, `UpdateHighFrequencyData`, `UpdateCombatValuesData`,
-`UpdateTargetOnlyData`). Public means replaceable: create a native function with
-`asMovieRoot->CreateFunction` and `SetMember` it over
-`Reticle_mc.UpdateLowFrequencyData`, capture `args[0].targetArray` — uniqueIDs
-included — then invoke the saved original so the HUD behaves normally. Same
-pattern CommonLibSF's `GameMenuBase::RegisterNativeFunction` already uses, all
-on live ids, and no SWF patching. That yields the list *and* the ids in one
-step.
+Interposition is impossible (§8), but it was the wrong idea anyway. The engine
+does not call into the SWF: it **publishes named data feeds**, and the document
+class subscribes to them.
+
+```actionscript
+// SpaceshipHudMenu.as:398
+BSUIDataManager.Subscribe("TargetLowFrequencyProvider", function(e:FromClientDataEvent):* {
+   TargetsLowFreqDataPayload = e.data;
+   Reticle_mc.UpdateLowFrequencyData(TargetsLowFreqDataPayload);
+   ...
+});
+```
+
+`Subscribe` is a public static, so a **native function subscribed to the same
+feed receives the identical payload**. Verified in game:
+
+```
+[nav] probe 'BSUIDataManager':                  IsAvailable=false GetVariable=false
+[nav] probe 'Shared.AS3.Data.BSUIDataManager':  IsAvailable=true  GetVariable=true  value={object}
+[nav] SUBSCRIBED to 'TargetLowFrequencyProvider' via Shared.AS3.Data.BSUIDataManager.Subscribe
+```
+
+**AS3 class objects are reachable from C++ — but only by fully-qualified
+package path.** The bare name resolves to nothing.
+
+Other feeds published the same way: `ShipHudData`,
+`TargetHighFrequencyProvider`, `TargetCombatValuesProvider`,
+`InfoTargetProvider`, `PlayerShipComponentsProvider`, `StickDataProvider`,
+`TargetShipInventoryData`.
+
+### ★ `uniqueID` is a FORM ID — the whole list resolves in C++
+
+Captured in cruise, every id resolved through `TESForm::LookupByID`:
+
+| entry | `uTargetType` | form type | |
+|---|---|---|---|
+| 1–5 | 7 (TT_PLANET) | `0xBA` **kPNDT** `BGSPlanet::PlanetData` | the system's five planets |
+| 6 | 1 (TT_STAR) | `0xBF` **kSTDT** `BSGalaxy::BGSStar` | its star |
+| 0, 7–9 | 4 (TT_POI) | `0x4A` **kREFR** `TESObjectREFR` | POIs, incl. one FF-prefixed (runtime-spawned) |
+
+Confirmed independently in xEdit: `0x5E30E` is **Bondar**, a planet in that
+system. So the panel's list, names and all, resolves entirely in C++ from ids
+the feed hands over — **no further Scaleform work needed to build it.**
+
+Per-entry fields: `uniqueID`, `uTargetType`, `bLandingAllowed`,
+`bLandingDisabled`, **`bIsCruiseTargetLock`** (which body is course-locked),
+`bHasQuestTarget`, `bMarkerDiscovered`, `bDetectedByPlayer`, `hostile`,
+`iFaction`, `iLevel`, `fMinArrivalDistance`, `handle`, plus ~15 more.
+Payload-level: `iInfoTargetIndex`, `iHoverTargetIndex`.
+
+### The confirm action is now fully specified
+
+`CustomEvent`'s constructor takes the payload as its **second** argument and
+stores it in `params`:
+
+```actionscript
+public function CustomEvent(param1:String, param2:Object, param3:Boolean = false, param4:Boolean = false)
+{  super(param1,param3,param4); this.params = param2; }
+```
+
+So confirm is: build a params object (`CreateObject`, `SetMember("uBodyID", id)`),
+construct `Shared.AS3.Events.CustomEvent` with (type, params), and
+`BSUIDataManager.Invoke("dispatchEvent", …)`. Every one of those calls uses an
+API already proven to work here. **Not yet tested end to end** — that is the
+last unproven link in the chain.
+
+### ✖ Interposing on `UpdateLowFrequencyData` — tried, impossible
+
+Public looked replaceable, so the plan was: `CreateFunction` a native handler,
+`SetMember` it over `Reticle_mc.UpdateLowFrequencyData`, read the argument, then
+call the original. Tested in game, step by step:
+
+```
+[nav] step 1 OK: original 'UpdateLowFrequencyData' is <other>
+[nav] step 2 OK: original parked on a dynamic holder
+[nav] not interposing: could not replace the method on the sealed class
+```
+
+**`ShipReticle` is `public class`, not `dynamic`** — a sealed AS3 class. Sealed
+classes reject new members (step 2 had to park the original on a plain `Object`
+instead) and expose their methods as **fixed traits, which are read-only**. So
+the replacement is impossible, not mistuned. Worth isolating each step: bundling
+them, as the first attempt did, produced a failure that did not say which wall
+had been hit.
 
 ## 6. Events the SWF knows that CommonLibSF does not declare
 
