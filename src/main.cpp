@@ -66,6 +66,7 @@ namespace
 	REX::TIniSetting<float> fMaxTargetLightSeconds{ "Panel", "fMaxTargetLightSeconds", 20000.0f };
 	REX::TIniSetting<float> fArrowAngleOffset{ "Panel", "fArrowAngleOffset", 0.0f };
 	REX::TIniSetting<bool>  bArrowInvertAngle{ "Panel", "bArrowInvertAngle", false };
+	REX::TIniSetting<bool>  bLabel{ "Panel", "bLabel", false };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -137,10 +138,14 @@ namespace
 	RE::Scaleform::GFx::Value  g_labelField;
 	std::atomic<bool>          g_labelReady{ false };
 
-	// Cruise state, refreshed from the per-frame task. The scanner key keeps its
-	// vanilla job outside cruise, so the panel must stay out of the way there -
-	// this is the gate identified back in Phase 0.
+	// Cruise state. The scanner key keeps its vanilla job outside cruise, so the
+	// panel must stay out of the way there - the gate identified back in Phase 0.
 	std::atomic<bool> g_inCruise{ false };
+
+	// Defined further down, but called from the data-feed callbacks above them.
+	bool WorldSettled();
+	void TryCreateArrow();
+	void RefreshCruiseState();
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
@@ -914,6 +919,14 @@ namespace
 			if (!event.IsObject() || !event.GetMember("data", &data))
 				data = event;
 
+			// This callback runs on the engine's own UI thread, so it is the safe
+			// place to create objects and read menu state - unlike the per-frame
+			// task, which crashed v0.1.3 by doing it from elsewhere.
+			if (WorldSettled()) {
+				TryCreateArrow();
+				RefreshCruiseState();
+			}
+
 			// Rebuild the candidate list on every update - this is what the arrow
 			// points at, so it cannot be gated on a capture request. The list is
 			// index-aligned with the high-frequency feed, which is how a name gets
@@ -1284,6 +1297,18 @@ namespace
 	// screen-position overlay could never have handled.
 	// ---------------------------------------------------------------------------
 
+	// Nothing may touch the movie while a load screen or the main menu is up:
+	// the world is in flux and the Scaleform VM is rebuilding menus on its own
+	// threads. Omitting this is what crashed v0.1.3 - an access violation inside
+	// the AS3 VM's TypeError path, on the IOManager thread, mid movie-load.
+	bool WorldSettled()
+	{
+		static const RE::BSFixedString s_loadingMenu{ "LoadingMenu" };
+		static const RE::BSFixedString s_mainMenu{ "MainMenu" };
+		const auto                     ui = RE::UI::GetSingleton();
+		return ui && !ui->IsMenuOpen(s_loadingMenu) && !ui->IsMenuOpen(s_mainMenu);
+	}
+
 	void RefreshCruiseState()
 	{
 		const auto ui = RE::UI::GetSingleton();
@@ -1388,8 +1413,17 @@ namespace
 		g_arrowClip.SetMember("visible", V{ false });
 
 		// The label rides just outside the arrow tip and is never rotated, so it
-		// stays readable however the ship is oriented. Failure here is
-		// non-fatal: the arrow alone is still useful.
+		// stays readable however the ship is oriented.
+		//
+		// OFF BY DEFAULT. Constructing `flash.text.TextField` asks the AS3 VM to
+		// resolve a class the SWF may never link, and the v0.1.3 crash died in
+		// the VM's TypeError path - so this stays opt-in until it has been shown
+		// safe on its own, separately from the threading fix.
+		if (!bLabel.GetValue()) {
+			g_arrowReady.store(true, std::memory_order_release);
+			REX::INFO("[arrow] ready (radius {}), label disabled", r);
+			return;
+		}
 		root->CreateObject(&g_labelField, "flash.text.TextField");
 		if (g_labelField.IsObject() || g_labelField.IsDisplayObject()) {
 			g_labelField.SetMember("selectable", V{ false });
@@ -1479,12 +1513,15 @@ namespace
 	void OnFrame()
 	{
 		TryInstallInputTap();
-		// The subscription is the route the game itself uses and does not depend
-		// on anything the sealed class permits, so it runs independently of the
-		// interposer rather than behind its give-up flag.
-		TryInstallSubscriber();
-		TryCreateArrow();
-		RefreshCruiseState();
+
+		// Only the subscription bootstrap happens here, and only once the world
+		// has settled. Everything else that touches the movie - creating the
+		// arrow, reading cruise state, moving the label - now runs inside the
+		// data-feed callbacks instead, on the thread the engine itself uses to
+		// drive the UI. Doing that work from this task was a cross-thread
+		// access on Scaleform objects, which are not thread-safe.
+		if (WorldSettled())
+			TryInstallSubscriber();
 
 		// Single-winner exchange: the dump is expensive and must not run twice
 		// concurrently if this task lands on two threads in the same frame.
