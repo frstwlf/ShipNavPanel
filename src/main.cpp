@@ -3410,6 +3410,11 @@ namespace
 	// method than needs proving. Size and colour do most of the work - giants
 	// are large and ringed, rock is a solid diamond, ice is pale, asteroids are
 	// a scatter of small marks.
+	// Whether `graphics.drawCircle` exists here. Unknown until the first attempt,
+	// then remembered - and if it is missing, a polygon stands in, so a wrong
+	// guess costs a slightly less round circle rather than a blank icon.
+	std::atomic<int> g_drawCircleWorks{ -1 };  // -1 unknown, 0 no, 1 yes
+
 	void DrawClassIcon(RE::Scaleform::GFx::Value& a_graphics, PlanetClass a_class)
 	{
 		using V = RE::Scaleform::GFx::Value;
@@ -3417,6 +3422,30 @@ namespace
 		const auto fill = [&](std::uint32_t a_colour, double a_alpha) {
 			V args[]{ V{ a_colour }, V{ a_alpha } };
 			a_graphics.Invoke("beginFill", nullptr, args, 2);
+		};
+
+		// A real circle if the player's Scaleform has one; a 16-gon otherwise,
+		// which at this size is indistinguishable.
+		const auto disc = [&](double a_radius) {
+			if (g_drawCircleWorks.load(std::memory_order_acquire) != 0) {
+				V args[]{ V{ 0.0 }, V{ 0.0 }, V{ a_radius } };
+				const bool ok = a_graphics.Invoke("drawCircle", nullptr, args, 3);
+				if (g_drawCircleWorks.exchange(ok ? 1 : 0, std::memory_order_acq_rel) == -1)
+					REX::INFO("[panel] graphics.drawCircle {} - icons use {}",
+						ok ? "is available" : "is NOT available", ok ? "real circles" : "polygons");
+				if (ok) {
+					a_graphics.Invoke("endFill", nullptr, nullptr, 0);
+					return;
+				}
+			}
+
+			constexpr int kSides = 16;
+			for (int i = 0; i <= kSides; ++i) {
+				const double angle = 6.28318530717958647692 * i / kSides;
+				V            point[]{ V{ a_radius * std::cos(angle) }, V{ a_radius * std::sin(angle) } };
+				a_graphics.Invoke(i == 0 ? "moveTo" : "lineTo", nullptr, point, 2);
+			}
+			a_graphics.Invoke("endFill", nullptr, nullptr, 0);
 		};
 		const auto poly = [&](std::initializer_list<std::pair<double, double>> a_points) {
 			bool first = true;
@@ -3440,49 +3469,31 @@ namespace
 				{ -a_halfWidth, a_halfHeight } });
 		};
 
+		// ONLY giants get a mark. A glyph on every row was accurate and unhelpful
+		// - a column of icons beside a column of names is noise, since the names
+		// already say which body is which. What earns space is the exception:
+		// the handful you cannot land on.
+		const auto ringedGiant = [&](std::uint32_t a_body, std::uint32_t a_ring) {
+			fill(a_body, 0.95);
+			disc(5.5);
+			fill(a_ring, 0.85);
+			bar(9.5, 1.0);
+		};
+
 		switch (a_class) {
-		case PlanetClass::kRock:
-			fill(0x9ED6A0, 1.0);
-			diamond(5.5);
-			break;
-		case PlanetClass::kBarren:
-			fill(0xA79B86, 0.95);
-			diamond(4.0);
-			break;
-		case PlanetClass::kIce:
-			fill(0xCFEBFF, 0.95);
-			diamond(4.5);
-			break;
-		case PlanetClass::kIceGiant:
-			fill(0x8FD3F0, 0.95);
-			diamond(6.5);
-			fill(0xCFEBFF, 0.85);
-			bar(9.0, 1.0);
-			break;
 		case PlanetClass::kGasGiant:
-			fill(0xE0B77A, 0.95);
-			diamond(6.5);
-			fill(0xF2DCB4, 0.85);
-			bar(9.0, 1.0);
+			ringedGiant(0xE0B77A, 0xF2DCB4);
 			break;
 		case PlanetClass::kHotGasGiant:
-			fill(0xE8895A, 0.95);
-			diamond(6.5);
-			fill(0xF7C39E, 0.85);
-			bar(9.0, 1.0);
+			ringedGiant(0xE8895A, 0xF7C39E);
 			break;
-		case PlanetClass::kAsteroid:
-			fill(0x9A8F80, 0.95);
-			bar(2.0, 2.0);
-			break;
-		case PlanetClass::kAsteroidBelt:
-			fill(0x9A8F80, 0.95);
-			poly({ { -7.0, -1.5 }, { -4.0, -1.5 }, { -4.0, 1.5 }, { -7.0, 1.5 } });
-			poly({ { -1.5, -2.0 }, { 1.5, -2.0 }, { 1.5, 2.0 }, { -1.5, 2.0 } });
-			poly({ { 4.0, -1.5 }, { 7.0, -1.5 }, { 7.0, 1.5 }, { 4.0, 1.5 } });
+		case PlanetClass::kIceGiant:
+			ringedGiant(0x8FD3F0, 0xCFEBFF);
 			break;
 		default:
-			// Nothing known about it - draw nothing rather than a wrong guess.
+			// Everything else draws nothing: the row is unremarkable, and saying
+			// so with a symbol only crowds the ones that are not.
+			(void)diamond;
 			break;
 		}
 	}

@@ -84,6 +84,22 @@ These three come before release.
       `uPoiType`/`uPoiCategory` sampled from known locations (Jemison 83/10, The
       Eye 43/7). Original notes below.
 
+      **Settlement icons — the record trail, as far as it goes.**
+      `LocTypeSettlement` is `00022611`, and it sits on **LCTN** records, not on
+      planet data: `CityNewAtlantisLocation`, `CityAkilaCityLocation`,
+      `CityNeonLocation`, `CityCydoniaLocation`, `StationTheKeyInteriorLocation`,
+      `SettleHopeTownLocation` and so on. Each carries **`PNAM`, a form
+      reference to its parent location** (New Atlantis → `0001AB2B`), so the
+      hierarchy runs settlement → parent → … upward. What is not yet established
+      is where that chain meets the planet: either an ancestor location is the
+      planet's own, or `PNDT` carries a location reference of its own — the
+      planet subrecord list has not been read since the `XXXX` fix, so it may
+      well be sitting there unnoticed. `Planet.GetLocation()` existing in
+      Papyrus says the link is there to be found.
+      Only *major* settlements are wanted, so `LocTypeSettlement` may need
+      narrowing — the six above look right, but the keyword's full membership
+      has not been counted.
+
 - [ ] ~~**1. Icons pass — body class is SOLVED, only POI kinds are open.**~~
       The old note said gas giants needed a body-class field "not in the feed"
       and were therefore last. That is no longer true: the class is in the PNDT
