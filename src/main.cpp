@@ -100,7 +100,18 @@ namespace
 	REX::TIniSetting<bool> bIncludePOI{ "Panel", "bIncludePOI", true };
 	REX::TIniSetting<bool> bIncludeShips{ "Panel", "bIncludeShips", false };
 	REX::TIniSetting<bool>  bPanelRowSeparators{ "Panel", "bPanelRowSeparators", true };
+	// Indent moons under their planet. Has no effect yet: nothing the ship HUD
+	// feed carries identifies a moon's parent, and the guess v0.3.3 shipped was
+	// wrong. Kept wired up because the data exists elsewhere - see the probe.
 	REX::TIniSetting<bool>  bNestMoons{ "Panel", "bNestMoons", true };
+
+	// Probe: the star map's own body feed carries `uBodyType` (BT_PLANET,
+	// BT_MOON, BT_SATELLITE...) and `uBodyID`, which is exactly the hierarchy
+	// the ship HUD feed lacks. Whether it holds anything while merely flying -
+	// rather than only with the map open - is the open question, and this
+	// subscribes and logs whatever turns up.
+	REX::TIniSetting<bool>        bProbeStarmapFeed{ "Recon", "bProbeStarmapFeed", false };
+	REX::TIniSetting<std::string> sStarmapFeed{ "Recon", "sStarmapFeed", "StarmapSystemBodyInfoProvider" };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel from the camera while the panel is open, so scrolling
@@ -161,8 +172,10 @@ namespace
 	// hook must not touch the movie itself - it runs on whichever thread the
 	// input queue is being drained on.
 	std::atomic<bool> g_dumpRequested{ false };
-	std::atomic<bool> g_captureRequested{ false };
-	std::atomic<bool> g_captureHighRequested{ false };
+	std::atomic<bool>          g_captureRequested{ false };
+	std::atomic<bool>          g_captureHighRequested{ false };
+	std::atomic<bool>          g_starmapDumpRequested{ false };
+	std::atomic<std::uint32_t> g_starmapCallbacks{ 0 };
 	std::atomic<bool> g_interposeInstalled{ false };
 	std::atomic<bool> g_interposeFailed{ false };
 	std::atomic<bool> g_subscribed{ false };
@@ -469,47 +482,37 @@ namespace
 	// One entry per line the player sees, in display order: bodies first in feed
 	// order, then stations and landing sites. Caller holds g_candidateMutex.
 	//
-	// Moon nesting is a HEURISTIC and worth understanding before trusting it.
-	// The feed says whether a body HAS moons (`bIsCelestialParentBody`) but
-	// never which planet a moon belongs to, and moons arrive typed exactly like
-	// planets. What the one captured system showed is that the game emits a
-	// parent immediately followed by its moons - Jemison, then Bondar, Gagarin,
-	// Kurtz, Olivas - so a body that follows a parent and has no moons of its
-	// own is taken to be one of its moons.
+	// Moon nesting is NOT derivable from this feed, and v0.3.3 shipped a wrong
+	// guess that this replaces. Ground truth for Alpha Centauri, from the
+	// tester: Jemison (moon Kurtz), Bondar (Grissom, Curbeam), Gagarin (none),
+	// Olivas (Lovell, Chawla, Hawley, Voss, Zamka). Against the capture:
 	//
-	// Where this would be wrong: a system listing a childless PLANET after a
-	// parent and its moons would indent that planet too. Alpha Centauri, the
-	// only system captured, has exactly one parent body and so cannot show the
-	// difference. Needs checking somewhere like Sol.
+	//  - `bIsCelestialParentBody` was true ONLY on Jemison, though Bondar and
+	//    Olivas both have moons. So it does not mean "has moons". Kurtz was the
+	//    only moon present in the feed at all, which fits it meaning something
+	//    nearer "is the parent of an entry currently in this list".
+	//  - Feed order was Jemison, Bondar, Gagarin, Kurtz, Olivas - Kurtz sits
+	//    two entries away from its own parent. So order does not group families
+	//    either, and the old rule indented every body after Jemison, which is
+	//    exactly the "everything looked indented" that was reported.
+	//
+	// The indent plumbing below stays, because the star map SWF shows the game
+	// does have this: `uBodyType` with BT_PLANET / BT_MOON / BT_SATELLITE, on
+	// `StarmapSystemBodyInfoProvider`. Until something fills `isMoon` from a
+	// real source, nothing is nested.
 	void CollectLocalRows(std::vector<std::size_t>& a_out)
 	{
 		a_out.clear();
-
-		const bool nest = bNestMoons.GetValue();
-		bool       afterParent = false;
-
 		for (int pass = 0; pass < 2; ++pass) {
 			const bool wantSecondary = pass == 1;
 			for (std::size_t i = 0; i < g_candidates.size(); ++i) {
-				auto& row = g_candidates[i];
+				const auto& row = g_candidates[i];
 				if (!IsLocalBody(row.type, row.distance))
 					continue;
-
-				// Tracked across the whole feed order, not just the rows that
-				// survive filtering, so a hidden entry cannot break the run.
-				if (!wantSecondary && row.type == kTargetTypePlanet) {
-					if (row.isParentBody)
-						afterParent = true;
-					row.isMoon = nest && afterParent && !row.isParentBody;
-				} else {
-					row.isMoon = false;
-				}
-
 				if (IsSecondaryRow(row.type) != wantSecondary)
 					continue;
 				a_out.push_back(i);
 			}
-			afterParent = false;
 		}
 	}
 
@@ -629,6 +632,8 @@ namespace
 			g_captureRequested.store(true, std::memory_order_release);
 			g_captureHighRequested.store(true, std::memory_order_release);
 		}
+		if (bProbeStarmapFeed.GetValue())
+			g_starmapDumpRequested.store(true, std::memory_order_release);
 
 		// Only hijack the scanner key while cruising; outside cruise it still
 		// opens the vanilla ship scanner.
@@ -1624,6 +1629,61 @@ namespace
 		}
 	};
 
+	// Logs the whole shape of whatever the star map feed delivers, once per
+	// press of the capture trigger rather than continuously - it fires as often
+	// as any other feed and would otherwise bury the log.
+	class StarmapProbeHandler : public RE::Scaleform::GFx::FunctionHandler
+	{
+	public:
+		void Call(const Params& a_params) override
+		{
+			const auto seen = g_starmapCallbacks.fetch_add(1, std::memory_order_relaxed) + 1;
+			if (!g_starmapDumpRequested.exchange(false, std::memory_order_acq_rel)) {
+				if (seen == 1)
+					REX::INFO("[starmap] feed is LIVE outside the map - {} callback(s) so far. "
+							  "Press the scanner key to dump its contents.",
+						seen);
+				return;
+			}
+
+			REX::INFO("[starmap] ==== dump after {} callback(s) ====", seen);
+			if (a_params.argCount < 1 || !a_params.args) {
+				REX::WARN("[starmap] callback carried no argument");
+				return;
+			}
+
+			RE::Scaleform::GFx::Value event = a_params.args[0];
+			RE::Scaleform::GFx::Value data;
+			if (!event.IsObject() || !event.GetMember("data", &data))
+				data = event;
+
+			LevelCollector top{ "[starmap] payload", nullptr };
+			data.VisitMembers(&top);
+
+			// The bodies are expected to sit in an array much like the target
+			// feed's; dump every entry, since which one is a moon is the point.
+			RE::Scaleform::GFx::Value entries;
+			if (GetEntryArray(data, entries) && entries.IsArray()) {
+				class EntryDump : public RE::Scaleform::GFx::Value::ArrayVisitor
+				{
+				public:
+					void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
+					{
+						RE::Scaleform::GFx::Value entry = a_value;
+						REX::INFO("[starmap] --- entry {} ---", a_index);
+						LevelCollector visitor{ "[starmap] e", nullptr };
+						entry.VisitMembers(&visitor);
+					}
+				};
+				EntryDump dump;
+				entries.VisitElements(&dump);
+			}
+			REX::INFO("[starmap] ==== dump end ====");
+		}
+	};
+
+	StarmapProbeHandler g_starmapProbeHandler;
+
 	class HighFeedHandler : public RE::Scaleform::GFx::FunctionHandler
 	{
 	public:
@@ -1789,6 +1849,19 @@ namespace
 						REX::INFO("[nav] {} to '{}'",
 							manager.Invoke("Subscribe", nullptr, hiArgs, 2) ? "SUBSCRIBED" : "FAILED to subscribe",
 							kHighFeed);
+
+						// The star map's body feed, if the probe is on. A
+						// failure here is informative and must not disturb the
+						// two subscriptions above, which the mod depends on.
+						if (bProbeStarmapFeed.GetValue()) {
+							const auto&               feed = sStarmapFeed.GetValue();
+							RE::Scaleform::GFx::Value mapArgs[2];
+							a_root->CreateString(&mapArgs[0], feed.c_str());
+							a_root->CreateFunction(&mapArgs[1], &g_starmapProbeHandler);
+							REX::INFO("[starmap] {} to '{}'",
+								manager.Invoke("Subscribe", nullptr, mapArgs, 2) ? "SUBSCRIBED" : "FAILED to subscribe",
+								feed);
+						}
 						return;
 					}
 					REX::WARN("[nav] '{}.Subscribe' rejected the call", path);

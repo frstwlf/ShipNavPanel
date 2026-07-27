@@ -70,11 +70,16 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Verify moon nesting in a multi-planet system (Sol).** Implemented in
-      v0.3.3 but on a heuristic that one system cannot falsify — see the
-      "settled" note below. Alpha Centauri has exactly one parent body, so it
-      cannot show the case that would break it: a childless *planet* listed
-      after a parent and its moons would be indented as though it were a moon.
+- [ ] **Moon nesting — find a real source for the hierarchy.** The v0.3.3
+      order-based guess was wrong and is gone; the display side (indent) is
+      still wired up and waiting. See the settled note below for what the feed
+      does and does not carry. Next step is the `bProbeStarmapFeed` probe in
+      v0.3.4: if `StarmapSystemBodyInfoProvider` holds bodies while merely
+      flying, `uBodyType` answers it outright. If it is empty with the map
+      closed, the fallbacks are reading the PNDT record's unmapped tail
+      (`PlanetData` is `0x58`, mapped only to `0x4C`) against known ground
+      truth, or checking in xEdit whether PNDT carries a parent field at all —
+      that would at least say whether the data is in the record.
 - [ ] **Icons** — settlements first (`uPoiType`/`uPoiCategory` sampling), gas
       giants last, since that needs the PNDT layout. See the verdict table in
       [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
@@ -110,16 +115,27 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 Each of these cost real time; the reasoning is in the findings docs.
 
-- **The feed says which bodies HAVE moons, never which planet a moon belongs
-  to.** `bIsCelestialParentBody` is a bool on the entry, true on a planet with
-  moons; moons themselves arrive typed `TT_PLANET`, identical to planets. The
-  parent id is not in `BGSPlanet::PlanetData` either — that record is
-  temperature, density, a surface tree and an orbital angle, nothing relational.
-  So nesting works from **list order**: the game emits a parent immediately
-  followed by its moons (Alpha Centauri: Jemison, then Bondar, Gagarin, Kurtz,
-  Olivas), and a childless body following a parent is taken to be its moon. A
-  childless *planet* in that position would be indented wrongly — unverified,
-  since the only system captured has one parent body.
+- **The ship HUD's target feed cannot tell a moon from a planet.** Moons arrive
+  typed `TT_PLANET`, identical to planets, and nothing in the entry names a
+  parent. `BGSPlanet::PlanetData` has no relational field either — temperature,
+  density, a surface tree, an orbital angle.
+  - **`bIsCelestialParentBody` does NOT mean "has moons".** Ground truth for
+    Alpha Centauri: Jemison (moon Kurtz), Bondar (Grissom, Curbeam), Gagarin
+    (none), Olivas (Lovell, Chawla, Hawley, Voss, Zamka). The flag was true
+    only on Jemison, and Kurtz was the only moon in the feed at all — so it
+    reads closer to "is the parent of an entry currently in this list".
+  - **Feed order does not group families.** Order was Jemison, Bondar, Gagarin,
+    Kurtz, Olivas: Kurtz is two entries from its own parent. A v0.3.3 rule
+    built on that assumption indented everything after Jemison and was removed.
+  - **The feed also lists only some moons** — one of eight here — so the panel
+    is inherently a partial list of the system.
+  - **Where the data does exist:** `galaxystarmapmenu.swf` has `uBodyType` with
+    `BT_STAR`/`BT_PLANET`/`BT_MOON`/`BT_SATELLITE`/`BT_STATION`/
+    `BT_ASTEROID_BELT`, plus `uBodyID`, `uSystemID`, `EntryHasChildren`,
+    `GetChildrenOfEntry`, `childInfoA`, on provider
+    **`StarmapSystemBodyInfoProvider`** (siblings: `StarmapInspectBodyInfoProvider`,
+    `GalaxyMarkersProvider`, `GalaxyMarkerDefsProvider`). Probe it with
+    `bProbeStarmapFeed`.
 - **A borrowed `TextFormat` carries the DONOR's alignment.** The donor is the
   HUD's centred lock-on caption, so any field using it is centred until `align`
   is set explicitly. Cost one build: the panel shipped with centred names.
