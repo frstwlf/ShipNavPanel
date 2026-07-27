@@ -67,16 +67,12 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Phase 2 panel** — list, icons, navigation. Specced and graded in
-      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md). The suppression question is
-      now answered (no), so **the input model has to be chosen before anything
-      is drawn**: the panel cannot take W/S from the ship, and has to be built on
-      keys the game already ignores in cruise. The scanner key is the one such
-      key proven so far; tap-versus-hold on it would give a second and third verb
-      for free, since `heldDownSecs` is already read in the tap.
-- [ ] Optional cheap recon that would widen the options: play a cruise session
-      with `bLogInput=true` and look for other events that arrive undisabled but
-      visibly do nothing. Each one is another free verb.
+- [ ] **Phase 2 panel — the input model is settled, the drawing is not.** The
+      recon is finished: scanner key opens and closes, mouse wheel moves the
+      highlight, no confirm key needed. Table and reasoning in
+      [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md). What remains is the panel
+      itself — frame, rows, highlight — driven by the candidate list the arrow
+      already maintains, then icons, then polish.
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
       default confirm — it engages the cruise **autopilot**. Build a params
       object `{uBodyID: <uniqueID>}`, construct `Shared.AS3.Events.CustomEvent`
@@ -106,6 +102,13 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 Each of these cost real time; the reasoning is in the findings docs.
 
+- **To suppress an input, hook the receiver that consumes it and splice the
+  event out of the queue — do not flag it and hope.** Proven both ways on the
+  same day: flagging failed for the throttle, splicing worked for the mouse
+  wheel at `PlayerCamera::PerformInputProcessing` (v0.2.3, view unchanged, mouse
+  look unaffected). `PlayerCamera` is a `BSInputEventReceiver` with a real
+  singleton id, so it takes the same live-vtable hook as `RE::UI`. Relink before
+  returning and every other receiver still sees the chain whole.
 - **Ship flight input cannot be suppressed by marking events `disabled`**
   (tested v0.2.1). The write lands and even persists — the engine pools the
   event objects, so a later press arrives still carrying the flag — and the ship

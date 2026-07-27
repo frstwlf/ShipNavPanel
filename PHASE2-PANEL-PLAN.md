@@ -10,9 +10,11 @@ panel is up, and the scanner or cancel key dismissing it.
 
 > **The steering-suppression half of that is dead** — tested on v0.2.1 and
 > ruled out (see below). The list, the icons and the arrow-follows-highlight
-> parts are unaffected; what has to change is the *input model*, since the panel
-> cannot take W/S away from the ship. The interaction has to be built on keys
-> the game already ignores in cruise — of which the scanner key is one, proven.
+> parts are unaffected; what had to change is the *input model*.
+>
+> **Settled 2026-07-27: the mouse wheel replaces W/S.** It is a better fit than
+> the original spec — scrolling a list is what a wheel is for, and the ship
+> keeps flying while you browse instead of the mod taking control away.
 
 ---
 
@@ -27,6 +29,7 @@ panel is up, and the scanner or cancel key dismissing it.
 | Icons: settlements / POI kinds | **likely** | entries carry `uPoiType`, `uPoiCategory` (43 and 7 for The Eye) — enums unknown, mappable by sampling known locations |
 | Icons: gas giants | **needs research** | body class is not in the feed; the form id reaches a `kPNDT` record, but CommonLibSF's `BGSPlanet::PlanetData` is a stub, so the field must be found |
 | **W/S navigation with steering suppressed** | **ruled out** — tested and failed, see below | — |
+| **Wheel navigation, camera suppressed** | **proven in game (v0.2.3)** | `PlayerCamera` hook + queue splice, see below |
 | True menu mode (cursor, focus, full capture) | **blocked** | needs `UI::RegisterMenu` with a real `IMenu`; every `IMenu` vfunc id is an unmapped `{ 0 }` placeholder, and upstream has no remapping in flight |
 
 ## The one real unknown, and how to settle it cheaply
@@ -113,14 +116,47 @@ Safety: leaving cruise always forces the panel down, and suppression is gated on
 cruise a second time at the point of the write, so the throttle cannot be left
 suppressed in normal flight.
 
+## The input model — settled 2026-07-27
+
+The cruise key survey (v0.2.2) and the wheel filter test (v0.2.3) between them
+answered this. Everything below is verified in game.
+
+| Input | Event name(s) | Role | Why it is available |
+|---|---|---|---|
+| Scanner key | `SHMonocle` | open / close the panel | arrives undisabled in cruise and the game declines to act on it (Phase 0) |
+| Mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight | drives the camera, and the camera can be made not to see it (below) |
+| — | — | confirm | **not needed**: the arrow follows the highlight live, so closing the panel simply keeps the selection |
+
+Spares, if a verb is ever wanted: `Quickkey2` / `Quickkey3` (keys 2 and 3) reach
+the mod undisabled in cruise and do not change weapon groups. Tested with 3.
+**Caveat if these are ever used:** confirm against a ship that actually *has* a
+weapon group of that number, or "nothing happened" proves nothing. `XButton`
+(key R) is a further untested candidate. `RepairShip` sits on key 4 and is not
+free.
+
+### Why the wheel works when the throttle did not
+
+Both are "stop the game acting on a key", but the mechanisms are not the same
+and that is the whole reason one worked:
+
+- The throttle attempt **set `disabled` and relied on a consumer honouring it**.
+  Nothing on the flight path does.
+- The wheel filter **unlinks the events from the queue** for the duration of
+  `PlayerCamera::PerformInputProcessing`, then relinks them. There is no flag to
+  honour or ignore — the camera never sees the events at all, and every other
+  receiver still gets the chain whole.
+
+`PlayerCamera` is a `BSInputEventReceiver` in its own right with a real mapped
+singleton id, so it takes the same live-vtable hook already used on `RE::UI`.
+Confirmed in game: view unchanged while the panel is up, two events hidden per
+wheel notch, mouse look unaffected.
+
+**The generalisable lesson: to suppress an input, hook the receiver that
+consumes it and splice the event out — do not flag it and hope.**
+
 ## Suggested order
 
-1. ~~Input suppression test.~~ **Done — the answer was no.** Pick the
-   replacement input model before drawing anything; it decides what the panel
-   needs to show. The near-free option is the scanner key alone, with tap
-   versus hold telling next from previous or close: `heldDownSecs` is already
-   read in the tap, and the game itself uses that idiom (`Cruise` is a ~1.5 s
-   hold, not a tap).
+1. ~~Input suppression test.~~ **Done — W/S is out, the wheel is in.**
 2. Panel frame + rows + highlight, driven by the existing candidate list.
 3. Wire the arrow to the highlight; target key pins.
 4. Icons — settlements first (`uPoiType`/`uPoiCategory` sampling), gas giants
