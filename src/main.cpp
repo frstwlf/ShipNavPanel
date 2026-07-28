@@ -1677,13 +1677,21 @@ namespace
 	std::atomic<std::uint32_t> g_lockSeenInFeed{ 0 };
 
 	// The game's own generic labels for undiscovered markers ("Starstation",
-	// "Asteroids", ...), learned at runtime per POI kind: when an undiscovered
-	// candidate's on-screen icon is in view, vanilla has written the masked
-	// generic into its text field - the one place the string exists outside
-	// the engine. Keyed by (uPoiType << 32) | uPoiCategory; kept for the
-	// session (labels are game-global, not per-movie).
-	std::mutex                                     g_poiLabelMutex;
-	std::unordered_map<std::uint64_t, std::string> g_poiLabels;
+	// "Asteroids", ...), learned at runtime per POI kind, two ways: read off
+	// an undiscovered candidate's on-screen icon text (authoritative - that
+	// string is vanilla's own display), or taken from the OLD name when an
+	// undiscovered POI's feed name CHANGES across publishes - the feed
+	// carries the masked generic until proximity reveals the real name, so
+	// the pre-change value is the generic (provisional: the unmask direction
+	// is assumed, and an icon sighting may overwrite it). Keyed by
+	// (uPoiType << 32) | uPoiCategory; kept for the session.
+	struct PoiLabel
+	{
+		std::string label;
+		bool        provisional{ false };
+	};
+	std::mutex                                  g_poiLabelMutex;
+	std::unordered_map<std::uint64_t, PoiLabel> g_poiLabels;
 
 	// An undiscovered POI/station candidate whose kind has no learned label
 	// yet - what the learner pass looks for on screen.
@@ -3460,6 +3468,27 @@ namespace
 					for (const auto& old : previous) {
 						if (old.id == row.id) {
 							row.distance = old.distance;
+
+							// An undiscovered POI whose feed name CHANGED
+							// across publishes was masked before: the feed
+							// carries the generic until proximity reveals the
+							// real name, so the OLD value is the kind's label
+							// (v0.8.16, the tester's before-it-is-in-view
+							// ask). Provisional - the unmask direction is
+							// assumed - and never overwrites; an icon
+							// sighting is the authority.
+							if (row.fromFeed && old.fromFeed && !row.discovered &&
+								!old.discovered && row.havePoi && !old.name.empty() &&
+								!row.name.empty() && old.name != row.name) {
+								const auto      key = PoiKindKey(row.poiType, row.poiCategory);
+								std::lock_guard labels{ g_poiLabelMutex };
+								if (!g_poiLabels.contains(key)) {
+									g_poiLabels[key] = PoiLabel{ old.name, true };
+									REX::INFO("[blip] provisionally learned undiscovered label "
+											  "'{}' for POI kind {}/{} (name change)",
+										old.name, row.poiType, row.poiCategory);
+								}
+							}
 							break;
 						}
 					}
@@ -3785,11 +3814,15 @@ namespace
 					s_moonWatchID = 0;
 			}
 
-			// Kinds whose label is already learned need no learner pass.
+			// Kinds with an authoritative label need no learner pass; a
+			// PROVISIONAL one (from a name change) keeps its kind listed so
+			// an icon sighting can confirm or correct it.
 			if (!maskedKinds.empty()) {
 				std::lock_guard labels{ g_poiLabelMutex };
 				std::erase_if(maskedKinds, [](const MaskedKind& a_kind) {
-					return g_poiLabels.contains(PoiKindKey(a_kind.poiType, a_kind.poiCategory));
+					const auto hit =
+						g_poiLabels.find(PoiKindKey(a_kind.poiType, a_kind.poiCategory));
+					return hit != g_poiLabels.end() && !hit->second.provisional;
 				});
 			}
 
@@ -4717,7 +4750,8 @@ namespace
 						continue;
 					{
 						std::lock_guard labels{ g_poiLabelMutex };
-						g_poiLabels[PoiKindKey(kind.poiType, kind.poiCategory)] = label;
+						g_poiLabels[PoiKindKey(kind.poiType, kind.poiCategory)] =
+							PoiLabel{ label, false };
 					}
 					REX::INFO("[blip] learned undiscovered label '{}' for POI kind {}/{}",
 						label, kind.poiType, kind.poiCategory);
@@ -5683,7 +5717,7 @@ namespace
 							if (const auto hit =
 									g_poiLabels.find(PoiKindKey(row.poiType, row.poiCategory));
 								hit != g_poiLabels.end())
-								display = hit->second;
+								display = hit->second.label;
 						}
 						if (display.empty())
 							display = row.type == kTargetTypeStation ?
