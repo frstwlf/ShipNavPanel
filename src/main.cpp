@@ -4610,18 +4610,37 @@ namespace
 				root->GetVariable(&reticle, (base + ".Reticle_mc").c_str()) &&
 				(reticle.IsObject() || reticle.IsDisplayObject());
 
-			const auto findIcon = [&reticle](const std::string& a_name,
+			// Identity check for an on-screen icon. The instance name is
+			// rewritten for the icon's CURRENT target every refresh, but one
+			// revival path - the info target's edge-snapped indicator - never
+			// renames, so a DISPLAYED name must agree with it. UNDISCOVERED
+			// markers however hide Name_mc, and TryUpdateName only writes the
+			// text while it is visible - so with the name display off, the
+			// stale text is evidence of nothing and the instance name stands
+			// (v0.8.11, the tester's undiscovered-station catch). The edge
+			// indicator always shows its name, so the spoof case it guards
+			// stays guarded.
+			const auto iconIs = [](RE::Scaleform::GFx::Value& a_icon, const std::string& a_name) {
+				RE::Scaleform::GFx::Value nameMc, shown;
+				if (a_icon.GetMember("Name_mc", &nameMc) &&
+					(nameMc.IsObject() || nameMc.IsDisplayObject()) &&
+					nameMc.GetMember("visible", &shown) && shown.IsBoolean() &&
+					!shown.GetBoolean())
+					return true;  // name display off - the instance name is the identity
+				RE::Scaleform::GFx::Value nameField, text;
+				return a_icon.GetMember("Name_tf", &nameField) &&
+				       (nameField.IsObject() || nameField.IsDisplayObject()) &&
+				       nameField.GetMember("text", &text) && text.IsString() &&
+				       a_name == text.GetString();
+			};
+			const auto findIcon = [&reticle, &iconIs](const std::string& a_name,
 									  RE::Scaleform::GFx::Value& a_out) {
 				const std::string childName = std::string{ "OnScreenIcon: " } + a_name;
 				RE::Scaleform::GFx::Value arg{ childName.c_str() };
 				if (!reticle.Invoke("getChildByName", &a_out, &arg, 1) ||
 					!(a_out.IsObject() || a_out.IsDisplayObject()))
 					return false;
-				RE::Scaleform::GFx::Value nameField, text;
-				return a_out.GetMember("Name_tf", &nameField) &&
-				       (nameField.IsObject() || nameField.IsDisplayObject()) &&
-				       nameField.GetMember("text", &text) && text.IsString() &&
-				       a_name == text.GetString();
+				return iconIs(a_out, a_name);
 			};
 			struct Rect
 			{
@@ -4690,13 +4709,10 @@ namespace
 						if (bodyName == a_selectedName)
 							continue;
 
-						// A pooled clip keeps its stale instance name; only the
-						// text field says who the icon belongs to NOW.
-						V nameField, text;
-						if (!child.GetMember("Name_tf", &nameField) ||
-							!(nameField.IsObject() || nameField.IsDisplayObject()) ||
-							!nameField.GetMember("text", &text) || !text.IsString() ||
-							bodyName != text.GetString())
+						// Identity-checked like the selection lookup: the
+						// displayed name when shown, the instance name when
+						// the icon hides its name (undiscovered markers).
+						if (!iconIs(child, bodyName))
 							continue;
 
 						// Missions and the player's own E-target keep their

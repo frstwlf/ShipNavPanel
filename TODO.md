@@ -27,7 +27,16 @@ always-list-the-locked-moon exception stays for the debounce window.
 cleared moon's row lingered in the panel, because candidates only rebuild
 when the LOW feed publishes — and it publishes on target-set changes, which
 a mod-side clear is not. The clear now evicts the appended row directly and
-settles the highlight if it was parked on it.
+settles the highlight if it was parked on it. **v0.8.10 confirmed in game;
+v0.8.11 fixes ITS session's catch:** an undiscovered station's in-view
+marker never counted as coverage — `TryUpdateName` only writes `Name_tf`
+while `Name_mc` is VISIBLE, and undiscovered markers hide it, so the
+identity check compared against stale text and rejected the icon vanilla
+was genuinely showing. `selFound` then failed, which killed the fade pass
+too (planet marker stayed) and put the diamond over the undiscovered
+marker. The identity check now trusts the instance name whenever the name
+display is off; a SHOWN name must still match, which keeps the
+edge-indicator spoof case guarded (it always shows its name).
 
 **v0.8.7 passed its session on 2026-07-28: all four states of the hiding
 model work as intended** (idle cruise vanilla, panel-open cull with

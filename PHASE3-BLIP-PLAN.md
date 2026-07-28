@@ -367,6 +367,18 @@ selection's icon hidden until vanilla's next overlap pass, so "covered"
 counts `fadedBlocker` for that tick and the mod's marker does not flash into
 the gap.
 
+**v0.8.11 — identity when the name display is off.** `TryUpdateName` writes
+`Name_tf` only while `Name_mc.visible` is true, and UNDISCOVERED markers
+hide it — so the text on an undiscovered station's icon is stale evidence
+of nothing, and verifying against it rejected an icon vanilla was genuinely
+showing (the tester's catch: diamond over the undiscovered marker, fade
+pass dead because `selFound` failed, planet marker unfaded). The identity
+check now trusts the per-refresh-rewritten *instance* name whenever
+`Name_mc` is hidden, and still requires a SHOWN name to match — which keeps
+the one real spoof case guarded, since the info target's edge-snapped
+indicator (the only revival path that never renames its instance) always
+shows its name.
+
 **v0.8.6 — the fade covers both directions.** The first session proved the
 planet-only scope wrong by symmetry: with Earth *selected* and the Staryard
 near, the station sat on top — legitimately, because the 1 LS planet cap only
