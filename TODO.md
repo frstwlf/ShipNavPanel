@@ -112,12 +112,16 @@ and subscription whenever the movie-created callback fires, and drop stale
       in the system (dash for distance on ones the HUD is not tracking).
 - [x] **Settlement icons — confirmed in game on v0.7.0.** The seventeen bodies
       are marked and the icons appear.
-- [ ] **Confirm v0.7.3's camera splice of the confirm key.** Only exercised if
-      the confirm key is one the camera consumes, which C is not — so with the
-      shipped default it is a no-op and untested by definition. Test it by
-      setting `sConfirmEvent=LShoulder` and checking the POV does **not** toggle
-      when confirming with the panel open. Failure is benign: the view swings as
-      well as the lock landing.
+- [ ] **Check the POV does not toggle when confirming (v0.7.4).** `TogglePOV`
+      confirms — that much is tested — but whether the camera splice stops the
+      view swinging with it is not. The log is the tell: a confirm press should
+      raise the `[camera] hid N input event(s) from PlayerCamera` count by one.
+      Failure is benign, the view swings as well as the lock landing.
+- [ ] **Verify `sConfirmKeyLabel` against VANILLA bindings.** It ships as `Q`,
+      which is the POV toggle on the tester's setup — not necessarily on a fresh
+      install. The mod knows the event name and cannot derive the key, so a
+      wrong default here means the hint row confidently names the wrong key,
+      which is worse than no hint.
 - [x] ~~**Eyeball the v0.7.1 skyline glyph and the C rebind.**~~ Both confirmed
       in game on v0.7.2. v0.7.0 drew only
       the ground slab: `poly` closes each shape with `endFill`, and
@@ -330,34 +334,43 @@ inherits the number. Static bodies are unaffected.
 |---|---|---|
 | scanner | `SHMonocle` | open / close the panel |
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (spliced away from the camera while open) |
-| **C** | `StarbornPower`, `ExitShip`, `#67` | lock the highlighted body, or clear it if already locked |
+| POV toggle (**Q** here) | `TogglePOV` | lock the highlighted body, or clear it if already locked |
 
 `sConfirmEvent` is a comma-separated list; an entry is a user-event **name** or
-`#<id>`, a raw key code. **`#67` is the entry that actually fires in cruise** —
-C reports no user event at all while piloting. The names are kept for the
-contexts that do name it.
+`#<id>`, a raw key code for a key the game leaves nameless.
 
-**An `#id` entry matches only an UNNAMED press, and that restriction is what
-makes allowing an id safe.** `#67` does not mean "the C key" flatly; it means
-"the C key where the game has nothing bound", which is the only case it was
-added for. An id is a physical key and cannot follow a rebind, so without the
-restriction a player who bound a ship action to C would have the mod fire on the
-same keystroke the game acts on — nothing here consumes the key. A press with no
-user event is the **engine** saying nothing is bound there; the moment something
-is, the name appears and the game's binding wins. No capability is lost, since a
-named event can always be matched by name.
+**The default is `TogglePOV`, and it is chosen for being a name.** A key that
+already drives the camera is a fair candidate because the confirm key is spliced
+out of `PlayerCamera`'s queue while the panel is open, exactly as the wheel is —
+so it locks without swinging the view. That is the wheel's own argument applied
+to the confirm key, and it means the worst a failed splice can do is move the
+camera.
 
-The mod itself still bakes in no id — this one is a default in the player's ini
-describing the player's own keyboard, which is a different thing from the source
-hardcoding one tester's bindings.
+⚠ **`LShoulder` is not the POV toggle**, despite sharing a key with it here
+(id 81 = Q). It appeared in a v0.7.1 log and was written into these notes as the
+POV toggle on that basis alone; setting it does nothing. Reading an event name
+off a log line is not the same as knowing what the key does — the log says a
+name was reported, not which action it belongs to.
 
-**A key that already drives the camera is a fair candidate**, because the confirm
-key is spliced out of `PlayerCamera`'s queue while the panel is open, exactly as
-the wheel is. So it can confirm without also swinging the view — the wheel's own
-argument applied to the confirm key. `LShoulder` (the POV toggle, Q here) is a
-one-line swap and, being a name, follows a rebind in a way `#67` cannot. It is
-not the default only because it has a job to suppress where C has none: a key
-the engine declines to name is one nothing can collide with.
+### Why not an id, given `#67` worked
+
+`#67` (C) was the default in v0.7.2–0.7.3 and did work, on the strength of C
+carrying no user event in cruise — so nothing could collide with it.
+
+**An `#id` entry matches only an UNNAMED press**, and that restriction is what
+makes allowing an id safe at all. An id is a physical key and cannot follow a
+rebind, so without it a player who bound a ship action to C would have the mod
+fire on the same keystroke the game acts on — nothing here consumes the key. A
+press with no user event is the **engine** saying nothing is bound there; the
+moment something is, the name appears and the game's binding wins.
+
+But that safety is also the flaw: such a player loses the confirm key outright,
+with nothing on screen to say why. A name resolves wherever they have put it.
+**Silent total loss of a feature is a worse failure mode than a swinging
+camera** — which is the same trade the wheel made, and it points the same way.
+Prefer a name always; reach for an id only for a key the game leaves nameless.
+
+The mod itself still bakes in no id.
 
 Confirmed free in cruise besides the above: `Quickkey2`, `Quickkey3`. Confirmed
 NOT free: `SelectTarget` (E, still cycles targets), `RepairShip` (4), and
@@ -494,6 +507,11 @@ Each of these cost real time; the reasoning is in the findings docs.
     `BT_ASTEROID_BELT`) would have answered this, but only with the map open.
     Extracted SWFs live in `M:\Starfield\Extracted\interface\` (CWS = zlib from
     byte 8; PowerShell `DeflateStream` after skipping the 2-byte zlib header).
+- **An event name in a log tells you a name was reported, not what the key
+  does.** `LShoulder` was seen once in a v0.7.1 log, matched to id 81 = Q, and
+  written up as "the POV toggle" — it is not, and setting it does nothing. The
+  POV toggle is `TogglePOV`. The only way to learn what a key does is to press
+  it and watch the game, which is what the tester did.
 - **A key can carry NO user event in a given context, and that press is a null
   name, not an empty one.** `BSFixedString::c_str()` hands back a null pointer,
   so any `if (... && userEvent)` guard drops the event entirely — it never

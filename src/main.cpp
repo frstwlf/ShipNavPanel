@@ -103,26 +103,39 @@ namespace
 	REX::TIniSetting<bool> bPanel{ "Panel", "bPanel", true };
 
 	// A comma-separated LIST of user-event names and `#<id>` key codes - see
-	// MatchesConfirmEvent for why it can be neither a single name nor names
-	// alone. All three entries below mean the C key: the two names are what it
-	// reports outside the cockpit, and `#67` is what it is while piloting, where
-	// it reports no user event at all. The id is what actually fires in cruise;
-	// the names are kept so a different context still works.
+	// MatchesConfirmEvent for the syntax and for why it is a list at all.
 	//
-	// They replaced `XButton` (R) in v0.7.1, and the reason is worth keeping:
-	// **"the game ignores this key in cruise" is not the same as "this key is
-	// free"**. R does nothing while merely flying, which is how it passed, but
-	// it opens the planet map once a target is SELECTED - a state the panel
-	// exists to put you in, so the collision was with the mod's own happy path.
-	// Any candidate has to be tried with a target locked, not just in an empty
-	// sky.
-	REX::TIniSetting<std::string> sConfirmEvent{ "Panel", "sConfirmEvent", "StarbornPower,ExitShip,#67" };
+	// **The POV toggle, and it is chosen for being a NAME.** The confirm key is
+	// spliced out of the camera's queue while the panel is open, exactly as the
+	// wheel is, so it locks a body without swinging the view - and the view is
+	// the only thing at stake if that splice ever fails.
+	//
+	// It is deliberately not `#67` (C), which worked and was safer in one
+	// respect: C carries no user event in cruise, so nothing could collide with
+	// it. But an id cannot follow a rebind, and `MatchesConfirmEvent` therefore
+	// stands aside the moment the game names that key - which means a player who
+	// binds anything to C loses the confirm entirely, with nothing on screen to
+	// say why. A name resolves wherever the player has put it. The tester made
+	// that call, and it is the right trade: silent total loss of a feature beats
+	// a swinging camera as a failure mode to avoid.
+	//
+	// Two earlier choices, kept because each cost a build:
+	//   `XButton` (R) - "the game ignores this key in cruise" is not the same as
+	//   "this key is free". R does nothing while merely flying, which is how it
+	//   passed, but it opens the planet map once a target is SELECTED, the state
+	//   the panel exists to create. Try a candidate with a target locked.
+	//   `StarbornPower` - the name C reports on its RELEASE. The panel acts on
+	//   the press, which reports `ExitShip`, and in cruise neither appears.
+	REX::TIniSetting<std::string> sConfirmEvent{ "Panel", "sConfirmEvent", "TogglePOV" };
 
 	// The control hint along the bottom. The label is a separate setting because
 	// the mod knows the confirm key's user-event NAME, not which physical key it
 	// is bound to, and anyone who has moved it needs to say so here.
-	REX::TIniSetting<bool>        bPanelHints{ "Panel", "bPanelHints", true };
-	REX::TIniSetting<std::string> sConfirmKeyLabel{ "Panel", "sConfirmKeyLabel", "C" };
+	REX::TIniSetting<bool> bPanelHints{ "Panel", "bPanelHints", true };
+	// Q is the POV toggle on the bindings this was built against. Whether that
+	// is also the VANILLA default is unverified - see the release checklist,
+	// because a hint naming the wrong key is worse than no hint.
+	REX::TIniSetting<std::string> sConfirmKeyLabel{ "Panel", "sConfirmKeyLabel", "Q" };
 
 	// Stations and landing sites in the list, below the bodies. Ships are off by
 	// default: in traffic that would be a list of everything flying past rather
@@ -1542,7 +1555,12 @@ namespace
 	// and drives the highlight instead.
 	std::atomic<bool>          g_panelOpen{ false };
 	std::atomic<std::uint32_t> g_suppressedCount{ 0 };
-	std::atomic<std::uint32_t> g_wheelRemovedCount{ 0 };
+	// Counts everything the camera tap splices out, which since v0.7.3 is the
+	// wheel AND the confirm key - so the messages say "input events", not
+	// "wheel events". With the confirm key bound to the POV toggle, a confirm
+	// press lands in this count, and that is the only visible evidence the
+	// splice is working.
+	std::atomic<std::uint32_t> g_cameraRemovedCount{ 0 };
 
 	// The drawn list. Row count is fixed at creation - growing it would mean
 	// building TextFields from a feed callback, and every AS3 construction is a
@@ -2008,7 +2026,7 @@ namespace
 			g_highlightID.store(g_lockedID.load(std::memory_order_acquire), std::memory_order_release);
 			MoveHighlight(0);
 			g_suppressedCount.store(0, std::memory_order_release);
-			g_wheelRemovedCount.store(0, std::memory_order_release);
+			g_cameraRemovedCount.store(0, std::memory_order_release);
 			REX::INFO("[panel] opened - wheel moves the highlight, '{}' locks or clears it",
 				sConfirmEvent.GetValue());
 			if (bSuppressThrottleTest.GetValue())
@@ -2016,9 +2034,9 @@ namespace
 		} else {
 			// Nothing is committed on close - that is the whole point of the
 			// confirm key.
-			REX::INFO("[panel] closed (locked stays {:08X}, {} wheel events hidden)",
+			REX::INFO("[panel] closed (locked stays {:08X}, {} input events hidden from the camera)",
 				g_lockedID.load(std::memory_order_acquire),
-				g_wheelRemovedCount.load(std::memory_order_acquire));
+				g_cameraRemovedCount.load(std::memory_order_acquire));
 		}
 	}
 
@@ -2305,8 +2323,8 @@ namespace
 			fixes[i].node->next = fixes[i].previousNext;
 
 		if (removed) {
-			const auto total = g_wheelRemovedCount.fetch_add(removed, std::memory_order_relaxed) + removed;
-			REX::INFO("[wheel] hid {} wheel event(s) from the camera (total {})", removed, total);
+			const auto total = g_cameraRemovedCount.fetch_add(removed, std::memory_order_relaxed) + removed;
+			REX::INFO("[camera] hid {} input event(s) from PlayerCamera (total {})", removed, total);
 		}
 	}
 
@@ -3689,9 +3707,9 @@ namespace
 				// Closing on exit must never strand the throttle suppressed.
 				if (g_panelOpen.exchange(false, std::memory_order_acq_rel))
 					REX::INFO("[panel] forced closed - left cruise ({} throttle events marked, "
-							  "{} wheel events hidden)",
+							  "{} input events hidden from the camera)",
 						g_suppressedCount.load(std::memory_order_acquire),
-						g_wheelRemovedCount.load(std::memory_order_acquire));
+						g_cameraRemovedCount.load(std::memory_order_acquire));
 				// Recap the survey while the cruise it describes is still fresh.
 				if (bSurveyCruiseKeys.GetValue())
 					SurveyDump();
