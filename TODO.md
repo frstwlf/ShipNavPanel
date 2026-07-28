@@ -23,6 +23,11 @@ the last movie teardown can be cleared by absence — a load can never eat a
 lock by construction — and the remaining debounce dropped to ~3 s, covering
 only the unverified engine-hiccup case. Planets keep lock-and-wait. The
 always-list-the-locked-moon exception stays for the debounce window.
+**v0.8.9 confirmed in game; v0.8.10 fixes what its session caught:** the
+cleared moon's row lingered in the panel, because candidates only rebuild
+when the LOW feed publishes — and it publishes on target-set changes, which
+a mod-side clear is not. The clear now evicts the appended row directly and
+settles the highlight if it was parked on it.
 
 **v0.8.7 passed its session on 2026-07-28: all four states of the hiding
 model work as intended** (idle cruise vanilla, panel-open cull with
@@ -687,6 +692,14 @@ Each of these cost real time; the reasoning is in the findings docs.
   `IDs_VTABLE.h` has zero `{ 0 }` entries, `IDs.h` has 505. So a vtable-based
   hook can use its Address Library id directly — the live-object trick is only
   needed where a *function* id is missing.
+
+- **The candidate list only rebuilds when the LOW feed publishes, and the feed
+  publishes on target-set CHANGES.** A mod-side state change (clearing a lock,
+  say) does not make the engine say anything, so any candidate row whose
+  presence depends on mod state must be evicted or patched by the code that
+  changes that state — waiting for "the next rebuild" waits for unrelated
+  traffic. Caught in v0.8.9: the auto-cleared moon's appended row sat in the
+  panel indefinitely.
 
 - **Never hold a plugin mutex across a Scaleform call, and menus-closed is not
   world-settled.** Feed callbacks take plugin mutexes from inside the engine's

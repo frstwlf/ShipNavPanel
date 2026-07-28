@@ -3688,6 +3688,24 @@ namespace
 							REX::INFO("[panel] cleared the lock on '{}' - the moon left "
 									  "tracking range",
 								moonName.empty() ? std::format("{:08X}", s_moonWatchID) : moonName);
+
+							// The row the lock kept listed will not leave by
+							// itself: candidates only rebuild when the LOW
+							// feed publishes, and it publishes on target-set
+							// changes - a mod-side clear is not one, so the
+							// appended row would sit there until unrelated
+							// traffic (the tester caught it parked under the
+							// highlight). Evict it directly, and settle the
+							// highlight if it was on that row.
+							{
+								std::lock_guard rows{ g_candidateMutex };
+								std::erase_if(g_candidates, [&](const Candidate& a_row) {
+									return a_row.id == s_moonWatchID && !a_row.fromFeed;
+								});
+							}
+							if (g_panelOpen.load(std::memory_order_acquire) &&
+								g_highlightID.load(std::memory_order_acquire) == s_moonWatchID)
+								MoveHighlight(0);
 							watching = false;
 						}
 					}
