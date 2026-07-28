@@ -247,6 +247,57 @@ namespace
 	std::atomic<bool> g_subscribed{ false };
 	std::atomic<bool> g_subscribeFailed{ false };
 
+	// ---------------------------------------------------------------------------
+	// Mutual exclusion for the one-shot builders.
+	//
+	// The SFSE per-frame task and the data-feed callbacks both land on whatever
+	// BSJobs worker is free - the log shows the same logical work reporting from
+	// five different thread ids in one second - so two of them can be inside the
+	// same builder in the same frame.
+	//
+	// A `g_somethingReady.load()` guard does NOT prevent that. It is
+	// check-then-act: both threads read false, both build. For a builder that
+	// only creates a clip that would be a wasted duplicate; for one that calls
+	// into the AS3 VM it is an ACCESS VIOLATION, because the VM is not
+	// thread-safe. That is the v0.7.4 crash - two threads inside
+	// `BSUIDataManager.Subscribe` at once, faulting in `Starfield.exe` five
+	// frames below `TryInstallSubscriber`.
+	//
+	// Released on destruction rather than latched, because most calls find no
+	// movie yet and must be free to try again next frame. The `Ready`/`Failed`
+	// flags remain the real "is it done" answer; this only serialises the
+	// attempt.
+	//
+	// The input and camera taps got this right with `compare_exchange` from the
+	// start. The three Scaleform builders did not.
+	class SingleWinner
+	{
+	public:
+		explicit SingleWinner(std::atomic<bool>& a_inFlight) :
+			m_inFlight(a_inFlight),
+			m_won(!a_inFlight.exchange(true, std::memory_order_acq_rel))
+		{}
+
+		~SingleWinner()
+		{
+			if (m_won)
+				m_inFlight.store(false, std::memory_order_release);
+		}
+
+		SingleWinner(const SingleWinner&) = delete;
+		SingleWinner& operator=(const SingleWinner&) = delete;
+
+		[[nodiscard]] bool Won() const { return m_won; }
+
+	private:
+		std::atomic<bool>& m_inFlight;
+		bool               m_won;
+	};
+
+	std::atomic<bool> g_subscribeInFlight{ false };
+	std::atomic<bool> g_panelBuildInFlight{ false };
+	std::atomic<bool> g_arrowBuildInFlight{ false };
+
 	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
 
 	// One entry per feed slot, index-aligned with both feeds: the low-frequency
@@ -3489,6 +3540,17 @@ namespace
 			g_subscribeFailed.load(std::memory_order_acquire))
 			return;
 
+		// The check above is not enough on its own - see SingleWinner. Two
+		// threads reaching `Subscribe` together is what crashed v0.7.4.
+		const SingleWinner winner{ g_subscribeInFlight };
+		if (!winner.Won())
+			return;
+
+		// Re-read now the claim is held: the thread that just finished may have
+		// subscribed between our load above and this line.
+		if (g_subscribed.load(std::memory_order_acquire))
+			return;
+
 		const auto ui = RE::UI::GetSingleton();
 		if (!ui)
 			return;
@@ -3967,6 +4029,14 @@ namespace
 			return;
 		if (!g_subscribed.load(std::memory_order_acquire))
 			return;  // no feed yet, so nothing to list
+
+		// Builds TextFields and clips through the AS3 VM, so it is serialised
+		// for the same reason the subscriber is - see SingleWinner.
+		const SingleWinner winner{ g_panelBuildInFlight };
+		if (!winner.Won())
+			return;
+		if (g_panelReady.load(std::memory_order_acquire))
+			return;  // built while we were waiting for the claim
 
 		const auto ui = RE::UI::GetSingleton();
 		if (!ui)
@@ -4449,6 +4519,14 @@ namespace
 			return;
 		if (!g_subscribed.load(std::memory_order_acquire))
 			return;  // no feed yet, so nothing to point at
+
+		// Creates a clip and borrows a TextFormat through the AS3 VM, so it is
+		// serialised for the same reason the subscriber is - see SingleWinner.
+		const SingleWinner winner{ g_arrowBuildInFlight };
+		if (!winner.Won())
+			return;
+		if (g_arrowReady.load(std::memory_order_acquire))
+			return;  // built while we were waiting for the claim
 
 		const auto ui = RE::UI::GetSingleton();
 		if (!ui)

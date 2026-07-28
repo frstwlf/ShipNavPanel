@@ -112,11 +112,20 @@ and subscription whenever the movie-created callback fires, and drop stale
       in the system (dash for distance on ones the HUD is not tracking).
 - [x] **Settlement icons — confirmed in game on v0.7.0.** The seventeen bodies
       are marked and the icons appear.
-- [ ] **Check the POV does not toggle when confirming (v0.7.4).** `TogglePOV`
-      confirms — that much is tested — but whether the camera splice stops the
-      view swinging with it is not. The log is the tell: a confirm press should
-      raise the `[camera] hid N input event(s) from PlayerCamera` count by one.
-      Failure is benign, the view swings as well as the lock landing.
+- [x] ~~**Check the POV does not toggle when confirming (v0.7.4).**~~ Confirmed
+      in game: the view stays put, so the camera splice reaches the confirm key.
+- [ ] **Watch for the v0.7.5 startup race recurring.** Fixed rather than
+      worked around, but it is a race, so absence of a crash is weak evidence.
+      The tell in a crash log is `ShipNavPanel.dll` appearing below AS3 VM
+      frames in `Starfield.exe` on a `BSJobs` thread.
+
+      It surfaced as "crashes when `ShipNavPanelCustom.ini` exists with
+      `bPanelIcons=false`, fine without it", which is a real and repeatable
+      observation but **not a causal one** — the setting is read long before the
+      crashing code and touches nothing it uses. Reading a second ini shifts
+      startup timing, and timing is the whole of it. Worth remembering the shape
+      of that: a config that reliably reproduces a race is still only evidence
+      about timing.
 - [ ] **Verify `sConfirmKeyLabel` against VANILLA bindings.** It ships as `Q`,
       which is the POV toggle on the tester's setup — not necessarily on a fresh
       install. The mod knows the event name and cannot derive the key, so a
@@ -522,6 +531,24 @@ Each of these cost real time; the reasoning is in the findings docs.
   84 = T, 81 = Q, 13 = Enter, 9 = Tab, 192 = `~`. That was not stated when the
   table was written and it is what makes `#67` portable rather than a magic
   number: it means "the C key", not "this tester's binding".
+- **A `g_somethingReady.load()` guard does NOT make a builder run once.** It is
+  check-then-act: two threads read false, both build. The SFSE per-frame task
+  and the data-feed callbacks land on whatever BSJobs worker is free — one log
+  second shows the same logical work reporting from five thread ids — so this
+  is routine, not a corner case. For a builder that only makes a clip the cost
+  is a duplicate; for one that enters the **AS3 VM it is an access violation**,
+  because the VM is not thread-safe. That is the v0.7.5 fix: `TryInstallSubscriber`,
+  `TryCreatePanel` and `TryCreateArrow` now take a `SingleWinner` claim, released
+  on exit rather than latched so a probe that finds no movie can retry.
+  - The input and camera taps had `compare_exchange` from the start, so the
+    hazard was known and the pattern existed in the same file. **A pattern
+    applied in some places and not others is worse than one nobody knows**: the
+    `OnFrame` comment saying "this task lands on two threads in the same frame"
+    is three lines below the unguarded call that crashed.
+  - **It survived seven versions of working perfectly**, because losing a race
+    needs two threads inside a ~microsecond window on one specific frame. A
+    crash that reproduces under one config and not another is evidence about
+    TIMING, not about the config.
 - **`endFill` ends the run, so every drawn shape needs its own `beginFill`.**
   One fill up front draws the first shape and silently leaves the rest
   unfilled — v0.7.0's settlement glyph shipped as a bare ground line with three
