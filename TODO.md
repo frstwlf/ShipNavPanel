@@ -8,17 +8,19 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.8.1 — vanilla blips do ALL the pointing where they exist; built, not yet
-run.** v0.8.0 (the pivot itself: hide the HUD's off-screen circle-and-arrow
-blips in cruise, move the locked body's own blip back into view) **passed its
-first in-game session on 2026-07-28**. v0.8.1 is the tester's follow-up call
-from that session: when a body's blip is showing, the mod draws nothing for it
-— the diamond AND the name label are gone, and the panel highlight's blip is
-let through while browsing, not just the locked one. The drawn diamond and
-name remain only as the fallback for bodies the HUD is not blipping (the cap:
-five nearest planets plus quest targets, plus dash-row untracked bodies).
-Mechanism, evidence and the in-game checklist are in
-[PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md).
+**v0.8.2 — the mod's marker yields to ANY vanilla presence and wears vanilla's
+art when it does show; built, not yet run.** v0.8.0 (hide the off-screen
+blips, reappear the locked one) and v0.8.1 (a showing blip replaces diamond
+AND label; highlight preview via blip too) **both passed in-game sessions on
+2026-07-28**. v0.8.2 adds the tester's next two calls: the mod also stands
+down when the selected body's ON-screen icon is visible (the circle-with-name
+where the body actually is — vanilla and mod were double-marking in-view
+bodies), and the fallback marker is now a real `OffScreenIcon` instance the
+mod instantiates and drives through vanilla's own public methods — vanilla
+art, faction-neutral, planets and stars only, drawn-diamond fallback if
+construction fails. The label keeps the donor format verbatim instead of the
+invented cyan. Mechanism, evidence and the checklist are in
+[PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md) (§8 for v0.8.2).
 
 Through v0.7.5, all confirmed in game: the panel, nesting, whole-system list,
 localised names, gas-giant and settlement icons, the skyline glyph, confirm on
@@ -115,16 +117,19 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **★ Run v0.8.1 in game** — the checklist is
-      [PHASE3-BLIP-PLAN.md §7](PHASE3-BLIP-PLAN.md). v0.8.0's core passed a
-      short session (blips hidden, locked blip back, named markers untouched).
-      Still to eyeball: the v0.8.1 behaviour — highlight's blip while
-      browsing, no mod label when a blip shows, diamond+name only on no-blip
-      bodies — plus the edge items: quest blips surviving the cull, ship blips
-      returning instantly on leaving cruise (including by interdiction — the
-      ship-type tripwire), and the `[blip]` census log's transforms being
-      zeros and ones. Wrong transforms mean the holder is misplaced and a kept
-      blip sits offset — the first suspect if anything looks wrong.
+- [ ] **★ Run v0.8.2 in game** — checklist in
+      [PHASE3-BLIP-PLAN.md §7–8](PHASE3-BLIP-PLAN.md). v0.8.0 and v0.8.1 both
+      passed their sessions. New to eyeball: no mod marker on a body whose
+      on-screen icon is visible (fly toward the selected body until it enters
+      view — diamond and name should vanish as the vanilla circle-with-name
+      appears); the faux blip wearing real vanilla art on the ring for
+      planet/star fallback bodies, rotating correctly as you steer; the label
+      in vanilla text styling; `[blip] faux blip ready` in the log (a "not
+      created" warning means the diamond fallback engaged — report it, it is
+      interesting, not broken). Watch for the label crowding the faux blip —
+      the fix is a measured radius, noted in the plan doc. Still open from
+      before: quest blips surviving the cull, the interdiction tripwire, and
+      the census transforms being zeros and ones.
 
 - [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
       confirmed working. New: the pointer is a diamond moved around the reticle

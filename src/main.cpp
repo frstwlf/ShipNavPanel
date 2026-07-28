@@ -205,6 +205,10 @@ namespace
 	REX::TIniSetting<bool> bHideVanillaBlips{ "Panel", "bHideVanillaBlips", true };
 	REX::TIniSetting<bool> bKeepQuestBlips{ "Panel", "bKeepQuestBlips", true };
 	REX::TIniSetting<bool> bShowLockedBlip{ "Panel", "bShowLockedBlip", true };
+	// The fallback marker wears vanilla's own clothes: the mod instantiates the
+	// HUD's OffScreenIcon class and drives it through the same public methods
+	// the reticle uses, instead of drawing its invented diamond (v0.8.2).
+	REX::TIniSetting<bool> bVanillaStyleMarker{ "Panel", "bVanillaStyleMarker", true };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -1624,6 +1628,20 @@ namespace
 	// per tick, so a stale false here costs one log line, nothing more.
 	std::atomic<bool> g_blipsHidden{ false };
 
+	// The faux blip: a real OffScreenIcon instance the mod owns, wearing
+	// vanilla's art and driven through the same public methods the reticle
+	// calls. It replaces the drawn diamond for planet and star targets; other
+	// types keep the diamond, because their icon path reads POI fields the mod
+	// cannot fill truthfully. Lives inside the holder; the holder's
+	// return-to-container loops skip it by name prefix.
+	RE::Scaleform::GFx::Value  g_fauxBlip;
+	RE::Scaleform::GFx::Value  g_fauxLow;
+	RE::Scaleform::GFx::Value  g_fauxHigh;
+	std::atomic<bool>          g_fauxReady{ false };
+	std::atomic<bool>          g_fauxFailed{ false };
+	std::atomic<bool>          g_fauxBuildInFlight{ false };
+	std::atomic<std::uint32_t> g_fauxLastID{ 0 };
+
 	// The panel is open. While this is set the wheel is hidden from the camera
 	// and drives the highlight instead.
 	std::atomic<bool>          g_panelOpen{ false };
@@ -2559,6 +2577,14 @@ namespace
 			g_blipHolder = RE::Scaleform::GFx::Value{};
 			g_blipsHidden.store(false, std::memory_order_release);
 
+			// The faux blip was a child of the holder, in the same movie.
+			g_fauxReady.store(false, std::memory_order_release);
+			g_fauxFailed.store(false, std::memory_order_release);
+			g_fauxBlip = RE::Scaleform::GFx::Value{};
+			g_fauxLow = RE::Scaleform::GFx::Value{};
+			g_fauxHigh = RE::Scaleform::GFx::Value{};
+			g_fauxLastID.store(0, std::memory_order_release);
+
 			// The list belonged to the old movie too.
 			g_panelReady.store(false, std::memory_order_release);
 			g_panelFailed.store(false, std::memory_order_release);
@@ -3448,6 +3474,7 @@ namespace
 			std::string   selectedName;
 			std::string   labelText;
 			std::uint32_t selectedID = 0;
+			std::uint32_t selectedType = 0;
 			std::string   selectedBlipName;
 			std::uint32_t lockedForBlips = 0;
 			std::string   lockedName;
@@ -3518,6 +3545,7 @@ namespace
 						selectedAngle = bearings.rows[i].angle;
 						selectedDistance = bearings.rows[i].distance;
 						selectedName = g_candidates[i].name;
+						selectedType = g_candidates[i].type;
 						break;
 					}
 				}
@@ -3525,20 +3553,32 @@ namespace
 
 			// The vanilla blip pass: hides the off-screen container in cruise
 			// and lets the selected and locked bodies' own blips back through.
-			// True means the SELECTED body's blip is on screen this tick.
-			const bool selectedBlipShown =
+			// True means vanilla covers the selected body this tick - kept
+			// off-screen blip or visible on-screen icon.
+			const bool selectedCovered =
 				ManageVanillaBlips(selectedID, selectedBlipName, lockedForBlips, lockedName);
 
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
 				haveSelected = haveSelected && g_inCruise.load(std::memory_order_acquire);
-				// When the vanilla blip is pointing at the selected body, the
-				// mod draws NOTHING for it - no diamond, no label (v0.8.1, the
-				// tester's call). The drawn marker and name exist only for
-				// bodies vanilla is not blipping.
-				const bool blipCovers = selectedBlipShown;
-				g_arrowClip.SetMember("visible", V{ haveSelected && !blipCovers });
-				if (haveSelected && !blipCovers) {
+				// When vanilla marks the selected body - blip on the ring or
+				// icon in the view - the mod draws NOTHING for it (v0.8.1 and
+				// v0.8.2, the tester's calls). The mod's marker and name exist
+				// only for bodies with no vanilla presence.
+				const bool blipCovers = selectedCovered;
+				const bool showMarker = haveSelected && !blipCovers;
+				// The faux blip wears vanilla's art but only for the types
+				// whose icon path was verified safe; anything else keeps the
+				// diamond rather than feed the POI icon code fields the mod
+				// cannot fill.
+				const bool fauxActive = bVanillaStyleMarker.GetValue() &&
+				                        g_fauxReady.load(std::memory_order_acquire) &&
+				                        (selectedType == kTargetTypePlanet ||
+				                         selectedType == kTargetTypeStar);
+				g_arrowClip.SetMember("visible", V{ showMarker && !fauxActive });
+				if (g_fauxReady.load(std::memory_order_acquire))
+					g_fauxBlip.SetMember("visible", V{ showMarker && fauxActive });
+				if (showMarker) {
 					// The marker is placed on the circle rather than rotated, so
 					// there is no orientation to be wrong at any bearing.
 					const double bearing = selectedAngle * (bArrowInvertAngle.GetValue() ? -1.0 : 1.0) +
@@ -3546,8 +3586,22 @@ namespace
 					const double rotation = bearing;
 					const double markerRadians = bearing * 3.14159265358979323846 / 180.0;
 					const double markerRadius = static_cast<double>(fArrowRadius.GetValue());
-					g_arrowClip.SetMember("x", V{ markerRadius * std::sin(markerRadians) });
-					g_arrowClip.SetMember("y", V{ -markerRadius * std::cos(markerRadians) });
+					if (fauxActive) {
+						// Drive the real icon exactly as the reticle would:
+						// state on body change, bearing and distance per tick.
+						// SetTargetHighInfo does the rotation itself.
+						if (g_fauxLastID.exchange(selectedID, std::memory_order_acq_rel) != selectedID) {
+							g_fauxLow.SetMember("uTargetType", V{ selectedType });
+							V lowArgs[]{ g_fauxLow, V{}, V{ false }, V{ true } };
+							g_fauxBlip.Invoke("SetTargetLowInfo", nullptr, lowArgs, 4);
+						}
+						g_fauxHigh.SetMember("angleToCrosshair", V{ bearing });
+						g_fauxHigh.SetMember("distance", V{ selectedDistance });
+						g_fauxBlip.Invoke("SetTargetHighInfo", nullptr, &g_fauxHigh, 1);
+					} else {
+						g_arrowClip.SetMember("x", V{ markerRadius * std::sin(markerRadians) });
+						g_arrowClip.SetMember("y", V{ -markerRadius * std::cos(markerRadians) });
+					}
 
 					if (g_labelReady.load(std::memory_order_acquire)) {
 						// Place the label just beyond the arrow tip, on the same
@@ -3576,7 +3630,7 @@ namespace
 						REX::INFO("[arrow] angleToCrosshair={:.1f} -> rotation={:.1f}", selectedAngle, rotation);
 				}
 				if (g_labelReady.load(std::memory_order_acquire))
-					g_labelField.SetMember("visible", V{ haveSelected && !blipCovers });
+					g_labelField.SetMember("visible", V{ showMarker });
 			}
 
 			// Distances are current by this point, which is what the list shows.
@@ -3967,6 +4021,81 @@ namespace
 		g_blipHolderReady.store(true, std::memory_order_release);
 	}
 
+	// One-shot builder for the faux blip. `new OffScreenIcon()` is exactly how
+	// the SWF's own GetClip makes the real ones, so CreateObject on the class
+	// gives the full library symbol - art, timeline frames, faction wrapper.
+	// The class lives in the movie's DEFAULT package, so the bare name is its
+	// qualified name (unlike BSUIDataManager, which needed the full path).
+	//
+	// The synthetic data objects are created once and mutated per use. Fields
+	// the icon reads that the mod cannot fill truthfully stay false; the POI
+	// path (uPoiType/uPoiCategory into MapIcons.SetLocation) is never entered
+	// because the faux blip is restricted to planet and star types.
+	void TryCreateFauxBlip(RE::Scaleform::GFx::ASMovieRootBase* a_root)
+	{
+		if (g_fauxReady.load(std::memory_order_acquire) ||
+			g_fauxFailed.load(std::memory_order_acquire))
+			return;
+		if (!g_blipHolderReady.load(std::memory_order_acquire))
+			return;  // needs the holder's coordinate space; try again next tick
+
+		// Constructs through the AS3 VM - serialised like every other builder.
+		const SingleWinner winner{ g_fauxBuildInFlight };
+		if (!winner.Won())
+			return;
+		if (g_fauxReady.load(std::memory_order_acquire))
+			return;
+
+		using V = RE::Scaleform::GFx::Value;
+
+		const auto giveUp = [&](const char* a_why) {
+			REX::WARN("[blip] faux blip not created ({}) - the drawn diamond stays", a_why);
+			g_fauxBlip = RE::Scaleform::GFx::Value{};
+			g_fauxLow = RE::Scaleform::GFx::Value{};
+			g_fauxHigh = RE::Scaleform::GFx::Value{};
+			g_fauxFailed.store(true, std::memory_order_release);
+		};
+
+		a_root->CreateObject(&g_fauxBlip, "OffScreenIcon");
+		if (!g_fauxBlip.IsDisplayObject() && !g_fauxBlip.IsObject()) {
+			giveUp("class did not construct");
+			return;
+		}
+		RE::Scaleform::GFx::Value added;
+		if (!g_blipHolder.Invoke("addChild", &added, &g_fauxBlip, 1)) {
+			giveUp("addChild rejected it");
+			return;
+		}
+		// The name is the contract with the holder loops: anything not named
+		// like a real vanilla blip is the mod's own and is never returned to
+		// the vanilla container.
+		g_fauxBlip.SetMember("name", V{ "ShipNavPanelFauxBlip" });
+		g_fauxBlip.SetMember("visible", V{ false });
+
+		a_root->CreateObject(&g_fauxLow);
+		a_root->CreateObject(&g_fauxHigh);
+		if (!g_fauxLow.IsObject() || !g_fauxHigh.IsObject()) {
+			giveUp("payload objects did not construct");
+			return;
+		}
+		// Everything SetTargetLowInfo reads, stated explicitly rather than left
+		// undefined. uTargetType is set per body at use time.
+		g_fauxLow.SetMember("uTargetType", V{ static_cast<std::uint32_t>(kTargetTypePlanet) });
+		g_fauxLow.SetMember("hostile", V{ false });
+		g_fauxLow.SetMember("bAlly", V{ false });
+		g_fauxLow.SetMember("isInfoTarget", V{ false });
+		g_fauxLow.SetMember("bHasQuestTarget", V{ false });
+		g_fauxLow.SetMember("bIsFreelanesPOI", V{ false });
+		g_fauxLow.SetMember("bIsCelestialParentBody", V{ false });
+		g_fauxLow.SetMember("bHasUndiscoveredPoi", V{ false });
+		g_fauxHigh.SetMember("angleToCrosshair", V{ 0.0 });
+		g_fauxHigh.SetMember("distance", V{ 0.0 });
+
+		g_fauxLastID.store(0, std::memory_order_release);
+		g_fauxReady.store(true, std::memory_order_release);
+		REX::INFO("[blip] faux blip ready - vanilla OffScreenIcon art, mod-driven");
+	}
+
 	// Put everything back: every kept blip returns to the vanilla container,
 	// then the container is unhidden. Children first, so no blip renders in the
 	// mod's holder after the vanilla set is already showing.
@@ -3980,9 +4109,18 @@ namespace
 				for (int i = static_cast<int>(AsNumber(count)) - 1; i >= 0; --i) {
 					V idx{ static_cast<double>(i) };
 					V child;
-					if (g_blipHolder.Invoke("getChildAt", &child, &idx, 1) &&
-						(child.IsObject() || child.IsDisplayObject()))
-						a_container.Invoke("addChild", nullptr, &child, 1);
+					if (!g_blipHolder.Invoke("getChildAt", &child, &idx, 1) ||
+						!(child.IsObject() || child.IsDisplayObject()))
+						continue;
+					// Only real vanilla blips go back; the faux blip and any
+					// other mod-owned child stay ours.
+					RE::Scaleform::GFx::Value nameVal;
+					if (!child.GetMember("name", &nameVal) || !nameVal.IsString())
+						continue;
+					const std::string childName = nameVal.GetString();
+					if (childName.rfind(kOffScreenIconPrefix, 0) != 0)
+						continue;
+					a_container.Invoke("addChild", nullptr, &child, 1);
 				}
 			}
 		}
@@ -3999,10 +4137,11 @@ namespace
 	// LOCKED one, which stays marked while the player browses elsewhere. The
 	// two collapse to the same clip whenever they are the same body.
 	//
-	// Returns whether the SELECTED body's blip is visible this tick - if it
-	// is, the vanilla marker replaces the mod's diamond AND label outright
-	// (v0.8.1, the tester's call: the drawn marker and name are only for
-	// bodies vanilla is not blipping).
+	// Returns whether VANILLA COVERS the selected body this tick - its
+	// off-screen blip kept visible, or its on-screen icon showing where the
+	// body actually is. Either way the mod draws nothing for that body
+	// (v0.8.1/v0.8.2, the tester's calls): the mod's own marker and name are
+	// only for bodies with no vanilla presence at all.
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName)
 	{
@@ -4066,8 +4205,11 @@ namespace
 		if (!g_blipsHidden.exchange(true, std::memory_order_acq_rel))
 			REX::INFO("[blip] off-screen blips hidden for cruise");
 
-		if (WorldSettled())
+		if (WorldSettled()) {
 			TryCreateBlipHolder(root, base, container);
+			if (bArrow.GetValue() && bVanillaStyleMarker.GetValue())
+				TryCreateFauxBlip(root);
+		}
 
 		const bool holderReady = g_blipHolderReady.load(std::memory_order_acquire);
 		const bool wantBlips = bShowLockedBlip.GetValue() && holderReady;
@@ -4148,6 +4290,8 @@ namespace
 					!(child.IsObject() || child.IsDisplayObject()))
 					continue;
 				const std::string childName = readName(child);
+				if (childName.rfind(kOffScreenIconPrefix, 0) != 0)
+					continue;  // the faux blip and other mod-owned children stay
 				const bool selectedMatch = !selectedClipName.empty() && childName == selectedClipName;
 				const bool lockedMatch = !lockedClipName.empty() && childName == lockedClipName;
 				if (selectedMatch || lockedMatch) {
@@ -4167,7 +4311,42 @@ namespace
 			return false;
 		}
 
-		return selectedShown;
+		// The other kind of vanilla presence: the ON-screen icon - the circle
+		// sitting where the body actually is, with its name - which vanilla
+		// draws instead of an off-screen blip once the body is in view (in
+		// cruise the two are mutually exclusive, so this only needs checking
+		// when no blip was kept). getChildByName asks vanilla's own display
+		// list, which is the authoritative answer to "is it marked on screen".
+		//
+		// Pooled clips keep stale instance names - the edge-snapped indicator
+		// for the info target is renamed by a different path - so a hit is
+		// verified against Name_tf.text, which SetTargetLowInfo rewrites from
+		// the CURRENT target every refresh.
+		bool onScreenCovered = false;
+		if (!selectedShown && a_selectedID != 0 && !a_selectedName.empty()) {
+			RE::Scaleform::GFx::Value reticle;
+			if (root->GetVariable(&reticle, (base + ".Reticle_mc").c_str()) &&
+				(reticle.IsObject() || reticle.IsDisplayObject())) {
+				const std::string iconNameStr = std::string{ "OnScreenIcon: " } + a_selectedName;
+				V                 iconName{ iconNameStr.c_str() };
+				V                 found;
+				if (reticle.Invoke("getChildByName", &found, &iconName, 1) &&
+					(found.IsObject() || found.IsDisplayObject())) {
+					V          vis;
+					const bool visible = found.GetMember("visible", &vis) &&
+					                     vis.IsBoolean() && vis.GetBoolean();
+					V nameField, text;
+					const bool nameMatches =
+						found.GetMember("Name_tf", &nameField) &&
+						(nameField.IsObject() || nameField.IsDisplayObject()) &&
+						nameField.GetMember("text", &text) && text.IsString() &&
+						a_selectedName == text.GetString();
+					onScreenCovered = visible && nameMatches;
+				}
+			}
+		}
+
+		return selectedShown || onScreenCovered;
 	}
 
 	// Borrow a TextFormat from a field the HUD already owns. A TextField built at
@@ -5016,9 +5195,14 @@ namespace
 			g_labelField.SetMember("autoSize", V{ "center" });
 
 			if (BorrowTextFormat(root, rootPath, g_labelFormat, "[arrow]")) {
-				g_labelFormat.SetMember("size", V{ 22.0 });
-				g_labelFormat.SetMember("bold", V{ true });
-				g_labelFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x66CCFF) });
+				// Vanilla-style keeps the donor's format verbatim - it IS the
+				// HUD's own text styling, which is the point (v0.8.2). The
+				// invented cyan look remains behind the switch.
+				if (!bVanillaStyleMarker.GetValue()) {
+					g_labelFormat.SetMember("size", V{ 22.0 });
+					g_labelFormat.SetMember("bold", V{ true });
+					g_labelFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x66CCFF) });
+				}
 				g_labelField.SetMember("embedFonts", V{ true });
 				g_labelField.SetMember("defaultTextFormat", g_labelFormat);
 			} else {

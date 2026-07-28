@@ -260,6 +260,55 @@ Behaviour rules:
 7. Leave cruise (normally and by interdiction) → ship blips back instantly.
 8. Reticle open/close animations → at worst a one-frame blip flash.
 
+## 8. v0.8.2 — vanilla presence in the FOV counts too, and the marker goes native
+
+Two more of the tester's calls after the v0.8.1 session, both implemented:
+
+- **The on-screen icon is also "vanilla covers it".** In cruise a body in view
+  gets the named on-screen marker instead of an off-screen blip
+  (`RefreshTargets` makes them mutually exclusive there), and the mod was
+  drawing diamond+name on top of it. Now the blip pass also asks vanilla's own
+  display list — `Reticle_mc.getChildByName("OnScreenIcon: <name>")` — and
+  stands down when the icon is there and visible. A hit is verified against
+  `Name_tf.text` (rewritten from the *current* target every refresh), because
+  pooled clips keep stale instance names: the edge-snapped indicator revived
+  for the info target is one path that never renames the clip. An
+  overlap-hidden icon (`HideOverlappingClipsForCruiseMode` sets `visible =
+  false` without unparenting) counts as NOT covering — the mod's marker may
+  briefly coexist with a cluster vanilla is decluttering, which was preferred
+  over showing nothing at all for a marked body.
+
+- **The fallback marker is now a real `OffScreenIcon`.** `CreateObject` on the
+  class name (default package, so the bare name is qualified) instantiates the
+  library symbol exactly as the SWF's own `new OffScreenIcon()` does — art,
+  timeline frames, faction wrapper. The mod adds it to its holder (same
+  coordinate space as the real ring), and drives it through the same public
+  methods the reticle uses: `SetTargetLowInfo` once per body with a synthetic
+  low object (every field the method reads set explicitly, faction neutral,
+  `isInfoTarget=false` so it never lies about being the E-target), then
+  `SetTargetHighInfo` per tick with `{angleToCrosshair, distance}` — which
+  does the `rotation = angle + 180` swing itself, plus the distance-based
+  planet frames. **Planets and stars only**: the POI/ship/station icon path
+  feeds `uPoiType`/`uPoiCategory` into `MapIcons.SetLocation`, fields the mod
+  cannot fill truthfully (still the open POI-kind question), so those types
+  keep the drawn diamond. Construction failure at any step latches
+  `g_fauxFailed` and the diamond quietly returns.
+
+  The faux blip lives inside the holder, so both holder loops (the per-tick
+  return pass and `RestoreVanillaBlips`) skip any child not named
+  `OffScreenIcon: *` — without that, restore would push the mod's own marker
+  into vanilla's container, where it would vanish under the next hide.
+
+- **The label wears vanilla's text styling**: the borrowed `TextFormat` is now
+  applied verbatim (it comes from the HUD's own lock-on caption) instead of
+  being recoloured cyan and resized. `bVanillaStyleMarker=false` restores the
+  pre-v0.8.2 diamond and cyan label wholesale.
+
+Open cosmetic question for the next session: the label still rides at
+`fArrowRadius + 34` while the faux blip sits at the art's own ring radius —
+if they crowd each other, the fix is a measured radius (`getBounds` on the
+faux blip), not a guessed constant.
+
 ### Failure modes accepted
 
 - Plugin dies mid-hide → blips return on the next HUD movie rebuild (map
