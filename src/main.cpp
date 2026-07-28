@@ -1640,9 +1640,15 @@ namespace
 	// per tick, so a stale false here costs one log line, nothing more.
 	std::atomic<bool> g_blipsHidden{ false };
 
-	// True once any planet on-screen icon has been faded for the selection -
-	// i.e. a restore sweep may be owed. Cleared by the sweep.
-	std::atomic<bool> g_planetsFaded{ false };
+	// True once any on-screen icon has been faded for the selection - i.e. a
+	// restore sweep may be owed. Cleared by the sweep.
+	std::atomic<bool> g_iconsFaded{ false };
+
+	// The engine's current info target (the E-target), as an index into the
+	// feed's target array, captured from the low-frequency payload. -1 when
+	// none. The selection-wins-overlap pass exempts its icon: the player's
+	// own targeting outranks the panel.
+	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
 	// The faux blip: a real OffScreenIcon instance the mod owns, wearing
 	// vanilla's art and driven through the same public methods the reticle
@@ -1703,7 +1709,7 @@ namespace
 	void RefreshCruiseState();
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
-		const std::vector<std::string>& a_planetNames);
+		const std::string& a_infoTargetName);
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
@@ -2605,8 +2611,9 @@ namespace
 			g_fauxHigh = RE::Scaleform::GFx::Value{};
 			g_fauxLastID.store(0, std::memory_order_release);
 
-			// Any faded planet icons went down with the movie too.
-			g_planetsFaded.store(false, std::memory_order_release);
+			// Any faded on-screen icons went down with the movie too.
+			g_iconsFaded.store(false, std::memory_order_release);
+			g_infoTargetIndex.store(-1, std::memory_order_release);
 
 			// The list belonged to the old movie too.
 			g_panelReady.store(false, std::memory_order_release);
@@ -3238,14 +3245,23 @@ namespace
 		if (!bListWholeSystem.GetValue())
 			return;
 
+		// ★ Sol is star system 0, so zero is DATA here, not "absent" - the
+		// presence test is haveGalaxy alone. This function shipped with
+		// `systemID != 0` and the whole-system list was silently dead in Sol
+		// for five versions: every earlier whole-system test happened to run
+		// in other systems, and the settlement recipe had already made the
+		// identical mistake. Third strike for this trap - see the settled
+		// list in TODO.md.
 		std::uint32_t system = 0;
+		bool          haveSystem = false;
 		for (const auto& row : a_rows) {
-			if (row.haveGalaxy && row.galaxy.systemID != 0) {
+			if (row.haveGalaxy) {
 				system = row.galaxy.systemID;
+				haveSystem = true;
 				break;
 			}
 		}
-		if (system == 0)
+		if (!haveSystem)
 			return;
 
 		std::lock_guard lock{ g_bodyTableMutex };
@@ -3320,6 +3336,18 @@ namespace
 				TryCreateArrow();
 				TryCreatePanel();
 				RefreshCruiseState();
+			}
+
+			// The info target rides the payload, not the entries - captured for
+			// the overlap pass's exemption. GetMember failing (or the index
+			// arriving as -1) both mean "none".
+			{
+				RE::Scaleform::GFx::Value idxVal;
+				g_infoTargetIndex.store(
+					data.IsObject() && data.GetMember("iInfoTargetIndex", &idxVal) ?
+						static_cast<std::int32_t>(AsNumber(idxVal)) :
+						-1,
+					std::memory_order_release);
 			}
 
 			// Rebuild the candidate list on every update - this is what the arrow
@@ -3499,7 +3527,7 @@ namespace
 			std::string   selectedBlipName;
 			std::uint32_t lockedForBlips = 0;
 			std::string   lockedName;
-			std::vector<std::string> planetNames;
+			std::string   infoTargetName;
 
 			{
 				std::lock_guard lock{ g_candidateMutex };
@@ -3519,8 +3547,9 @@ namespace
 				// Feed names are the key that finds a body's vanilla blip - the
 				// SWF names the icon clips "OffScreenIcon: <name>". Two bodies
 				// matter: the selected one (highlight while browsing, lock
-				// otherwise) and the locked one. The planet names feed the
-				// selection-wins-overlap pass - moons are TT_PLANET too. Read
+				// otherwise) and the locked one. The info target's name feeds
+				// the overlap pass's exemption - candidates are index-aligned
+				// with the feed, so the payload's index resolves here. Read
 				// under the same lock as everything else candidate-shaped.
 				lockedForBlips = g_lockedID.load(std::memory_order_acquire);
 				for (const auto& row : g_candidates) {
@@ -3528,10 +3557,11 @@ namespace
 						lockedName = row.name;
 					if (selectedID != 0 && selectedBlipName.empty() && row.id == selectedID)
 						selectedBlipName = row.name;
-					if (row.type == kTargetTypePlanet && row.fromFeed && row.id != 0 &&
-						!row.name.empty())
-						planetNames.push_back(row.name);
 				}
+				const auto infoIdx = g_infoTargetIndex.load(std::memory_order_acquire);
+				if (infoIdx >= 0 && static_cast<std::size_t>(infoIdx) < g_candidates.size() &&
+					g_candidates[infoIdx].fromFeed)
+					infoTargetName = g_candidates[infoIdx].name;
 
 				// A lock on a RUNTIME form is the one case where holding an id
 				// can go wrong. FF-prefixed ids belong to things the game
@@ -3581,7 +3611,7 @@ namespace
 			// True means vanilla covers the selected body this tick - kept
 			// off-screen blip or visible on-screen icon.
 			const bool selectedCovered = ManageVanillaBlips(selectedID, selectedBlipName,
-				lockedForBlips, lockedName, planetNames);
+				lockedForBlips, lockedName, infoTargetName);
 
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
@@ -4194,16 +4224,15 @@ namespace
 		}
 	}
 
-	// Undo the selection-wins-overlap fades: every tracked planet's on-screen
-	// icon gets its root alpha back. Reaches children only - a clip pooled
-	// while faded is out of range until it revives, at which point the
-	// per-tick pass (in cruise) or the next movie rebuild squares it. Only
-	// planet-class icons are ever faded, so the residual worst case is a
-	// briefly invisible planet marker, never a ship's.
-	void RestoreFadedPlanets(RE::Scaleform::GFx::ASMovieRootBase* a_root, const std::string& a_base,
-		const std::vector<std::string>& a_planetNames)
+	// Undo the selection-wins-overlap fades: every on-screen icon currently in
+	// the display list gets its root alpha back. Reaches children only - a
+	// clip pooled while faded is out of range until it revives, at which
+	// point the per-tick pass (in cruise) or the next movie rebuild squares
+	// it. The residual worst case is a briefly invisible marker for whatever
+	// body inherits the clip, healed on the next cruise tick.
+	void RestoreFadedIcons(RE::Scaleform::GFx::ASMovieRootBase* a_root, const std::string& a_base)
 	{
-		if (!g_planetsFaded.exchange(false, std::memory_order_acq_rel))
+		if (!g_iconsFaded.exchange(false, std::memory_order_acq_rel))
 			return;
 
 		RE::Scaleform::GFx::Value reticle;
@@ -4212,15 +4241,24 @@ namespace
 			return;
 
 		using V = RE::Scaleform::GFx::Value;
-		for (const auto& name : a_planetNames) {
-			const std::string childName = std::string{ "OnScreenIcon: " } + name;
-			V                 arg{ childName.c_str() };
-			V                 icon;
-			if (reticle.Invoke("getChildByName", &icon, &arg, 1) &&
-				(icon.IsObject() || icon.IsDisplayObject()))
-				icon.SetMember("alpha", V{ 1.0 });
+		V count;
+		if (!reticle.GetMember("numChildren", &count))
+			return;
+		for (int i = static_cast<int>(AsNumber(count)) - 1; i >= 0; --i) {
+			V idx{ static_cast<double>(i) };
+			V child;
+			if (!reticle.Invoke("getChildAt", &child, &idx, 1) ||
+				!(child.IsObject() || child.IsDisplayObject()))
+				continue;
+			V nameVal;
+			if (!child.GetMember("name", &nameVal) || !nameVal.IsString())
+				continue;
+			const std::string childName = nameVal.GetString();
+			if (childName.rfind("OnScreenIcon: ", 0) != 0)
+				continue;
+			child.SetMember("alpha", V{ 1.0 });
 		}
-		REX::INFO("[blip] planet markers restored");
+		REX::INFO("[blip] crowded markers restored");
 	}
 
 	// The per-tick pass, from the high-frequency callback (the engine's UI
@@ -4235,23 +4273,23 @@ namespace
 	// (v0.8.1/v0.8.2, the tester's calls): the mod's own marker and name are
 	// only for bodies with no vanilla presence at all.
 	//
-	// a_planetNames is every TT_PLANET body the feed currently tracks (moons
-	// included - they are TT_PLANET too). Those are the icons the
-	// selection-wins-overlap pass (v0.8.5) may fade: vanilla sorts overlapping
-	// on-screen icons by UpdateBSV - info target -2, cruise-autopilot lock -1,
-	// quest 0, then distance with PLANETS CAPPED AT ONE LIGHT-SECOND - and
-	// hides the losers, so a planet in view suppresses the selection's marker.
-	// Zeroing the planet icon's ROOT alpha both hides it and fails vanilla's
-	// own `alpha >= MinBlockingAlpha` blocker gate, so the selection's icon
-	// stays visible by vanilla's own rules. The root alpha is written nowhere
-	// in the SWF (SetBlockedClipAlpha dims Internal_mc, a child), and the clip
-	// pool only keys on `visible`, which is never touched - the trap from the
-	// off-screen work does not apply. Deliberately NOT faded: quest icons and
-	// the info target's icon, which outrank planets in the same sort - the
-	// player's E-target and mission markers keep beating the panel selection.
+	// The selection-wins-overlap pass (v0.8.5, generalised in v0.8.6): vanilla
+	// sorts overlapping on-screen icons by UpdateBSV - info target -2,
+	// cruise-autopilot lock -1, quest 0, then distance with PLANETS CAPPED AT
+	// ONE LIGHT-SECOND - and hides the losers. So a planet in view suppresses
+	// a station's marker, and a NEAR station suppresses a far planet's, both
+	// against the panel's intent. Zeroing a crowding icon's ROOT alpha both
+	// hides it and fails vanilla's own `alpha >= MinBlockingAlpha` blocker
+	// gate, so the selection's icon stays visible by vanilla's own rules. The
+	// root alpha is written nowhere in the SWF (SetBlockedClipAlpha dims
+	// Internal_mc, a child), and the clip pool only keys on `visible`, which
+	// is never touched - the trap from the off-screen work does not apply.
+	// Deliberately NOT faded: quest-marked icons and the info target's icon
+	// (a_infoTargetName, the E-target) - missions and the player's own
+	// targeting keep outranking the panel.
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
-		const std::vector<std::string>& a_planetNames)
+		const std::string& a_infoTargetName)
 	{
 		if (!bHideVanillaBlips.GetValue())
 			return false;
@@ -4276,9 +4314,9 @@ namespace
 		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
 		if (!ui->IsMenuOpen(s_shipHud)) {
 			// The container went down with the movie; the next one starts
-			// visible on its own, and its planet icons start at full alpha.
+			// visible on its own, and its icons start at full alpha.
 			g_blipsHidden.store(false, std::memory_order_release);
-			g_planetsFaded.store(false, std::memory_order_release);
+			g_iconsFaded.store(false, std::memory_order_release);
 			return false;
 		}
 		const auto menu = ui->GetMenu(s_shipHud);
@@ -4310,7 +4348,7 @@ namespace
 		using V = RE::Scaleform::GFx::Value;
 
 		if (!cruising) {
-			RestoreFadedPlanets(root, base, a_planetNames);
+			RestoreFadedIcons(root, base);
 			RestoreVanillaBlips(container);
 			return false;
 		}
@@ -4423,7 +4461,7 @@ namespace
 		}
 
 		if (sawShipType) {
-			RestoreFadedPlanets(root, base, a_planetNames);
+			RestoreFadedIcons(root, base);
 			RestoreVanillaBlips(container);
 			REX::INFO("[blip] ship-type blip seen while 'cruising' - trusting the data "
 					  "over the flag and restoring");
@@ -4490,42 +4528,78 @@ namespace
 				             vis.GetBoolean();
 			}
 
-			// Selection-wins-overlap (v0.8.5): while the selected body's icon
-			// exists, fade exactly the planet icons crowding it and unfade
-			// the rest. Level-based, so it cannot oscillate - a faded planet
-			// icon keeps its geometry while invisible, and the overlap is
-			// re-tested from fresh rectangles every tick. Rects come from the
-			// same GetPositionAdjustedBounds vanilla's own overlap pass uses.
+			// Selection-wins-overlap (v0.8.5, generalised v0.8.6): while the
+			// selected body's icon exists, fade whatever on-screen icon is
+			// crowding it - planet over station AND station over planet, the
+			// tester hit both directions - and unfade the rest. Level-based,
+			// so it cannot oscillate: a faded icon keeps its geometry while
+			// invisible, and the overlap is re-tested from fresh rectangles
+			// every tick, using the same GetPositionAdjustedBounds vanilla's
+			// own overlap pass intersects. Quest-marked icons and the
+			// E-target's icon are exempt and re-asserted to full alpha.
 			bool fadedBlocker = false;
-			if (haveReticle && selFound && bSelectionWinsOverlap.GetValue() &&
-				!a_planetNames.empty()) {
+			if (haveReticle && selFound && bSelectionWinsOverlap.GetValue()) {
 				Rect selRect;
-				if (readBounds(selIcon, selRect)) {
-					for (const auto& planet : a_planetNames) {
-						if (planet == a_selectedName)
+				V    childCount;
+				if (readBounds(selIcon, selRect) && reticle.GetMember("numChildren", &childCount)) {
+					constexpr const char* kOnScreenPrefix = "OnScreenIcon: ";
+					for (int i = static_cast<int>(AsNumber(childCount)) - 1; i >= 0; --i) {
+						V idx{ static_cast<double>(i) };
+						V child;
+						if (!reticle.Invoke("getChildAt", &child, &idx, 1) ||
+							!(child.IsObject() || child.IsDisplayObject()))
 							continue;
-						RE::Scaleform::GFx::Value planetIcon;
-						if (!findIcon(planet, planetIcon))
+						V nameVal;
+						if (!child.GetMember("name", &nameVal) || !nameVal.IsString())
 							continue;
-						Rect       planetRect;
-						const bool overlap = readBounds(planetIcon, planetRect) &&
-						                     selRect.x < planetRect.x + planetRect.w &&
-						                     planetRect.x < selRect.x + selRect.w &&
-						                     selRect.y < planetRect.y + planetRect.h &&
-						                     planetRect.y < selRect.y + selRect.h;
-						planetIcon.SetMember("alpha", V{ overlap ? 0.0 : 1.0 });
+						const std::string childName = nameVal.GetString();
+						if (childName.rfind(kOnScreenPrefix, 0) != 0)
+							continue;
+						const std::string bodyName = childName.substr(std::strlen(kOnScreenPrefix));
+						if (bodyName == a_selectedName)
+							continue;
+
+						// A pooled clip keeps its stale instance name; only the
+						// text field says who the icon belongs to NOW.
+						V nameField, text;
+						if (!child.GetMember("Name_tf", &nameField) ||
+							!(nameField.IsObject() || nameField.IsDisplayObject()) ||
+							!nameField.GetMember("text", &text) || !text.IsString() ||
+							bodyName != text.GetString())
+							continue;
+
+						// Missions and the player's own E-target keep their
+						// priority - never fade those, and heal them if an
+						// earlier tick faded them.
+						V          quest;
+						const bool exempt =
+							(child.GetMember("HasQT", &quest) && quest.IsBoolean() &&
+								quest.GetBoolean()) ||
+							(!a_infoTargetName.empty() && bodyName == a_infoTargetName);
+						if (exempt) {
+							child.SetMember("alpha", V{ 1.0 });
+							continue;
+						}
+
+						Rect       childRect;
+						const bool overlap = readBounds(child, childRect) &&
+						                     selRect.x < childRect.x + childRect.w &&
+						                     childRect.x < selRect.x + selRect.w &&
+						                     selRect.y < childRect.y + childRect.h &&
+						                     childRect.y < selRect.y + selRect.h;
+						child.SetMember("alpha", V{ overlap ? 0.0 : 1.0 });
 						if (overlap) {
 							fadedBlocker = true;
-							if (!g_planetsFaded.exchange(true, std::memory_order_acq_rel))
+							if (!g_iconsFaded.exchange(true, std::memory_order_acq_rel))
 								REX::INFO("[blip] fading '{}' - it was crowding the selection",
-									planet);
+									bodyName);
 						}
 					}
 				}
-			} else if (g_planetsFaded.load(std::memory_order_acquire)) {
-				// Selection gone, off screen, or the feature is off - give the
-				// planets back.
-				RestoreFadedPlanets(root, base, a_planetNames);
+			} else if (g_iconsFaded.load(std::memory_order_acquire)) {
+				// Selection gone, off screen, or the feature is off - give
+				// the crowded markers back.
+				RestoreFadedIcons(root, base);
 			}
 
 			// Covered: visibly marked, or about to be - a freshly faded

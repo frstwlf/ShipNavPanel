@@ -367,6 +367,26 @@ selection's icon hidden until vanilla's next overlap pass, so "covered"
 counts `fadedBlocker` for that tick and the mod's marker does not flash into
 the gap.
 
+**v0.8.6 — the fade covers both directions.** The first session proved the
+planet-only scope wrong by symmetry: with Earth *selected* and the Staryard
+near, the station sat on top — legitimately, because the 1 LS planet cap only
+beats FAR non-planets, and anything *nearer* than the planet outranks it by
+raw distance. The pass now enumerates the reticle's `OnScreenIcon: *`
+children and fades whatever crowds the selection regardless of type,
+stale-name-verified per child. The exemptions survive the generalisation:
+quest-marked icons (public `HasQT`) and the E-target's icon — the info
+target's identity now captured from the low feed's payload
+(`iInfoTargetIndex`, resolved through the index-aligned candidate list) —
+are re-asserted to full alpha instead of faded, so missions and the player's
+own targeting still outrank the panel. Restore likewise enumerates children
+rather than probing a name list. The pooled-while-faded residual widens from
+planet icons to any icon class; same healing (next cruise tick or rebuild).
+
+The same session also caught the whole-system list silently dead in Sol —
+`AppendSystemBodies` tested `systemID != 0`, and **Sol is system 0**. Third
+strike for that trap; the settled list in TODO.md now says presence is a
+separate bool, never the value.
+
 ### Failure modes accepted
 
 - Plugin dies mid-hide → blips return on the next HUD movie rebuild (map

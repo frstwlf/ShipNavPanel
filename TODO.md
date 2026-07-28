@@ -8,8 +8,22 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.8.5 — the panel selection wins screen-overlap fights against planet
-markers; built, not yet run.** The tester's case: a locked station's marker
+**v0.8.6 — two fixes from the v0.8.5 session; built, not yet run.** First:
+the overlap fade now covers BOTH directions. v0.8.5 only faded planets, so
+with Earth selected, the nearby Staryard still sat on top — legitimately, by
+vanilla's sort: anything *nearer* than a planet outranks it (the 1 LS planet
+cap only beats FAR non-planets). The pass now fades whatever on-screen icon
+crowds the selection, any type, by enumerating the reticle's icon children —
+with quest-marked icons and the E-target's icon still exempt (the info
+target's identity is now captured from the low feed's `iInfoTargetIndex`,
+resolved through the index-aligned candidates). Second: **the whole-system
+list was silently dead in Sol** — `AppendSystemBodies` gated on
+`systemID != 0`, and Sol IS system 0. THIRD strike for that trap (settled
+list updated). Luna, Phobos and Deimos now list as dash rows like any other
+untracked body, which also unblocks the Luna-vs-Earth overlap test.
+
+**v0.8.5's forward direction passed in game (2026-07-28): Earth faded for
+the locked Staryard, marker and restore both correct.** The tester's case: a locked station's marker
 vanished whenever Earth slid into view — vanilla sorts overlapping on-screen
 icons by priority (`UpdateBSV`: info target −2, cruise-autopilot −1, quest 0,
 then distance with PLANETS CAPPED AT ONE LIGHT-SECOND) and hides the losers.
@@ -141,18 +155,16 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 - [ ] **★ Remaining in-game checks** — checklist in
       [PHASE3-BLIP-PLAN.md §7–9](PHASE3-BLIP-PLAN.md). Confirmed through
-      v0.8.4: blips hidden, locked/highlight blip reappearing, faux
-      vanilla-art marker correct, label gone, HUD clean, load stable. New to
-      eyeball — **v0.8.5, the tester's own scenario**: lock the Nova
-      Galactic Staryard, let Earth slide into view — Earth's marker should
-      fade and the station's named marker stay, then Earth return on
-      deselect or once they separate on screen ("[blip] fading 'Earth'" /
-      "planet markers restored" in the log). Also check a moon behind its
-      parent (lock Luna with Earth crowding it). Still open from before:
-      the plain **on-screen yield** (marker vanishes as the vanilla
-      circle-with-name appears), **quest blips** surviving the cull, the
-      **interdiction tripwire**, and the `[blip]` census transforms being
-      zeros and ones.
+      v0.8.5-forward: blips hidden, locked/highlight blip reappearing, faux
+      vanilla-art marker correct, label gone, HUD clean, load stable, Earth
+      fading for a locked station. New to eyeball — **v0.8.6**: the REVERSE
+      overlap (lock Earth with the Staryard near — the station's marker
+      should now fade and Earth's show), **Sol's moons listing as dash rows**
+      (Luna, Phobos, Deimos in the panel from anywhere in-system), and with
+      them the moon-behind-parent overlap (lock Luna with Earth crowding
+      it). Still open from before: the plain **on-screen yield**, **quest
+      blips** surviving the cull, the **interdiction tripwire**, and the
+      `[blip]` census transforms being zeros and ones.
 
 - [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
       confirmed working. New: the pointer is a diamond moved around the reticle
@@ -512,6 +524,12 @@ Each of these cost real time; the reasoning is in the findings docs.
     alongside it rather than validated. This was written into the settlement
     recipe as "climb until XNAM/YNAM are non-zero" and caught only because the
     offline check listed the bodies it matched instead of counting them.
+    **THIRD STRIKE (v0.8.6):** `AppendSystemBodies` shipped with
+    `systemID != 0` as its presence test and the whole-system list was
+    silently dead in Sol for five versions — every earlier whole-system test
+    happened to run elsewhere, and the tester caught it hunting for Luna.
+    Presence is a separate bool (`haveGalaxy`), never the value itself. Any
+    new code touching `systemID` gets audited for this on sight.
   - **A count is not a verification; print the names.** Every parse in this
     project that went wrong went wrong *plausibly* — 631 of 1765 records looked
     like a working parse, and "45 settlements resolved" would look equally fine
