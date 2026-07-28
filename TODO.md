@@ -38,6 +38,23 @@ marker. The identity check now trusts the instance name whenever the name
 display is off; a SHOWN name must still match, which keeps the
 edge-indicator spoof case guarded (it always shows its name).
 
+**v0.8.11 did NOT fix it — same symptoms — and the code shows why the whole
+theory was one layer short: `RefreshOnScreenIcon` is gated on
+`bAllowedOnScreen`,** a per-entry feed flag parallel to `bAllowedOffScreen`.
+If the undiscovered station carries it false, vanilla NEVER MAKES an
+in-view icon — nothing to find, verify, or let through, and in cruise the
+off-screen blip retires the moment the body is on screen, so vanilla shows
+NOTHING for it in view. v0.8.12 responds on two fronts: the faux marker now
+supports **POI/ship/station types with the entry's own
+`uPoiType`/`uPoiCategory`/`uLocationMarkerState`** (the feed carries them;
+captured with the candidates), so the ring blip continues in authentic
+station art instead of the diamond when the body is in view — marker
+continuity, and incidentally the end of the diamond for all tracked bodies.
+And a **once-per-selection `[blip-dbg]` census** dumps every on-screen icon
+(name, visible, alpha, nameShown, text) whenever the selection has neither
+a kept blip nor an accepted icon, so the next session's log PROVES what
+vanilla was showing instead of feeding a third theory.
+
 **v0.8.7 passed its session on 2026-07-28: all four states of the hiding
 model work as intended** (idle cruise vanilla, panel-open cull with
 highlight+lock kept, locked-only after closing, full restore on clearing). The tester's case: a locked station's marker

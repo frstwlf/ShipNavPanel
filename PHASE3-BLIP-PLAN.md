@@ -367,6 +367,25 @@ selection's icon hidden until vanilla's next overlap pass, so "covered"
 counts `fadedBlocker` for that tick and the mod's marker does not flash into
 the gap.
 
+**v0.8.12 — `bAllowedOnScreen`, and the faux marker goes POI-native.** The
+v0.8.11 identity fix did not change the tester's undiscovered-station
+result, and the reason is one gate earlier: **`RefreshOnScreenIcon` runs
+only `if(param1.bAllowedOnScreen)`** — a per-entry feed flag parallel to
+`bAllowedOffScreen`. An entry carrying it false gets no in-view icon EVER,
+and in cruise the off-screen blip retires the moment the body is on screen
+(`RefreshTargets` makes them exclusive there), so vanilla shows *nothing*
+for such a body in view — there is no icon to find, verify, fade for, or
+let through. The fix is continuity, not coverage: the faux marker now
+supports POI, ship and station types by feeding the entry's own
+`uPoiType`/`uPoiCategory`/`uLocationMarkerState` (captured from the feed
+with each candidate) into the icon's normal `SetLocation` path — the ring
+blip simply continues in the body's real art when it comes into view. The
+diamond now only remains for a POI-typed entry whose feed data carried no
+icon fields. A `[blip-dbg]` census (once per selection, only on the
+nothing-accepted case) dumps every on-screen icon's name/visible/alpha/
+nameShown/text, so the next anomaly is answered by a log instead of a
+theory.
+
 **v0.8.11 — identity when the name display is off.** `TryUpdateName` writes
 `Name_tf` only while `Name_mc.visible` is true, and UNDISCOVERED markers
 hide it — so the text on an undiscovered station's icon is stale evidence

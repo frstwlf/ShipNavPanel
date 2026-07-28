@@ -353,6 +353,13 @@ namespace
 		// From the PNDT record.
 		GalaxyData galaxy;
 		bool       haveGalaxy{ false };
+		// POI icon identity, straight from the feed entry - what MapIcons'
+		// SetLocation draws. Present on POI/ship/station entries; havePoi
+		// records whether the fields were actually there, since 0 is a value.
+		std::uint32_t poiType{ 0 };
+		std::uint32_t poiCategory{ 0 };
+		std::uint32_t locMarkerState{ 0 };
+		bool          havePoi{ false };
 		// False for bodies added from the master file rather than offered by the
 		// HUD: they have a name and a place in the tree, but no bearing and no
 		// distance, so the arrow cannot point at one.
@@ -1726,6 +1733,7 @@ namespace
 	constexpr std::uint32_t kTargetTypeStar = 1;
 	constexpr std::uint32_t kTargetTypePOI = 4;
 	constexpr std::uint32_t kTargetTypeShip = 5;
+	constexpr std::uint32_t kTargetTypeStation = 6;
 	constexpr std::uint32_t kTargetTypePlanet = 7;
 
 	bool IsLocalBody(std::uint32_t a_type, double a_distanceMeters)
@@ -3174,6 +3182,17 @@ namespace
 			}
 			if (entry.GetMember("bIsCelestialParentBody", &member))
 				row.isParentBody = member.IsBoolean() && member.GetBoolean();
+			// The POI icon identity rides the same entry; capture it so the
+			// faux marker can wear real station/POI art (v0.8.12).
+			if (entry.GetMember("uPoiType", &member) &&
+				(member.IsNumber() || member.IsInt() || member.IsUInt())) {
+				row.poiType = static_cast<std::uint32_t>(AsNumber(member));
+				row.havePoi = true;
+				if (entry.GetMember("uPoiCategory", &member))
+					row.poiCategory = static_cast<std::uint32_t>(AsNumber(member));
+				if (entry.GetMember("uLocationMarkerState", &member))
+					row.locMarkerState = static_cast<std::uint32_t>(AsNumber(member));
+			}
 			// Galaxy data is filled in after collection, from the body table.
 			if (rows.size() <= a_index)
 				rows.resize(a_index + 1);
@@ -3550,6 +3569,10 @@ namespace
 			double        selectedDistance = 0.0;
 			std::uint32_t selectedID = 0;
 			std::uint32_t selectedType = 0;
+			std::uint32_t selectedPoiType = 0;
+			std::uint32_t selectedPoiCategory = 0;
+			std::uint32_t selectedLocMarkerState = 0;
+			bool          selectedHavePoi = false;
 			std::string   selectedBlipName;
 			std::uint32_t lockedForBlips = 0;
 			std::string   lockedName;
@@ -3634,6 +3657,10 @@ namespace
 						selectedAngle = bearings.rows[i].angle;
 						selectedDistance = bearings.rows[i].distance;
 						selectedType = g_candidates[i].type;
+						selectedPoiType = g_candidates[i].poiType;
+						selectedPoiCategory = g_candidates[i].poiCategory;
+						selectedLocMarkerState = g_candidates[i].locMarkerState;
+						selectedHavePoi = g_candidates[i].havePoi;
 						break;
 					}
 				}
@@ -3730,14 +3757,21 @@ namespace
 				// only for bodies with no vanilla presence.
 				const bool blipCovers = selectedCovered;
 				const bool showMarker = haveSelected && !blipCovers;
-				// The faux blip wears vanilla's art but only for the types
-				// whose icon path was verified safe; anything else keeps the
-				// diamond rather than feed the POI icon code fields the mod
-				// cannot fill.
+				// The faux blip wears vanilla's art. Planets and stars have no
+				// extra icon data; POIs, ships and stations feed the MapIcons
+				// SetLocation path, which needs the entry's own
+				// uPoiType/uPoiCategory - carried by the feed and captured
+				// with the candidate (v0.8.12), so those types now get the
+				// real art too. Only a POI-typed body whose entry carried no
+				// icon fields keeps the diamond.
+				const bool fauxPoiOK = selectedHavePoi &&
+				                       (selectedType == kTargetTypePOI ||
+				                           selectedType == kTargetTypeShip ||
+				                           selectedType == kTargetTypeStation);
 				const bool fauxActive = bVanillaStyleMarker.GetValue() &&
 				                        g_fauxReady.load(std::memory_order_acquire) &&
 				                        (selectedType == kTargetTypePlanet ||
-				                         selectedType == kTargetTypeStar);
+				                            selectedType == kTargetTypeStar || fauxPoiOK);
 				g_arrowClip.SetMember("visible", V{ showMarker && !fauxActive });
 				if (g_fauxReady.load(std::memory_order_acquire))
 					g_fauxBlip.SetMember("visible", V{ showMarker && fauxActive });
@@ -3752,9 +3786,15 @@ namespace
 					if (fauxActive) {
 						// Drive the real icon exactly as the reticle would:
 						// state on body change, bearing and distance per tick.
-						// SetTargetHighInfo does the rotation itself.
+						// SetTargetHighInfo does the rotation itself. The POI
+						// fields ride along - the planet/star frames never
+						// read them, and the POI/station frames need them for
+						// their MapIcons art.
 						if (g_fauxLastID.exchange(selectedID, std::memory_order_acq_rel) != selectedID) {
 							g_fauxLow.SetMember("uTargetType", V{ selectedType });
+							g_fauxLow.SetMember("uPoiType", V{ selectedPoiType });
+							g_fauxLow.SetMember("uPoiCategory", V{ selectedPoiCategory });
+							g_fauxLow.SetMember("uLocationMarkerState", V{ selectedLocMarkerState });
 							V lowArgs[]{ g_fauxLow, V{}, V{ false }, V{ true } };
 							g_fauxBlip.Invoke("SetTargetLowInfo", nullptr, lowArgs, 4);
 						}
@@ -4227,9 +4267,10 @@ namespace
 	// qualified name (unlike BSUIDataManager, which needed the full path).
 	//
 	// The synthetic data objects are created once and mutated per use. Fields
-	// the icon reads that the mod cannot fill truthfully stay false; the POI
-	// path (uPoiType/uPoiCategory into MapIcons.SetLocation) is never entered
-	// because the faux blip is restricted to planet and star types.
+	// the icon reads that the mod cannot fill truthfully stay false. The POI
+	// path (uPoiType/uPoiCategory into MapIcons.SetLocation) is entered only
+	// for entries whose feed data carried those fields - captured with the
+	// candidates since v0.8.12 - so the art it draws is the entry's own.
 	void TryCreateFauxBlip(RE::Scaleform::GFx::ASMovieRootBase* a_root)
 	{
 		if (g_fauxReady.load(std::memory_order_acquire) ||
@@ -4280,8 +4321,12 @@ namespace
 			return;
 		}
 		// Everything SetTargetLowInfo reads, stated explicitly rather than left
-		// undefined. uTargetType is set per body at use time.
+		// undefined. uTargetType and the POI icon fields are set per body at
+		// use time.
 		g_fauxLow.SetMember("uTargetType", V{ static_cast<std::uint32_t>(kTargetTypePlanet) });
+		g_fauxLow.SetMember("uPoiType", V{ static_cast<std::uint32_t>(0) });
+		g_fauxLow.SetMember("uPoiCategory", V{ static_cast<std::uint32_t>(0) });
+		g_fauxLow.SetMember("uLocationMarkerState", V{ static_cast<std::uint32_t>(0) });
 		g_fauxLow.SetMember("hostile", V{ false });
 		g_fauxLow.SetMember("bAlly", V{ false });
 		g_fauxLow.SetMember("isInfoTarget", V{ false });
@@ -4667,6 +4712,55 @@ namespace
 				RE::Scaleform::GFx::Value vis;
 				selVisible = selIcon.GetMember("visible", &vis) && vis.IsBoolean() &&
 				             vis.GetBoolean();
+			}
+
+			// Diagnostic, once per selection: when the selection has neither a
+			// kept blip nor a findable on-screen icon, dump what on-screen
+			// icons DO exist, so the log answers "what was vanilla actually
+			// showing" instead of the next theory guessing it. One selection's
+			// dump is ~a dozen lines, and it only fires on the failure case.
+			if (haveReticle && !selFound && !selectedShown) {
+				static std::atomic<std::uint32_t> s_dumpedFor{ 0 };
+				if (s_dumpedFor.exchange(a_selectedID, std::memory_order_acq_rel) != a_selectedID) {
+					REX::INFO("[blip-dbg] no icon accepted for '{}' ({:08X}) - reticle census:",
+						a_selectedName, a_selectedID);
+					V dbgCount;
+					if (reticle.GetMember("numChildren", &dbgCount)) {
+						for (int i = 0; i < static_cast<int>(AsNumber(dbgCount)); ++i) {
+							V idx{ static_cast<double>(i) };
+							V child;
+							if (!reticle.Invoke("getChildAt", &child, &idx, 1) ||
+								!(child.IsObject() || child.IsDisplayObject()))
+								continue;
+							V nameVal;
+							if (!child.GetMember("name", &nameVal) || !nameVal.IsString())
+								continue;
+							const std::string childName = nameVal.GetString();
+							if (childName.rfind("OnScreenIcon: ", 0) != 0)
+								continue;
+							V           vis, alpha, nameMc, nameShown, nameField, text;
+							const bool  visB = child.GetMember("visible", &vis) &&
+							                  vis.IsBoolean() && vis.GetBoolean();
+							const double alphaN =
+								child.GetMember("alpha", &alpha) ? AsNumber(alpha) : -1.0;
+							const bool nameVis =
+								child.GetMember("Name_mc", &nameMc) &&
+								(nameMc.IsObject() || nameMc.IsDisplayObject()) &&
+								nameMc.GetMember("visible", &nameShown) &&
+								nameShown.IsBoolean() && nameShown.GetBoolean();
+							const char* shownText =
+								child.GetMember("Name_tf", &nameField) &&
+								        (nameField.IsObject() || nameField.IsDisplayObject()) &&
+								        nameField.GetMember("text", &text) && text.IsString() ?
+									text.GetString() :
+									"<none>";
+							REX::INFO("[blip-dbg]   '{}' visible={} alpha={:.2f} nameShown={} "
+									  "text='{}'",
+								childName, visB, alphaN, nameVis, SafeStr(shownText));
+						}
+					}
+					REX::INFO("[blip-dbg] census end");
+				}
 			}
 
 			// Selection-wins-overlap (v0.8.5, generalised v0.8.6): while the
