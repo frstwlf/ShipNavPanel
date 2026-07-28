@@ -8,32 +8,29 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.8.3 — the load-freeze hardening; built, not yet run.** The v0.8.2
-session froze as a save finished loading (hang, no crashlog — Windows killed
-it). The plugin's own log settled a lot: none of the v0.8.2 feature code had
-run yet, the subscribe round had passed the menus-closed gate **while the
-load transition was still on screen**, the movie was mid-init (high-freq feed
-not registered yet — first failure ever observed) and was rebuilt within
-50 ms. v0.8.3 closes every hazard that surfaced: `WorldSettled` now requires
-menus closed **continuously for 2.5 s** (the ShipHullRegen settle-timer rule
-this project had skipped), `RefreshPanel` no longer holds the candidate mutex
-across VM calls (a real lock-order inversion against concurrent feed
-callbacks — silent-freeze shaped, present since v0.3), feeds subscribe
-per-feed with the missing one retried (a failed high-freq subscribe used to
-be logged and forgotten), the blip pass is settle-gated, `g_inCruise` resets
-on movie rebuild, and every builder logs a line BEFORE entering the VM so a
-future frozen log ends at the culprit's name. Full account in
-`STARFIELD-NOTES.md` ("A load-time FREEZE"). The freeze's true cause is
-unproven — these are the real hazards that were found. **The v0.8.2 feature
-set is unchanged and still awaits its in-game pass.**
+**v0.8.4 — no name text anywhere on the HUD; built, not yet run.** The
+tester's call after v0.8.3 passed: vanilla shows no names on blips, the
+panel row already carries name and distance, and the mod exists to QUIET the
+HUD — so the marker's name/distance label is gone entirely, code and
+setting both (`bLabel` no longer exists). What remains on the HUD in cruise:
+the vanilla blip for the highlighted/locked body, or the mod's vanilla-art
+marker for bodies the game is not blipping. Text lives in the panel.
 
-v0.8.0 (hide the off-screen blips, reappear the locked one) and v0.8.1 (a
-showing blip replaces diamond AND label; highlight preview via blip too)
-**both passed in-game sessions on 2026-07-28**. v0.8.2 adds: the mod stands
-down when the selected body's ON-screen icon is visible, and the fallback
-marker is a real `OffScreenIcon` the mod drives — planets and stars only,
-drawn-diamond fallback. Mechanism and checklist in
-[PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md) (§8 for v0.8.2).
+**v0.8.3 passed its session on 2026-07-28: load works, no freeze recurrence,
+and the vanilla-look (faux `OffScreenIcon`) marker shows correctly.** The
+freeze hardening stays in place: settle-timer `WorldSettled` (2.5 s
+continuous menus-closed), `RefreshPanel` snapshots instead of holding the
+candidate mutex across VM calls, per-feed subscribe with retry, settle-gated
+blip pass, `g_inCruise` reset on rebuild, pre-VM bracket logs in every
+builder. Full account in `STARFIELD-NOTES.md` ("A load-time FREEZE"); the
+original freeze's cause remains formally unproven — if a freeze recurs, the
+log tail now names the frozen call.
+
+v0.8.0 (hide the off-screen blips, reappear the locked one), v0.8.1 (a
+showing blip fully replaces the mod's marker; highlight preview via blip
+too) and now the v0.8.2/0.8.3 vanilla-art fallback marker are **all
+confirmed in game**. Mechanism and remaining checklist in
+[PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md) (§8 for the v0.8.2 additions).
 
 Through v0.7.5, all confirmed in game: the panel, nesting, whole-system list,
 localised names, gas-giant and settlement icons, the skyline glyph, confirm on
@@ -130,19 +127,17 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **★ Run v0.8.2 in game** — checklist in
-      [PHASE3-BLIP-PLAN.md §7–8](PHASE3-BLIP-PLAN.md). v0.8.0 and v0.8.1 both
-      passed their sessions. New to eyeball: no mod marker on a body whose
-      on-screen icon is visible (fly toward the selected body until it enters
-      view — diamond and name should vanish as the vanilla circle-with-name
-      appears); the faux blip wearing real vanilla art on the ring for
-      planet/star fallback bodies, rotating correctly as you steer; the label
-      in vanilla text styling; `[blip] faux blip ready` in the log (a "not
-      created" warning means the diamond fallback engaged — report it, it is
-      interesting, not broken). Watch for the label crowding the faux blip —
-      the fix is a measured radius, noted in the plan doc. Still open from
-      before: quest blips surviving the cull, the interdiction tripwire, and
-      the census transforms being zeros and ones.
+- [ ] **★ Remaining in-game checks** — checklist in
+      [PHASE3-BLIP-PLAN.md §7–8](PHASE3-BLIP-PLAN.md). Confirmed through
+      v0.8.3: blips hidden, locked/highlight blip reappearing, faux
+      vanilla-art marker showing correctly, load with no freeze. Still to
+      eyeball: **v0.8.4's label removal** (nothing but the marker on the
+      HUD); the **on-screen yield** specifically (fly toward the selected
+      body until it enters view — the mod's marker should vanish as the
+      vanilla circle-with-name appears); **quest blips** surviving the cull;
+      the **interdiction tripwire** (ship blips return instantly when combat
+      drops you out of cruise); and the `[blip]` census log's transforms
+      being zeros and ones.
 
 - [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
       confirmed working. New: the pointer is a diamond moved around the reticle

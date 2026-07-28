@@ -304,10 +304,14 @@ Two more of the tester's calls after the v0.8.1 session, both implemented:
   being recoloured cyan and resized. `bVanillaStyleMarker=false` restores the
   pre-v0.8.2 diamond and cyan label wholesale.
 
-Open cosmetic question for the next session: the label still rides at
+~~Open cosmetic question for the next session: the label still rides at
 `fArrowRadius + 34` while the faux blip sits at the art's own ring radius —
 if they crowd each other, the fix is a measured radius (`getBounds` on the
-faux blip), not a guessed constant.
+faux blip), not a guessed constant.~~ **Resolved in v0.8.4 by removing the
+label outright** — the tester's call after v0.8.3 confirmed the faux marker
+in game: vanilla blips carry no names, the panel row already shows name and
+distance, and the mod's whole purpose is a quieter HUD. `bLabel` and all
+label code are gone; nothing the mod draws on the HUD carries text.
 
 ### Failure modes accepted
 

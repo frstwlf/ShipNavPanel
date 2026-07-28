@@ -190,13 +190,13 @@ namespace
 	REX::TIniSetting<float>         fPanelRowHeight{ "Panel", "fPanelRowHeight", 26.0f };
 	REX::TIniSetting<std::uint32_t> uPanelMaxRows{ "Panel", "uPanelMaxRows", 10 };
 
-	// The pointer arrow.
+	// The pointer marker. (Its name label was removed in v0.8.4 - vanilla
+	// shows no names on blips, and the panel row already carries the text.)
 	REX::TIniSetting<bool>  bArrow{ "Panel", "bArrow", true };
 	REX::TIniSetting<float> fArrowRadius{ "Panel", "fArrowRadius", 150.0f };
 	REX::TIniSetting<float> fMaxTargetLightSeconds{ "Panel", "fMaxTargetLightSeconds", 20000.0f };
 	REX::TIniSetting<float> fArrowAngleOffset{ "Panel", "fArrowAngleOffset", 0.0f };
 	REX::TIniSetting<bool>  bArrowInvertAngle{ "Panel", "bArrowInvertAngle", false };
-	REX::TIniSetting<bool>  bLabel{ "Panel", "bLabel", true };
 
 	// Vanilla blip management (Phase 3, PHASE3-BLIP-PLAN.md). In cruise, hide
 	// the HUD's own off-screen circle-and-arrow blips and let the locked body's
@@ -1613,9 +1613,6 @@ namespace
 	std::atomic<bool>          g_arrowFailed{ false };
 	std::atomic<std::uint32_t> g_subscribeAttempts{ 0 };
 	RE::Scaleform::GFx::Value  g_arrowClip;
-	RE::Scaleform::GFx::Value  g_labelField;
-	RE::Scaleform::GFx::Value  g_labelFormat;
-	std::atomic<bool>          g_labelReady{ false };
 
 	// Cruise state. The scanner key keeps its vanilla job outside cruise, so the
 	// panel must stay out of the way there - the gate identified back in Phase 0.
@@ -2579,9 +2576,6 @@ namespace
 			g_arrowReady.store(false, std::memory_order_release);
 			g_arrowFailed.store(false, std::memory_order_release);
 			g_arrowClip = RE::Scaleform::GFx::Value{};
-			g_labelField = RE::Scaleform::GFx::Value{};
-			g_labelFormat = RE::Scaleform::GFx::Value{};
-			g_labelReady.store(false, std::memory_order_release);
 
 			// The blip holder too - and the hidden container went down with the
 			// movie, so the new one starts visible on its own.
@@ -3484,8 +3478,6 @@ namespace
 			bool          haveSelected = false;
 			double        selectedAngle = 0.0;
 			double        selectedDistance = 0.0;
-			std::string   selectedName;
-			std::string   labelText;
 			std::uint32_t selectedID = 0;
 			std::uint32_t selectedType = 0;
 			std::string   selectedBlipName;
@@ -3557,7 +3549,6 @@ namespace
 						haveSelected = true;
 						selectedAngle = bearings.rows[i].angle;
 						selectedDistance = bearings.rows[i].distance;
-						selectedName = g_candidates[i].name;
 						selectedType = g_candidates[i].type;
 						break;
 					}
@@ -3616,34 +3607,12 @@ namespace
 						g_arrowClip.SetMember("y", V{ -markerRadius * std::cos(markerRadians) });
 					}
 
-					if (g_labelReady.load(std::memory_order_acquire)) {
-						// Place the label just beyond the arrow tip, on the same
-						// bearing, but never rotate it - rotated text is unreadable.
-						const double radians = rotation * 3.14159265358979323846 / 180.0;
-						const double radius = static_cast<double>(fArrowRadius.GetValue()) + 34.0;
-						const double lightSeconds = selectedDistance / kMetersPerLightSecond;
-						labelText = lightSeconds >= 1.0 ?
-						                std::format("{}  {:.0f} LS", selectedName, lightSeconds) :
-						                std::format("{}  {:.0f} km", selectedName, selectedDistance / 1000.0);
-
-						g_labelField.SetMember("text", V{ labelText.c_str() });
-						// defaultTextFormat only applies to text present when it
-						// was set, so re-apply after each assignment or the new
-						// characters fall back to no font.
-						if (g_labelFormat.IsObject())
-							g_labelField.Invoke("setTextFormat", nullptr, &g_labelFormat, 1);
-						g_labelField.SetMember("x", V{ radius * std::sin(radians) });
-						g_labelField.SetMember("y", V{ -radius * std::cos(radians) });
-					}
-
 					// Rate-limited so the bearing can be correlated with what is
 					// actually on screen without flooding the log.
 					static std::atomic<std::uint32_t> s_tick{ 0 };
 					if ((s_tick.fetch_add(1, std::memory_order_relaxed) % 120) == 0)
 						REX::INFO("[arrow] angleToCrosshair={:.1f} -> rotation={:.1f}", selectedAngle, rotation);
 				}
-				if (g_labelReady.load(std::memory_order_acquire))
-					g_labelField.SetMember("visible", V{ showMarker });
 			}
 
 			// Distances are current by this point, which is what the list shows.
@@ -5281,51 +5250,10 @@ namespace
 		g_arrowClip.SetMember("y", V{ 0.0 });
 		g_arrowClip.SetMember("visible", V{ false });
 
-		// The label rides just outside the arrow tip and is never rotated, so it
-		// stays readable however the ship is oriented.
-		//
-		// OFF BY DEFAULT. Constructing `flash.text.TextField` asks the AS3 VM to
-		// resolve a class the SWF may never link, and the v0.1.3 crash died in
-		// the VM's TypeError path - so this stays opt-in until it has been shown
-		// safe on its own, separately from the threading fix.
-		if (!bLabel.GetValue()) {
-			g_arrowReady.store(true, std::memory_order_release);
-			REX::INFO("[arrow] ready (radius {}), label disabled", r);
-			return;
-		}
-		root->CreateObject(&g_labelField, "flash.text.TextField");
-		if (g_labelField.IsObject() || g_labelField.IsDisplayObject()) {
-			g_labelField.SetMember("selectable", V{ false });
-			g_labelField.SetMember("mouseEnabled", V{ false });
-			g_labelField.SetMember("autoSize", V{ "center" });
-
-			if (BorrowTextFormat(root, rootPath, g_labelFormat, "[arrow]")) {
-				// Vanilla-style keeps the donor's format verbatim - it IS the
-				// HUD's own text styling, which is the point (v0.8.2). The
-				// invented cyan look remains behind the switch.
-				if (!bVanillaStyleMarker.GetValue()) {
-					g_labelFormat.SetMember("size", V{ 22.0 });
-					g_labelFormat.SetMember("bold", V{ true });
-					g_labelFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x66CCFF) });
-				}
-				g_labelField.SetMember("embedFonts", V{ true });
-				g_labelField.SetMember("defaultTextFormat", g_labelFormat);
-			} else {
-				g_labelField.SetMember("textColor", V{ static_cast<std::uint32_t>(0x66CCFF) });
-				REX::WARN("[arrow] no donor TextField found - the label will likely render as boxes");
-			}
-
-			RE::Scaleform::GFx::Value added;
-			if (reticle.Invoke("addChild", &added, &g_labelField, 1)) {
-				g_labelField.SetMember("visible", V{ false });
-				g_labelReady.store(true, std::memory_order_release);
-				REX::INFO("[arrow] label created");
-			} else {
-				REX::WARN("[arrow] label addChild failed - arrow will run without it");
-			}
-		} else {
-			REX::WARN("[arrow] could not create a TextField - arrow will run without a label");
-		}
+		// No name label. It existed until v0.8.3 and was removed on the
+		// tester's call: vanilla shows no names on blips, the panel row
+		// already carries name and distance, and the whole point of the blip
+		// pivot is a quieter HUD - one marker, no text riding it.
 
 		g_arrowReady.store(true, std::memory_order_release);
 		REX::INFO("[arrow] ready (radius {}) - press the scanner key to cycle targets", r);
@@ -5426,8 +5354,8 @@ namespace
 		iniStore->Init("Data/SFSE/Plugins/ShipNavPanel.ini", "Data/SFSE/Plugins/ShipNavPanelCustom.ini");
 		iniStore->Load();
 
-		REX::INFO("config: bInputTap={} bArrow={} bLabel={} bPanel={} bWheelFilter={}",
-			bInputTap.GetValue(), bArrow.GetValue(), bLabel.GetValue(), bPanel.GetValue(),
+		REX::INFO("config: bInputTap={} bArrow={} bPanel={} bWheelFilter={}",
+			bInputTap.GetValue(), bArrow.GetValue(), bPanel.GetValue(),
 			bWheelFilter.GetValue());
 		REX::INFO("config: sConfirmEvent='{}' shown as '{}' (bPanelHints={}) - if the hint names the wrong "
 				  "key, correct sConfirmKeyLabel; it cannot be derived from the event name",
