@@ -89,6 +89,12 @@ live; the ini labels demote to first-sight fallbacks. Guards: the text
 must differ from the feed name (else the entry is unmasked right now) and
 from the info target's name (the paired-indicator spoof).
 
+**v0.8.17 confirmed in game (2026-07-29): undiscovered labels correct from
+the first frame, via the game's own tokens.** The tester's verdict on the
+arc: the mod is shaping up — the one thing now reading as foreign is the
+panel's own chrome, hence open-work item 2 below (the vanilla-UI donor
+hunt).
+
 **v0.8.15 confirmed in game (both labels learned from icons). v0.8.16's
 transition learner FAILED its test** — no name change was ever observed in
 the feed while tracked, so that theory is dead and the machinery removed.
@@ -398,17 +404,40 @@ These three come before release.
       `uPoiType`/`uPoiCategory` sampled from known locations — Jemison came back
       83/10, The Eye 43/7.
 
-- [ ] **2. UI pass — match the ship HUD's own blips.** Every colour in the panel
-      is invented (`0x66CCFF` marker, `0x0A1420` background, `0xCCE6FF` rows),
-      picked to look reasonable rather than to match anything. Vanilla's styling
-      is readable in the extracted SWFs at `M:\Starfield\Extracted\interface\` —
-      `shipreticle.swf` and `spaceshiphudmenu.swf` for the reticle and blips,
-      `mapicons.swf` for icon shapes (CWS = zlib from byte 8; decompress with
-      PowerShell `DeflateStream` after skipping the 2-byte zlib header).
-      Worth stealing: the blip colours and their alpha, the target-frame shape
-      from `TargetIconFrameContainer`, and whatever the HUD uses to distinguish
-      a hovered from a locked target. The font is already borrowed rather than
-      guessed, so type should match once the colours do.
+- [ ] **2. THE HUNT: a vanilla UI donor for the panel itself.** The blip half
+      of the old "UI pass" item is DONE — every marker on the HUD is now a
+      real vanilla clip (the v0.8.x arc) — which is exactly why the panel now
+      reads as the odd one out (the tester's call, 2026-07-29): its box,
+      rows, separators and highlight bar are still invented
+      (`0x0A1420` background, `0xCCE6FF` rows; the `0x66CCFF` cyan survives
+      only in the rare drawn-diamond fallback). The hunt is for something of
+      the game's own to wear, in preference order:
+
+      1. **Instantiate a vanilla list/panel symbol outright** — the faux blip
+         proved the route (`CreateObject` on a symbol-bound class gives the
+         full symbol, timeline children and all; default-package classes go
+         by bare name; drive it via its own public methods). Candidate
+         donors to census in the SWFs: the ship HUD's own **target-subsystem
+         panel** (`TargetPanelComponentManager` + `ComponentsArray` — a
+         selectable-row list living in the SAME movie, same art language,
+         already keyboard-driven), the ScanClip target-info box, whatever
+         `spaceshipinfomenu.swf` builds its systems list from, and the
+         monocle/scanner overlays. Beware: sealed classes can't be
+         interposed, only driven — check each candidate's public surface
+         first (the Phase-1 pattern).
+      2. **Failing a whole component: borrow the parts.** Colours/alphas read
+         at runtime off live objects where possible (the `getTextFormat`
+         borrow generalises: TextFormats carry colour), or measured once
+         from the extracted SWFs at `M:\Starfield\Extracted\interface\`
+         (CWS = zlib from byte 8) — shapes for the background frame,
+         divider treatment, and the hover-vs-locked highlight distinction.
+      3. Whatever wins, the panel's DATA machinery stays as is — this is a
+         skin hunt, not a rebuild; the rows, wheel, confirm and lock logic
+         are all confirmed working.
+
+      The font is already the HUD's own (`$MAIN_Font_Bold` borrow), so type
+      matches once the chrome does. Do this after the remaining behaviour
+      checks above, before release — it is the last invented pixel.
 
 - [ ] **3. Reposition the panel to sit with the HUD.** Currently 540 left and
       160 up from screen centre, guessed against one resolution and never
