@@ -500,7 +500,48 @@ Each of these cost real time; the reasoning is in the findings docs.
   event objects, so a later press arrives still carrying the flag — and the ship
   accelerates regardless. Either the flight consumer runs before `RE::UI` in the
   receiver chain, or it ignores the flag; the log cannot tell which, and it does
-  not matter. **The panel must use keys the game already ignores in cruise.**
+  not matter.
+
+  ⚠ **This line used to end "the panel must use keys the game already ignores in
+  cruise", and that was an overstatement** — written after the throttle failure
+  and before the wheel splice succeeded a day later. It is not what the
+  experiment showed. Two variables changed at once between the two tests:
+
+  |  | throttle (failed) | wheel (worked) |
+  |---|---|---|
+  | technique | set `disabled` | splice out of the queue |
+  | hooked | `RE::UI` | `PlayerCamera` — the actual consumer |
+
+  So the throttle test shows only that **flagging at a non-consumer does
+  nothing**, which is the same lesson the wheel taught positively. A splice on
+  W/S was never attempted, because its consumer was never found.
+
+  The wheel also proves the rule wrong by example: `ZoomIn`/`ZoomOut` are *not*
+  keys the game ignores — it acts on them, and the mod takes that function away
+  while the panel is open. The real rule is **a key needs either the game to
+  ignore it, or a hookable consumer to splice it away from.**
+
+  **W/S is therefore "not done", not "impossible" — but leave it alone anyway:**
+  - The consumer is findable. `PlayerControls` is not a class CommonLibSF
+    defines, but its handlers carry real `IDs_VTABLE.h` ids —
+    `PlayerControls__FlightMovementHandler` **433534**,
+    `PlayerControls__StandardFlightControlMode` **433532**,
+    `PlayerControls__ShipEquipmentHandler` 433616.
+  - **The failure modes are not symmetric.** A wheel filter stuck on means the
+    POV stops changing — invisible, harmless, gone when the panel closes. A
+    throttle splice stuck on means the ship will not accelerate or decelerate.
+    That asymmetry is why `bSuppressThrottleTest` is default-off and gated twice
+    on cruise-and-panel-open, and it does not improve with a better technique.
+  - POV is decoration; throttle is flight. The prize is small and the downside
+    is the worst this mod could do to someone.
+- **E (`SelectTarget`) is settled on design, not on feasibility.** It faces the
+  same unknown consumer as W/S, but that is not the reason to leave it: the mod
+  **points** because targeting by id is impossible from the UI layer, so E is
+  the only way the player can actually acquire what the panel is pointing at.
+  Taking E away removes the mechanism the whole design rests on. Self-defeating
+  rather than hard. (The route that would change that is
+  `Spaceship::TargetingMode`, vtable mapped at 450764 / 450766 — a different
+  project from stealing a key.)
 - **`disableplayercontrols` is not an alternative** — it drops the ship out of
   cruise without the hidden loading screen, i.e. outside the cruise state
   machine's normal teardown. Not worth the risk.

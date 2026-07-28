@@ -75,6 +75,24 @@ flight consumer runs *before* `RE::UI` in the receiver chain and had already
 acted, or it simply does not consult the flag. Both mean the same thing for the
 design — **suppression is not available from the UI receiver.**
 
+> *Corrected 2026-07-28:* the sentence above is right, but the heading's
+> "the panel cannot own W/S" overreaches, and so did the rule it produced
+> ("the panel must use keys the game already ignores"). **Two variables changed
+> between this test and the wheel splice a day later** — the technique (flag vs
+> splice) *and* the object hooked (`RE::UI` vs `PlayerCamera`, which is the
+> actual consumer). This test isolates neither. What it shows is that flagging
+> at a non-consumer does nothing.
+>
+> The wheel then disproved the rule by example: `ZoomIn`/`ZoomOut` are **not**
+> ignored by the game, and the mod takes them anyway. The requirement is that a
+> key be either ignored **or** spliceable at a hookable consumer.
+>
+> A splice on W/S was never attempted — its consumer was never found, though
+> `PlayerControls__FlightMovementHandler` (433534) and
+> `StandardFlightControlMode` (433532) carry real vtable ids. It stays
+> unattempted on **risk**, not on feasibility: a wheel filter stuck on costs a
+> frozen POV, a throttle splice stuck on costs the ship's engines. See TODO.md.
+
 `disableplayercontrols` is also out: it drops the ship out of cruise *without*
 the hidden loading screen, which means it is tearing down the cruise state
 machine outside its normal path. Not worth the state-corruption risk for a

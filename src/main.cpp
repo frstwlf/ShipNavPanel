@@ -1748,9 +1748,20 @@ namespace
 	// ---------------------------------------------------------------------------
 	// The cruise key survey.
 	//
-	// The panel cannot take W/S from the ship - v0.2.1 settled that - so it has
-	// to be built on keys the game already ignores in cruise. `SHMonocle` is one
-	// such, found by accident in Phase 0. This looks for the others.
+	// Written when v0.2.1 failed to take W/S from the ship, on the assumption
+	// that the panel therefore had to be built on keys the game already ignores
+	// in cruise. `SHMonocle` is one such, found by accident in Phase 0, and this
+	// looks for the others.
+	//
+	// That assumption turned out to be too strong, and the survey is worth
+	// keeping in spite of it. A day later the mouse wheel was taken successfully
+	// - and `ZoomIn`/`ZoomOut` are NOT ignored, the game acts on them. What made
+	// the difference was hooking the consumer (`PlayerCamera`) and splicing the
+	// event out of the queue, rather than flagging it at `RE::UI`, which is not
+	// the consumer of anything the ship does. So the real requirement is: a key
+	// needs either the game to ignore it, OR a hookable consumer to splice it
+	// away from. This survey answers the first half; see TODO.md for why W/S is
+	// still left alone regardless.
 	//
 	// The plugin can only answer half the question: which events REACH us during
 	// cruise, and whether they arrive already disabled. Whether the game then
