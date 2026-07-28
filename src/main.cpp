@@ -209,6 +209,13 @@ namespace
 	// HUD's OffScreenIcon class and drives it through the same public methods
 	// the reticle uses, instead of drawing its invented diamond (v0.8.2).
 	REX::TIniSetting<bool> bVanillaStyleMarker{ "Panel", "bVanillaStyleMarker", true };
+	// Undiscovered stations and POIs list under a generic label, as the HUD's
+	// own icons show them - the feed's name field leaks the real name early
+	// (v0.8.14). Plain text; a localised game wants these overridden in the
+	// custom ini with that language's own words.
+	REX::TIniSetting<std::string> sUndiscoveredStationLabel{ "Panel", "sUndiscoveredStationLabel", "Starstation" };
+	REX::TIniSetting<std::string> sUndiscoveredPoiLabel{ "Panel", "sUndiscoveredPoiLabel", "Unknown" };
+
 	// The panel selection wins screen-overlap fights against PLANET markers
 	// (v0.8.5). Vanilla sorts overlapping on-screen icons by priority and
 	// hides the losers, and planets' sort distance is capped at one
@@ -360,6 +367,10 @@ namespace
 		std::uint32_t poiCategory{ 0 };
 		std::uint32_t locMarkerState{ 0 };
 		bool          havePoi{ false };
+		// The feed's name field carries the REAL name even for markers the
+		// player has not discovered (the HUD's own icons show a masked
+		// generic). The panel masks on this flag; absent means discovered.
+		bool discovered{ true };
 		// False for bodies added from the master file rather than offered by the
 		// HUD: they have a name and a place in the tree, but no bearing and no
 		// distance, so the arrow cannot point at one.
@@ -3193,6 +3204,8 @@ namespace
 				if (entry.GetMember("uLocationMarkerState", &member))
 					row.locMarkerState = static_cast<std::uint32_t>(AsNumber(member));
 			}
+			if (entry.GetMember("bMarkerDiscovered", &member) && member.IsBoolean())
+				row.discovered = member.GetBoolean();
 			// Galaxy data is filled in after collection, from the body table.
 			if (rows.size() <= a_index)
 				rows.resize(a_index + 1);
@@ -5562,9 +5575,20 @@ namespace
 
 					// The locked body is marked in the list itself, so the panel
 					// says what the HUD is showing without having to be closed.
+					// Undiscovered stations and POIs wear their generic label,
+					// exactly as the HUD's own icons do - the feed name leaks
+					// the real one early. Discovery flips the feed flag, the
+					// feed republishes, and the row unmasks by itself.
 					const bool  isLocked = locked != 0 && row.id == locked;
 					const char* mark = isLocked ? "> " : "  ";
-					const auto  name = std::format("{}{}", mark, row.name);
+					const bool  masked = !row.discovered &&
+					                    (row.type == kTargetTypeStation ||
+					                        row.type == kTargetTypePOI);
+					const auto name = std::format("{}{}", mark,
+						masked ? (row.type == kTargetTypeStation ?
+										 sUndiscoveredStationLabel.GetValue() :
+										 sUndiscoveredPoiLabel.GetValue()) :
+								  row.name);
 					nameField.SetMember("text", V{ name.c_str() });
 					// defaultTextFormat only applies to text present when it was
 					// set, so re-apply after every assignment or the new glyphs

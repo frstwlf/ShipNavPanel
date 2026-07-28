@@ -68,7 +68,16 @@ current target), with exactly one rejection — the info-target's paired
 edge indicator, the only never-renamed clip, whose text always names the
 info target; and the keep passes now **cull a body's ring blip while its
 on-screen icon is visible** (resolved before the passes), giving stations
-the same blip-to-icon handover planets get.
+the same blip-to-icon handover planets get. **The cull passed its session;
+v0.8.14 closes the last leak the same census exposed:** the feed's `name`
+field carries the REAL name for undiscovered markers, so the panel was
+spoiling what the HUD masks. Undiscovered station/POI rows now wear a
+generic label off `bMarkerDiscovered` (defaults `Starstation` / `Unknown`,
+ini-overridable for localised games — no in-game string source was found:
+the SWF text fields are authored empty and the masked text arrives through
+the engine). Discovery republishes the feed and the row unmasks itself.
+All blip matching stays on the real name — vanilla names its clips with
+it, masked or not.
 
 **v0.8.7 passed its session on 2026-07-28: all four states of the hiding
 model work as intended** (idle cruise vanilla, panel-open cull with
