@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -101,10 +102,12 @@ namespace
 	// follows a rebind - never write an id code here.
 	REX::TIniSetting<bool> bPanel{ "Panel", "bPanel", true };
 
-	// A comma-separated LIST of user-event names - see MatchesConfirmEvent for
-	// why it cannot be a single name. Both of these are C on the bindings this
-	// was built against, and the key reports one or the other depending on when
-	// it is read.
+	// A comma-separated LIST of user-event names and `#<id>` key codes - see
+	// MatchesConfirmEvent for why it can be neither a single name nor names
+	// alone. All three entries below mean the C key: the two names are what it
+	// reports outside the cockpit, and `#67` is what it is while piloting, where
+	// it reports no user event at all. The id is what actually fires in cruise;
+	// the names are kept so a different context still works.
 	//
 	// They replaced `XButton` (R) in v0.7.1, and the reason is worth keeping:
 	// **"the game ignores this key in cruise" is not the same as "this key is
@@ -113,7 +116,7 @@ namespace
 	// exists to put you in, so the collision was with the mod's own happy path.
 	// Any candidate has to be tried with a target locked, not just in an empty
 	// sky.
-	REX::TIniSetting<std::string> sConfirmEvent{ "Panel", "sConfirmEvent", "StarbornPower,ExitShip" };
+	REX::TIniSetting<std::string> sConfirmEvent{ "Panel", "sConfirmEvent", "StarbornPower,ExitShip,#67" };
 
 	// The control hint along the bottom. The label is a separate setting because
 	// the mod knows the confirm key's user-event NAME, not which physical key it
@@ -1616,22 +1619,32 @@ namespace
 								  std::strcmp(a_userEvent, kThrottleDownEvent) == 0);
 	}
 
-	// `sConfirmEvent` is a LIST of user-event names, any of which confirms.
+	// `sConfirmEvent` is a LIST, any entry of which confirms. An entry is either
+	// a user-event NAME or `#<id>`, a raw key id code.
 	//
-	// It has to be, because ONE PHYSICAL KEY CARRIES SEVERAL USER EVENTS and
-	// which name an event reports is resolved against the active context. Phase
-	// 0 logged a press arriving as `ExitShip` and its own release arriving as
+	// It has to be a list because ONE PHYSICAL KEY CARRIES SEVERAL USER EVENTS
+	// and which name an event reports is resolved against the active context.
+	// Phase 0 logged a press arriving as `ExitShip` and its own release as
 	// `StarbornPower` - the same C key, one keystroke, two names. The panel acts
-	// on the press, so naming only the release would give a key that is bound,
+	// on the press, so naming only the release gives a key that is bound,
 	// documented, hinted, and silently dead.
 	//
-	// So "bind it to C" is spelled as every event that C can report. Nothing
-	// here needs the player to know which of them the engine will pick.
-	bool MatchesConfirmEvent(const char* a_userEvent)
+	// And it has to accept an id because **while piloting, a key may carry NO
+	// user event at all**. C is exactly that key: it reports `ExitShip` and
+	// `StarbornPower` elsewhere in the game and nothing whatsoever in cruise, so
+	// no name can ever match it there. `#67` does.
+	//
+	// This does NOT retract "match on names, never ids". That rule is about the
+	// MOD not baking one tester's bindings into its source, and it stands: this
+	// id lives in the player's own ini, where their own bindings are precisely
+	// the right thing to describe. A name still wins wherever the engine
+	// supplies one, which is why the default carries both.
+	//
+	// Ids are virtual-key codes - 67 is C, 84 is T, 9 is Tab, 13 is Enter - so
+	// `#67` means the C key on any layout that agrees with that, which is more
+	// portable than a name the context refuses to give.
+	bool MatchesConfirmEvent(const char* a_userEvent, std::uint32_t a_idCode)
 	{
-		if (!a_userEvent || !a_userEvent[0])
-			return false;
-
 		// Held by value: GetValue() returns a copy, so a view over a temporary
 		// would dangle before it was ever compared.
 		const std::string configured = sConfirmEvent.GetValue();
@@ -1639,19 +1652,28 @@ namespace
 		std::string_view rest{ configured };
 		while (!rest.empty()) {
 			const auto comma = rest.find(',');
-			auto       name = rest.substr(0, comma);
+			auto       entry = rest.substr(0, comma);
 			rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
 
 			constexpr std::string_view kSpace = " \t";
-			if (const auto from = name.find_first_not_of(kSpace); from != std::string_view::npos)
-				name.remove_prefix(from);
+			if (const auto from = entry.find_first_not_of(kSpace); from != std::string_view::npos)
+				entry.remove_prefix(from);
 			else
 				continue;  // all spaces
-			if (const auto to = name.find_last_not_of(kSpace); to != std::string_view::npos)
-				name = name.substr(0, to + 1);
+			if (const auto to = entry.find_last_not_of(kSpace); to != std::string_view::npos)
+				entry = entry.substr(0, to + 1);
 
-			if (name == a_userEvent)
+			if (entry.front() == '#') {
+				entry.remove_prefix(1);
+				std::uint32_t id = 0;
+				const auto*   first = entry.data();
+				const auto*   last = first + entry.size();
+				const auto    parsed = std::from_chars(first, last, id);
+				if (parsed.ec == std::errc{} && parsed.ptr == last && id == a_idCode)
+					return true;
+			} else if (a_userEvent && a_userEvent[0] && entry == a_userEvent) {
 				return true;
+			}
 		}
 		return false;
 	}
@@ -2082,37 +2104,48 @@ namespace
 				IsThrottleEvent(userEvent))
 				SuppressThrottleEvent(button, down, firstFrame);
 
-			if (down && firstFrame && userEvent) {
-				if (std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
+			// NOT gated on `userEvent` being present. A key with no binding in
+			// the current context arrives with an EMPTY name - and BSFixedString
+			// hands back a null pointer for that, so the old `&& userEvent` here
+			// dropped those events before anything could see them, logging
+			// included. That is precisely what hid C: it carries no user event at
+			// all while piloting, so it was invisible rather than merely
+			// unmatched, and the log said nothing at all rather than saying so.
+			if (down && firstFrame) {
+				const bool named = userEvent && userEvent[0];
+
+				if (named && std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
 					OnTriggerPressed();
 				} else if (g_panelOpen.load(std::memory_order_acquire) &&
 						   g_inCruise.load(std::memory_order_acquire)) {
 					// The wheel is spliced away from the camera elsewhere; here
 					// it is simply read. One notch is one step.
-					if (std::strcmp(userEvent, kWheelUpEvent) == 0) {
+					if (named && std::strcmp(userEvent, kWheelUpEvent) == 0) {
 						MoveHighlight(-1);
 						REX::INFO("[panel] highlight up -> {:08X}", g_highlightID.load(std::memory_order_acquire));
-					} else if (std::strcmp(userEvent, kWheelDownEvent) == 0) {
+					} else if (named && std::strcmp(userEvent, kWheelDownEvent) == 0) {
 						MoveHighlight(1);
 						REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
-					} else if (MatchesConfirmEvent(userEvent)) {
+					} else if (MatchesConfirmEvent(userEvent, button->idCode)) {
 						ConfirmHighlight();
 					} else {
-						// Everything else pressed while the panel is open, named
-						// once each and capped. This is the answer to "I bound my
-						// key and nothing happens" - the log says what the key
-						// ACTUALLY reports, which is not always what the bindings
-						// menu calls it, and can differ between a press and its
-						// own release. Without it that question costs a session.
-						static std::mutex                    s_seenMutex;
-						static std::unordered_set<std::string> s_seen;
+						// Everything else pressed while the panel is open, once
+						// per key and capped. This is the answer to "I bound my
+						// key and nothing happens", so it reports the id as well
+						// as the name: the name can be absent, or differ between
+						// a press and its own release, but the id is the key.
+						static std::mutex                       s_seenMutex;
+						static std::unordered_set<std::uint32_t> s_seen;
 
 						std::lock_guard lock{ s_seenMutex };
-						if (s_seen.size() < 12 && s_seen.emplace(userEvent).second)
-							REX::INFO("[panel] '{}' pressed with the panel open, and it is not one of the "
-									  "panel's controls - if that is the key you meant, add the name to "
-									  "sConfirmEvent",
-								userEvent);
+						if (s_seen.size() < 16 && s_seen.emplace(button->idCode).second) {
+							const std::string reports = named ? std::format("'{}'", userEvent) :
+							                                    std::string{ "no user event in this context" };
+							const std::string suggest = named ? userEvent : std::format("#{}", button->idCode);
+							REX::INFO("[panel] key id={} reports {} and is not one of the panel's controls - "
+									  "if that is the key you meant, add {} to sConfirmEvent",
+								button->idCode, reports, suggest);
+						}
 					}
 				}
 			}

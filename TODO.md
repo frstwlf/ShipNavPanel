@@ -26,15 +26,32 @@ eyeballed: the v0.7.1 skyline glyph and the C rebind.
 > in ordinary play. **Test a candidate key with a target locked, not in an empty
 > sky.**
 >
-> The replacement, C, then turned up the deeper version of the same trap:
-> **one physical key carries several user events, and a press and its own
+> The replacement, C, then turned up the deeper version of the same trap
+> twice over.
+>
+> First: **one physical key carries several user events, and a press and its own
 > release can report different names.** Phase 0 logged exactly that — C pressed
 > as `ExitShip`, released as `StarbornPower` — and the panel acts on the press.
-> Binding the setting to `StarbornPower` alone would have produced a key that
-> was bound, documented, hinted and silently dead. `sConfirmEvent` is therefore
-> a comma-separated **list**: name every event your key can report, and any of
-> them confirms. An unmatched press with the panel open now logs its own name,
-> once each, so the next person answers this from one line instead of a session.
+> So `sConfirmEvent` became a comma-separated **list**, any entry of which
+> confirms.
+>
+> Then, in game, C still did nothing — and **the log said nothing at all**, which
+> was the real finding. **While piloting, a key can carry NO user event.** C is
+> nameless in cruise: it reports `ExitShip`/`StarbornPower` elsewhere and an
+> empty string there. `BSFixedString::c_str()` returns **null** for that, and the
+> dispatch was gated `if (down && firstFrame && userEvent)` — so those presses
+> were dropped before anything could see them, logging included. The key was not
+> merely unmatched, it was invisible, and no amount of naming could ever have
+> reached it.
+>
+> Hence `#<id>`: an entry may be a raw key id code, and the default carries
+> `#67` alongside the two names. Ids are virtual-key codes (67 = C, 84 = T,
+> 9 = Tab, 13 = Enter), which is how the Phase 0 table's numbers should be read.
+>
+> **This does not retract "match on names, never ids."** That rule is about the
+> *mod* not baking one tester's bindings into its source, and it stands. The id
+> lives in the player's own ini, describing their own keyboard — and a name
+> still wins wherever the engine supplies one.
 
 > **v0.2.0 was inert and nobody had run it.** Packaging flipped the recon
 > defaults off, and two pieces of load-bearing machinery were sitting behind
@@ -306,14 +323,26 @@ inherits the number. Static bodies are unaffected.
 |---|---|---|
 | scanner | `SHMonocle` | open / close the panel |
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (spliced away from the camera while open) |
-| **C** | `StarbornPower`, `ExitShip` | lock the highlighted body, or clear it if already locked |
+| **C** | `StarbornPower`, `ExitShip`, `#67` | lock the highlighted body, or clear it if already locked |
 
-`sConfirmEvent` is a comma-separated list of user-event **names**, never id
-codes — the ids in `PHASE0-FINDINGS.md` are one tester's own bindings, and the
-same id carries different names in different contexts. Confirmed free in cruise
-besides the above: `Quickkey2`, `Quickkey3`. Confirmed NOT free: `SelectTarget`
-(E, still cycles targets), `RepairShip` (4), and `XButton` (R, which opens the
-planet map once a target is selected). W/S is permanently out.
+`sConfirmEvent` is a comma-separated list; an entry is a user-event **name** or
+`#<id>`, a raw key code. **`#67` is the entry that actually fires in cruise** —
+C reports no user event at all while piloting. The names are kept for the
+contexts that do name it.
+
+Prefer a name wherever the engine gives you one: it survives a rebind and an id
+does not. The mod itself still bakes in no id — this one is a default in the
+player's ini describing the player's own keyboard, which is a different thing
+from the source hardcoding one tester's bindings.
+
+Confirmed free in cruise besides the above: `Quickkey2`, `Quickkey3`. Confirmed
+NOT free: `SelectTarget` (E, still cycles targets), `RepairShip` (4), and
+`XButton` (R, which opens the planet map once a target is selected). W/S is
+permanently out.
+
+Diagnosing a key that does nothing: press it with the panel open and read the
+log. Every unmatched press reports its id and its name — or says it has none —
+and prints the entry to paste into `sConfirmEvent`.
 
 ## Settled — do not re-derive
 
@@ -441,6 +470,16 @@ Each of these cost real time; the reasoning is in the findings docs.
     `BT_ASTEROID_BELT`) would have answered this, but only with the map open.
     Extracted SWFs live in `M:\Starfield\Extracted\interface\` (CWS = zlib from
     byte 8; PowerShell `DeflateStream` after skipping the 2-byte zlib header).
+- **A key can carry NO user event in a given context, and that press is a null
+  name, not an empty one.** `BSFixedString::c_str()` hands back a null pointer,
+  so any `if (... && userEvent)` guard drops the event entirely — it never
+  reaches matching *or* logging, and the key looks like it was never pressed.
+  C in cruise is exactly this. Read `idCode` when the name is absent, and never
+  gate a diagnostic on the thing being diagnosed.
+- **The id codes in `PHASE0-FINDINGS.md` are virtual-key codes.** 67 = C,
+  84 = T, 81 = Q, 13 = Enter, 9 = Tab, 192 = `~`. That was not stated when the
+  table was written and it is what makes `#67` portable rather than a magic
+  number: it means "the C key", not "this tester's binding".
 - **`endFill` ends the run, so every drawn shape needs its own `beginFill`.**
   One fill up front draws the first shape and silently leaves the rest
   unfilled — v0.7.0's settlement glyph shipped as a bare ground line with three
