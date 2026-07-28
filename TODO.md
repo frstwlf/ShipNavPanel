@@ -112,7 +112,14 @@ and subscription whenever the movie-created callback fires, and drop stale
       in the system (dash for distance on ones the HUD is not tracking).
 - [x] **Settlement icons — confirmed in game on v0.7.0.** The seventeen bodies
       are marked and the icons appear.
-- [ ] **Eyeball the v0.7.1 skyline glyph and the C rebind.** v0.7.0 drew only
+- [ ] **Confirm v0.7.3's camera splice of the confirm key.** Only exercised if
+      the confirm key is one the camera consumes, which C is not — so with the
+      shipped default it is a no-op and untested by definition. Test it by
+      setting `sConfirmEvent=LShoulder` and checking the POV does **not** toggle
+      when confirming with the panel open. Failure is benign: the view swings as
+      well as the lock landing.
+- [x] ~~**Eyeball the v0.7.1 skyline glyph and the C rebind.**~~ Both confirmed
+      in game on v0.7.2. v0.7.0 drew only
       the ground slab: `poly` closes each shape with `endFill`, and
       `settlement()` called `beginFill` once up front, so the three towers came
       out unfilled. Every shape now opens its own fill — the same thing
@@ -330,10 +337,27 @@ inherits the number. Static bodies are unaffected.
 C reports no user event at all while piloting. The names are kept for the
 contexts that do name it.
 
-Prefer a name wherever the engine gives you one: it survives a rebind and an id
-does not. The mod itself still bakes in no id — this one is a default in the
-player's ini describing the player's own keyboard, which is a different thing
-from the source hardcoding one tester's bindings.
+**An `#id` entry matches only an UNNAMED press, and that restriction is what
+makes allowing an id safe.** `#67` does not mean "the C key" flatly; it means
+"the C key where the game has nothing bound", which is the only case it was
+added for. An id is a physical key and cannot follow a rebind, so without the
+restriction a player who bound a ship action to C would have the mod fire on the
+same keystroke the game acts on — nothing here consumes the key. A press with no
+user event is the **engine** saying nothing is bound there; the moment something
+is, the name appears and the game's binding wins. No capability is lost, since a
+named event can always be matched by name.
+
+The mod itself still bakes in no id — this one is a default in the player's ini
+describing the player's own keyboard, which is a different thing from the source
+hardcoding one tester's bindings.
+
+**A key that already drives the camera is a fair candidate**, because the confirm
+key is spliced out of `PlayerCamera`'s queue while the panel is open, exactly as
+the wheel is. So it can confirm without also swinging the view — the wheel's own
+argument applied to the confirm key. `LShoulder` (the POV toggle, Q here) is a
+one-line swap and, being a name, follows a rebind in a way `#67` cannot. It is
+not the default only because it has a job to suppress where C has none: a key
+the engine declines to name is one nothing can collide with.
 
 Confirmed free in cruise besides the above: `Quickkey2`, `Quickkey3`. Confirmed
 NOT free: `SelectTarget` (E, still cycles targets), `RepairShip` (4), and

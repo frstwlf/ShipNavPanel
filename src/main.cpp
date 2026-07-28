@@ -165,9 +165,10 @@ namespace
 	REX::TIniSetting<std::string> sStarmapFeed{ "Recon", "sStarmapFeed", "StarmapSystemBodyInfoProvider" };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
-	// Hide the mouse wheel from the camera while the panel is open, so scrolling
-	// the list does not swing the point of view. Verified in game (v0.2.3); the
-	// switch remains as an escape hatch, not because it is experimental.
+	// Hide the mouse wheel - and the confirm key - from the camera while the
+	// panel is open, so browsing the list does not swing the point of view.
+	// Verified in game for the wheel (v0.2.3); the switch remains as an escape
+	// hatch, not because it is experimental.
 	REX::TIniSetting<bool> bWheelFilter{ "Panel", "bWheelFilter", true };
 
 	REX::TIniSetting<float>         fPanelOffsetX{ "Panel", "fPanelOffsetX", -540.0f };
@@ -1648,6 +1649,7 @@ namespace
 		// Held by value: GetValue() returns a copy, so a view over a temporary
 		// would dangle before it was ever compared.
 		const std::string configured = sConfirmEvent.GetValue();
+		const bool        named = a_userEvent && a_userEvent[0];
 
 		std::string_view rest{ configured };
 		while (!rest.empty()) {
@@ -1664,6 +1666,24 @@ namespace
 				entry = entry.substr(0, to + 1);
 
 			if (entry.front() == '#') {
+				// **An id entry matches only an UNNAMED press**, and that
+				// restriction is the whole reason an id is safe to allow.
+				//
+				// `#67` does not mean "the C key" flatly - it means "the C key
+				// WHEN THE GAME HAS NOTHING BOUND THERE", which is exactly the
+				// case it was added for. An id is a physical key rather than an
+				// action, so it cannot follow a rebind: if a player binds a ship
+				// action to C, the mod would fire on their keystroke and the game
+				// would act on it too, since nothing here consumes the key.
+				//
+				// Deferring on a named press removes that collision by
+				// construction. A key carrying no user event is the ENGINE
+				// telling us nothing is bound there; the moment something is,
+				// the name appears and the game's own binding wins. Nothing is
+				// lost, either: a named event can always be matched by its name.
+				if (named)
+					continue;
+
 				entry.remove_prefix(1);
 				std::uint32_t id = 0;
 				const auto*   first = entry.data();
@@ -1671,7 +1691,7 @@ namespace
 				const auto    parsed = std::from_chars(first, last, id);
 				if (parsed.ec == std::errc{} && parsed.ptr == last && id == a_idCode)
 					return true;
-			} else if (a_userEvent && a_userEvent[0] && entry == a_userEvent) {
+			} else if (named && entry == a_userEvent) {
 				return true;
 			}
 		}
@@ -2211,9 +2231,10 @@ namespace
 	{
 		const auto original = g_origCameraInputProcessing.load(std::memory_order_acquire);
 
-		// The wheel is hidden from the camera whenever the panel is open - this
-		// is the shipped behaviour now, not a test. The setting survives only as
-		// an escape hatch if the camera hook ever misbehaves.
+		// The wheel and the confirm key are hidden from the camera whenever the
+		// panel is open - this is the shipped behaviour now, not a test. The
+		// setting survives only as an escape hatch if the camera hook ever
+		// misbehaves.
 		const bool filtering = bWheelFilter.GetValue() &&
 		                       g_panelOpen.load(std::memory_order_acquire) &&
 		                       g_inCruise.load(std::memory_order_acquire);
@@ -2246,7 +2267,17 @@ namespace
 			bool drop = false;
 			if (event->eventType == RE::InputEvent::EventType::kButton) {
 				const auto* button = static_cast<const RE::ButtonEvent*>(event);
-				drop = IsWheelEvent(button->strUserEvent.c_str());
+				const char* name = button->strUserEvent.c_str();
+
+				// The confirm key goes too, so a key that ALREADY drives the
+				// camera can be used to confirm without also swinging the view.
+				// That is what makes a POV key a legitimate candidate: the
+				// wheel's own argument, applied to the confirm.
+				//
+				// A no-op for a confirm key the camera never wanted - C is
+				// nameless here and does nothing to the view - so this costs
+				// nothing when it is not needed.
+				drop = IsWheelEvent(name) || MatchesConfirmEvent(name, button->idCode);
 			}
 
 			if (drop && fixCount < kMaxFixes) {
