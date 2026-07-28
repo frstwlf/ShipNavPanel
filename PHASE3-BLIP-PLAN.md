@@ -214,11 +214,20 @@ Behaviour rules:
   blip pass itself** (not the cached `g_inCruise`, which the low-frequency feed
   refreshes late — restore must be frame-accurate because the same container
   serves normal flight's ship blips). Plus the §6 ship-type tripwire.
-- When the locked body's vanilla blip is visible, **the mod's diamond is
+- ~~When the locked body's vanilla blip is visible, **the mod's diamond is
   suppressed for it** (no double marker); the label stays — the blip has no
   text, and name + live distance is the part vanilla cannot provide. The
   diamond still previews the highlight while the panel is open, since browsing
-  needs a pointer for bodies with no blip.
+  needs a pointer for bodies with no blip.~~
+  **Superseded in v0.8.1 after the first in-game session, on the tester's
+  call:** when a body's vanilla blip is showing, the mod draws **nothing** for
+  it — no diamond *and no label* — and the blip also serves as the browse
+  preview: the panel highlight's blip is let through while the panel is open,
+  not just the locked body's. Diamond and name now exist purely as the
+  fallback for bodies vanilla is not blipping (beyond the cap, or dash-row
+  untracked). The "name + distance is worth keeping" argument above lost to
+  how it actually looked in game: the vanilla blip alone is cleaner, and the
+  panel row already shows name and distance.
 - Restore = container `visible = true` + every holder child `addChild`'d back
   into the container. Runs on cruise exit, on the tripwire, and when the
   feature is off. A movie rebuild resets everything anyway
@@ -237,7 +246,12 @@ Behaviour rules:
 2. Blips vanish in cruise; named in-view markers unaffected; E-target edge
    indicator unaffected.
 3. Lock a tracked body → its vanilla blip appears on the ring, diamond gone,
-   label still up; rotation tracks while steering. Clear the lock → blip gone.
+   ~~label still up~~ (v0.8.1: label gone too); rotation tracks while
+   steering. Clear the lock → blip gone. Browsing with the panel open behaves
+   the same per highlighted body: blip when vanilla has one, diamond+name when
+   it does not. **v0.8.0's core confirmed in game 2026-07-28** — blips hidden,
+   locked blip reappearing, named markers untouched — in a short session;
+   the v0.8.1 behaviour and the remaining items below are still open.
 4. Lock a dash-row body → diamond behaves exactly as v0.7.x (fallback path).
 5. Quest marker in system → its blip survives the cull.
 6. Boost in cruise → no fight (container hidden regardless; holder deliberately

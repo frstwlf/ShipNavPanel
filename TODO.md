@@ -8,12 +8,16 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.8.0 — the vanilla-blip pivot, built, NOT yet run in game.** In cruise the
-mod now hides the HUD's own off-screen circle-and-arrow blips and, when a body
-is locked in the panel, moves that body's own blip back into view so the
-vanilla marker does the pointing — the drawn diamond remains only as the
-fallback for bodies the HUD is not blipping (the cap: five nearest planets
-plus quest targets). Mechanism, evidence and the in-game checklist are in
+**v0.8.1 — vanilla blips do ALL the pointing where they exist; built, not yet
+run.** v0.8.0 (the pivot itself: hide the HUD's off-screen circle-and-arrow
+blips in cruise, move the locked body's own blip back into view) **passed its
+first in-game session on 2026-07-28**. v0.8.1 is the tester's follow-up call
+from that session: when a body's blip is showing, the mod draws nothing for it
+— the diamond AND the name label are gone, and the panel highlight's blip is
+let through while browsing, not just the locked one. The drawn diamond and
+name remain only as the fallback for bodies the HUD is not blipping (the cap:
+five nearest planets plus quest targets, plus dash-row untracked bodies).
+Mechanism, evidence and the in-game checklist are in
 [PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md).
 
 Through v0.7.5, all confirmed in game: the panel, nesting, whole-system list,
@@ -111,16 +115,16 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **★ Run the v0.8.0 blip pass in game** — the checklist is
-      [PHASE3-BLIP-PLAN.md §7](PHASE3-BLIP-PLAN.md). The short version: blips
-      gone in cruise, named markers untouched, locked body's blip back with the
-      diamond suppressed, dash-row lock falls back to the diamond, quest blips
-      survive, ship blips return instantly on leaving cruise (including by
-      interdiction — the ship-type tripwire), and the `[blip]` census log
-      confirms the container path, child names and identity transforms. If the
-      transforms in the log are NOT zeros and ones, the holder is in the wrong
-      place and the kept blip will sit offset — that is the first thing to
-      check if it looks wrong.
+- [ ] **★ Run v0.8.1 in game** — the checklist is
+      [PHASE3-BLIP-PLAN.md §7](PHASE3-BLIP-PLAN.md). v0.8.0's core passed a
+      short session (blips hidden, locked blip back, named markers untouched).
+      Still to eyeball: the v0.8.1 behaviour — highlight's blip while
+      browsing, no mod label when a blip shows, diamond+name only on no-blip
+      bodies — plus the edge items: quest blips surviving the cull, ship blips
+      returning instantly on leaving cruise (including by interdiction — the
+      ship-type tripwire), and the `[blip]` census log's transforms being
+      zeros and ones. Wrong transforms mean the holder is misplaced and a kept
+      blip sits offset — the first suspect if anything looks wrong.
 
 - [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
       confirmed working. New: the pointer is a diamond moved around the reticle

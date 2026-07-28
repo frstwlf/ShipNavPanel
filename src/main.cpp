@@ -1667,7 +1667,8 @@ namespace
 	void TryCreatePanel();
 	void RefreshPanel();
 	void RefreshCruiseState();
-	bool ManageVanillaBlips(std::uint32_t a_lockedID, const std::string& a_lockedName);
+	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
+		std::uint32_t a_lockedID, const std::string& a_lockedName);
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
@@ -3447,6 +3448,7 @@ namespace
 			std::string   selectedName;
 			std::string   labelText;
 			std::uint32_t selectedID = 0;
+			std::string   selectedBlipName;
 			std::uint32_t lockedForBlips = 0;
 			std::string   lockedName;
 
@@ -3465,17 +3467,17 @@ namespace
 				                 g_lockedID.load(std::memory_order_acquire);
 				const auto selected = selectedID;
 
-				// The locked body's feed name is the key that finds its vanilla
-				// blip - the SWF names the icon clips "OffScreenIcon: <name>".
-				// Read under the same lock as everything else candidate-shaped.
+				// Feed names are the key that finds a body's vanilla blip - the
+				// SWF names the icon clips "OffScreenIcon: <name>". Two bodies
+				// matter: the selected one (highlight while browsing, lock
+				// otherwise) and the locked one. Read under the same lock as
+				// everything else candidate-shaped.
 				lockedForBlips = g_lockedID.load(std::memory_order_acquire);
-				if (lockedForBlips != 0) {
-					for (const auto& row : g_candidates) {
-						if (row.id == lockedForBlips) {
-							lockedName = row.name;
-							break;
-						}
-					}
+				for (const auto& row : g_candidates) {
+					if (lockedForBlips != 0 && lockedName.empty() && row.id == lockedForBlips)
+						lockedName = row.name;
+					if (selectedID != 0 && selectedBlipName.empty() && row.id == selectedID)
+						selectedBlipName = row.name;
 				}
 
 				// A lock on a RUNTIME form is the one case where holding an id
@@ -3522,21 +3524,21 @@ namespace
 			}
 
 			// The vanilla blip pass: hides the off-screen container in cruise
-			// and lets the locked body's own blip back through. True means that
-			// blip is on screen this tick, doing the pointing.
-			const bool lockedBlipShown = ManageVanillaBlips(lockedForBlips, lockedName);
+			// and lets the selected and locked bodies' own blips back through.
+			// True means the SELECTED body's blip is on screen this tick.
+			const bool selectedBlipShown =
+				ManageVanillaBlips(selectedID, selectedBlipName, lockedForBlips, lockedName);
 
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
 				haveSelected = haveSelected && g_inCruise.load(std::memory_order_acquire);
 				// When the vanilla blip is pointing at the selected body, the
-				// diamond would be a second marker on the same target - drop it.
-				// The label stays: the blip carries no text, and name plus live
-				// distance is the part vanilla cannot provide.
-				const bool blipCovers = lockedBlipShown && selectedID != 0 &&
-				                        selectedID == lockedForBlips;
+				// mod draws NOTHING for it - no diamond, no label (v0.8.1, the
+				// tester's call). The drawn marker and name exist only for
+				// bodies vanilla is not blipping.
+				const bool blipCovers = selectedBlipShown;
 				g_arrowClip.SetMember("visible", V{ haveSelected && !blipCovers });
-				if (haveSelected) {
+				if (haveSelected && !blipCovers) {
 					// The marker is placed on the circle rather than rotated, so
 					// there is no orientation to be wrong at any bearing.
 					const double bearing = selectedAngle * (bArrowInvertAngle.GetValue() ? -1.0 : 1.0) +
@@ -3574,7 +3576,7 @@ namespace
 						REX::INFO("[arrow] angleToCrosshair={:.1f} -> rotation={:.1f}", selectedAngle, rotation);
 				}
 				if (g_labelReady.load(std::memory_order_acquire))
-					g_labelField.SetMember("visible", V{ haveSelected });
+					g_labelField.SetMember("visible", V{ haveSelected && !blipCovers });
 			}
 
 			// Distances are current by this point, which is what the list shows.
@@ -3992,9 +3994,17 @@ namespace
 	}
 
 	// The per-tick pass, from the high-frequency callback (the engine's UI
-	// thread). Returns whether the locked body's vanilla blip is visible this
-	// tick - if it is, the diamond would be a second marker on the same body.
-	bool ManageVanillaBlips(std::uint32_t a_lockedID, const std::string& a_lockedName)
+	// thread). Two bodies can have their blips let through: the SELECTED one
+	// (the panel highlight while browsing, the locked body otherwise) and the
+	// LOCKED one, which stays marked while the player browses elsewhere. The
+	// two collapse to the same clip whenever they are the same body.
+	//
+	// Returns whether the SELECTED body's blip is visible this tick - if it
+	// is, the vanilla marker replaces the mod's diamond AND label outright
+	// (v0.8.1, the tester's call: the drawn marker and name are only for
+	// bodies vanilla is not blipping).
+	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
+		std::uint32_t a_lockedID, const std::string& a_lockedName)
 	{
 		if (!bHideVanillaBlips.GetValue())
 			return false;
@@ -4060,13 +4070,19 @@ namespace
 			TryCreateBlipHolder(root, base, container);
 
 		const bool holderReady = g_blipHolderReady.load(std::memory_order_acquire);
-		const bool wantLocked = bShowLockedBlip.GetValue() && a_lockedID != 0 &&
-		                        !a_lockedName.empty() && holderReady;
-		const bool        keepQuest = bKeepQuestBlips.GetValue() && holderReady;
+		const bool wantBlips = bShowLockedBlip.GetValue() && holderReady;
+		const bool keepQuest = bKeepQuestBlips.GetValue() && holderReady;
+		// An empty name never matches: every real child name carries the prefix.
+		const std::string selectedClipName =
+			wantBlips && a_selectedID != 0 && !a_selectedName.empty() ?
+				std::string{ kOffScreenIconPrefix } + a_selectedName :
+				std::string{};
 		const std::string lockedClipName =
-			wantLocked ? std::string{ kOffScreenIconPrefix } + a_lockedName : std::string{};
+			wantBlips && a_lockedID != 0 && !a_lockedName.empty() ?
+				std::string{ kOffScreenIconPrefix } + a_lockedName :
+				std::string{};
 
-		bool lockedShown = false;
+		bool selectedShown = false;
 		bool sawShipType = false;
 
 		const auto readName = [](RE::Scaleform::GFx::Value& a_child) -> std::string {
@@ -4105,13 +4121,16 @@ namespace
 					static_cast<std::uint32_t>(AsNumber(type)) == kTargetTypeShip)
 					sawShipType = true;
 
-				const bool lockedMatch = wantLocked && childName == lockedClipName;
-				if (lockedMatch || (keepQuest && isQuest(child))) {
+				const bool selectedMatch = !selectedClipName.empty() && childName == selectedClipName;
+				const bool lockedMatch = !lockedClipName.empty() && childName == lockedClipName;
+				if (selectedMatch || lockedMatch || (keepQuest && isQuest(child))) {
 					if (g_blipHolder.Invoke("addChild", nullptr, &child, 1)) {
-						if (lockedMatch)
-							lockedShown = true;
+						if (selectedMatch)
+							selectedShown = true;
 						REX::INFO("[blip] kept '{}'{}", childName,
-							lockedMatch ? " (locked body)" : " (quest target)");
+							selectedMatch ? (lockedMatch ? " (locked body)" : " (panel highlight)") :
+							lockedMatch   ? " (locked body)" :
+							                " (quest target)");
 					}
 				}
 			}
@@ -4129,9 +4148,11 @@ namespace
 					!(child.IsObject() || child.IsDisplayObject()))
 					continue;
 				const std::string childName = readName(child);
-				const bool        lockedMatch = wantLocked && childName == lockedClipName;
-				if (lockedMatch) {
-					lockedShown = true;
+				const bool selectedMatch = !selectedClipName.empty() && childName == selectedClipName;
+				const bool lockedMatch = !lockedClipName.empty() && childName == lockedClipName;
+				if (selectedMatch || lockedMatch) {
+					if (selectedMatch)
+						selectedShown = true;
 				} else if (!(keepQuest && isQuest(child))) {
 					container.Invoke("addChild", nullptr, &child, 1);
 					REX::INFO("[blip] returned '{}'", childName);
@@ -4146,7 +4167,7 @@ namespace
 			return false;
 		}
 
-		return lockedShown;
+		return selectedShown;
 	}
 
 	// Borrow a TextFormat from a field the HUD already owns. A TextField built at
