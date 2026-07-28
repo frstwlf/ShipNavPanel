@@ -4562,6 +4562,68 @@ namespace
 			       quest.GetBoolean();
 		};
 
+		// The reticle and the selection's/lock's ON-screen icons are resolved
+		// BEFORE the keep passes, because visibility there decides the blips'
+		// fate: a body whose on-screen icon is visible gets its ring blip
+		// culled exactly as vanilla culls a planet's (v0.8.13, the tester's
+		// parity call - the census proved vanilla itself does NOT cull it for
+		// stations, whose combat-values onScreen stays false, so blip and
+		// icon coexist in vanilla).
+		//
+		// Identity is the INSTANCE name, which vanilla rewrites for the
+		// icon's current target every refresh. The census killed text
+		// verification: a genuine undiscovered station's icon showed
+		// text='Starstation' - the masked generic - against feed name 'Deimos
+		// Staryard'. The one clip that skips the instance rename is the info
+		// target's edge-snapped paired indicator, and ITS text always names
+		// the info target - so that exact signature is the only rejection.
+		RE::Scaleform::GFx::Value reticle;
+		const bool haveReticle =
+			(a_selectedID != 0 || a_lockedID != 0) &&
+			root->GetVariable(&reticle, (base + ".Reticle_mc").c_str()) &&
+			(reticle.IsObject() || reticle.IsDisplayObject());
+
+		const auto iconIs = [&](RE::Scaleform::GFx::Value& a_icon, const std::string& a_name) {
+			if (a_infoTargetName.empty() || a_name == a_infoTargetName)
+				return true;
+			RE::Scaleform::GFx::Value nameField, text;
+			if (a_icon.GetMember("Name_tf", &nameField) &&
+				(nameField.IsObject() || nameField.IsDisplayObject()) &&
+				nameField.GetMember("text", &text) && text.IsString() &&
+				a_infoTargetName == text.GetString())
+				return false;  // the paired indicator wearing a stale name
+			return true;
+		};
+		const auto findIcon = [&](const std::string& a_name, RE::Scaleform::GFx::Value& a_out) {
+			const std::string         childName = std::string{ "OnScreenIcon: " } + a_name;
+			RE::Scaleform::GFx::Value arg{ childName.c_str() };
+			if (!reticle.Invoke("getChildByName", &a_out, &arg, 1) ||
+				!(a_out.IsObject() || a_out.IsDisplayObject()))
+				return false;
+			return iconIs(a_out, a_name);
+		};
+		const auto isVisible = [](RE::Scaleform::GFx::Value& a_icon) {
+			RE::Scaleform::GFx::Value vis;
+			return a_icon.GetMember("visible", &vis) && vis.IsBoolean() && vis.GetBoolean();
+		};
+
+		RE::Scaleform::GFx::Value selIcon;
+		bool                      selFound = false;
+		bool                      selVisible = false;
+		bool                      lockIconVisible = false;
+		if (haveReticle && a_selectedID != 0 && !a_selectedName.empty() &&
+			findIcon(a_selectedName, selIcon)) {
+			selFound = true;
+			selVisible = isVisible(selIcon);
+		}
+		if (a_lockedID != 0 && a_lockedID == a_selectedID) {
+			lockIconVisible = selVisible;
+		} else if (haveReticle && a_lockedID != 0 && !a_lockedName.empty()) {
+			RE::Scaleform::GFx::Value lockIcon;
+			if (findIcon(a_lockedName, lockIcon))
+				lockIconVisible = isVisible(lockIcon);
+		}
+
 		// Pass 1: the container. Keepers move into the holder; everything else
 		// stays hidden with its parent. Descending index, because a move
 		// reindexes the children above the removed slot.
@@ -4586,8 +4648,13 @@ namespace
 					static_cast<std::uint32_t>(AsNumber(type)) == kTargetTypeShip)
 					sawShipType = true;
 
-				const bool selectedMatch = !selectedClipName.empty() && childName == selectedClipName;
-				const bool lockedMatch = !lockedClipName.empty() && childName == lockedClipName;
+				// A body whose on-screen icon is visible does not get a ring
+				// blip on top - the icon marks it, cull the blip like a
+				// planet's.
+				const bool selectedMatch = !selectedClipName.empty() &&
+				                           childName == selectedClipName && !selVisible;
+				const bool lockedMatch = !lockedClipName.empty() &&
+				                         childName == lockedClipName && !lockIconVisible;
 				if (selectedMatch || lockedMatch || (keepQuest && isQuest(child))) {
 					if (g_blipHolder.Invoke("addChild", nullptr, &child, 1)) {
 						if (selectedMatch)
@@ -4615,8 +4682,10 @@ namespace
 				const std::string childName = readName(child);
 				if (childName.rfind(kOffScreenIconPrefix, 0) != 0)
 					continue;  // the faux blip and other mod-owned children stay
-				const bool selectedMatch = !selectedClipName.empty() && childName == selectedClipName;
-				const bool lockedMatch = !lockedClipName.empty() && childName == lockedClipName;
+				const bool selectedMatch = !selectedClipName.empty() &&
+				                           childName == selectedClipName && !selVisible;
+				const bool lockedMatch = !lockedClipName.empty() &&
+				                         childName == lockedClipName && !lockIconVisible;
 				if (selectedMatch || lockedMatch) {
 					if (selectedMatch)
 						selectedShown = true;
@@ -4648,45 +4717,6 @@ namespace
 		// from the CURRENT target every refresh.
 		bool onScreenCovered = false;
 		{
-			RE::Scaleform::GFx::Value reticle;
-			const bool haveSelection = a_selectedID != 0 && !a_selectedName.empty();
-			const bool haveReticle =
-				haveSelection &&
-				root->GetVariable(&reticle, (base + ".Reticle_mc").c_str()) &&
-				(reticle.IsObject() || reticle.IsDisplayObject());
-
-			// Identity check for an on-screen icon. The instance name is
-			// rewritten for the icon's CURRENT target every refresh, but one
-			// revival path - the info target's edge-snapped indicator - never
-			// renames, so a DISPLAYED name must agree with it. UNDISCOVERED
-			// markers however hide Name_mc, and TryUpdateName only writes the
-			// text while it is visible - so with the name display off, the
-			// stale text is evidence of nothing and the instance name stands
-			// (v0.8.11, the tester's undiscovered-station catch). The edge
-			// indicator always shows its name, so the spoof case it guards
-			// stays guarded.
-			const auto iconIs = [](RE::Scaleform::GFx::Value& a_icon, const std::string& a_name) {
-				RE::Scaleform::GFx::Value nameMc, shown;
-				if (a_icon.GetMember("Name_mc", &nameMc) &&
-					(nameMc.IsObject() || nameMc.IsDisplayObject()) &&
-					nameMc.GetMember("visible", &shown) && shown.IsBoolean() &&
-					!shown.GetBoolean())
-					return true;  // name display off - the instance name is the identity
-				RE::Scaleform::GFx::Value nameField, text;
-				return a_icon.GetMember("Name_tf", &nameField) &&
-				       (nameField.IsObject() || nameField.IsDisplayObject()) &&
-				       nameField.GetMember("text", &text) && text.IsString() &&
-				       a_name == text.GetString();
-			};
-			const auto findIcon = [&reticle, &iconIs](const std::string& a_name,
-									  RE::Scaleform::GFx::Value& a_out) {
-				const std::string childName = std::string{ "OnScreenIcon: " } + a_name;
-				RE::Scaleform::GFx::Value arg{ childName.c_str() };
-				if (!reticle.Invoke("getChildByName", &a_out, &arg, 1) ||
-					!(a_out.IsObject() || a_out.IsDisplayObject()))
-					return false;
-				return iconIs(a_out, a_name);
-			};
 			struct Rect
 			{
 				double x{ 0.0 }, y{ 0.0 }, w{ 0.0 }, h{ 0.0 };
@@ -4704,15 +4734,8 @@ namespace
 				return a_out.w > 0.0 && a_out.h > 0.0;
 			};
 
-			RE::Scaleform::GFx::Value selIcon;
-			bool                      selFound = false;
-			bool                      selVisible = false;
-			if (haveReticle && findIcon(a_selectedName, selIcon)) {
-				selFound = true;
-				RE::Scaleform::GFx::Value vis;
-				selVisible = selIcon.GetMember("visible", &vis) && vis.IsBoolean() &&
-				             vis.GetBoolean();
-			}
+			// selIcon / selFound / selVisible were resolved before the keep
+			// passes - visibility there is what culls the ring blip.
 
 			// Diagnostic, once per selection: when the selection has neither a
 			// kept blip nor a findable on-screen icon, dump what on-screen

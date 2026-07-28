@@ -367,6 +367,21 @@ selection's icon hidden until vanilla's next overlap pass, so "covered"
 counts `fadedBlocker` for that tick and the mod's marker does not flash into
 the gap.
 
+**v0.8.13 — the census's two verdicts.** Its first firing settled the
+undiscovered-station case with evidence: the icon EXISTS and is visible
+(`bAllowedOnScreen` guessed wrong), instance-named with the real feed name,
+but displaying `text='Starstation'` — undiscovered POIs show a masked
+generic, so **displayed text is not identity**. Identity is now the
+instance name (vanilla rewrites it for the icon's current target every
+refresh); the sole rejection is the info target's edge-snapped paired
+indicator — the only clip that skips the rename — recognisable because its
+text always names the info target. Second verdict: blip and icon **coexist
+in vanilla** for stations (`RefreshOffScreenIcon` gates on combat-values
+`onScreen`, which stays false for them), so the doubled marker was vanilla
+behaviour — and the keep passes now cull a body's ring blip while its
+on-screen icon is visible, resolved before the passes run: stations get the
+same blip-to-icon handover planets get.
+
 **v0.8.12 — `bAllowedOnScreen`, and the faux marker goes POI-native.** The
 v0.8.11 identity fix did not change the tester's undiscovered-station
 result, and the reason is one gate earlier: **`RefreshOnScreenIcon` runs

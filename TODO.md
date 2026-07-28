@@ -55,6 +55,21 @@ And a **once-per-selection `[blip-dbg]` census** dumps every on-screen icon
 a kept blip nor an accepted icon, so the next session's log PROVES what
 vanilla was showing instead of feeding a third theory.
 
+**The census delivered on its first flight (v0.8.12 session).** Two proven
+facts: (1) the undiscovered station DOES get an on-screen icon —
+`bAllowedOnScreen` was a wrong guess too — instance-named with the real
+feed name but displaying **`text='Starstation'`, the masked generic**, so
+text-vs-feed-name verification rejects genuine icons; (2) **vanilla itself
+never culls a station's ring blip in view** — the off-screen gate runs on
+combat-values `onScreen`, which stays false for stations, so blip and icon
+coexist in vanilla (the tester's doubled marker). v0.8.13 answers both:
+identity is now the **instance name** (rewritten per refresh for the icon's
+current target), with exactly one rejection — the info-target's paired
+edge indicator, the only never-renamed clip, whose text always names the
+info target; and the keep passes now **cull a body's ring blip while its
+on-screen icon is visible** (resolved before the passes), giving stations
+the same blip-to-icon handover planets get.
+
 **v0.8.7 passed its session on 2026-07-28: all four states of the hiding
 model work as intended** (idle cruise vanilla, panel-open cull with
 highlight+lock kept, locked-only after closing, full restore on clearing). The tester's case: a locked station's marker
