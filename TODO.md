@@ -8,14 +8,33 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.7.0 — the Phase 2 panel works in game.** In cruise the scanner key opens a
+**v0.7.1 — the Phase 2 panel works in game.** In cruise the scanner key opens a
 list of the system's bodies; the mouse wheel moves the highlight and the arrow
-previews it; R locks the highlighted body onto the HUD, or clears it if it is
+previews it; **C** locks the highlighted body onto the HUD, or clears it if it is
 already locked. Closing without confirming changes nothing. Outside cruise the
 mod is idle and the scanner key keeps its vanilla job.
 
-Confirmed in game on v0.3.0 ("works exactly as advertised"); v0.3.1 swapped the
-confirm key and added the control hint, and its hint row is not yet eyeballed.
+Confirmed in game through v0.7.0: the panel, nesting, the whole-system list,
+localised names, gas-giant icons and settlement detection all work. Not yet
+eyeballed: the v0.7.1 skyline glyph and the C rebind.
+
+> **"The game ignores this key in cruise" is not the same as "this key is
+> free".** `XButton` (R) was the confirm key from v0.3.1 to v0.7.0 and it passed
+> every test, because it does nothing while merely *flying*. It opens the planet
+> map once a target is **selected** — which is the state the panel exists to put
+> you in, so the collision was with the mod's own happy path and only showed up
+> in ordinary play. **Test a candidate key with a target locked, not in an empty
+> sky.**
+>
+> The replacement, C, then turned up the deeper version of the same trap:
+> **one physical key carries several user events, and a press and its own
+> release can report different names.** Phase 0 logged exactly that — C pressed
+> as `ExitShip`, released as `StarbornPower` — and the panel acts on the press.
+> Binding the setting to `StarbornPower` alone would have produced a key that
+> was bound, documented, hinted and silently dead. `sConfirmEvent` is therefore
+> a comma-separated **list**: name every event your key can report, and any of
+> them confirms. An unmatched press with the panel open now logs its own name,
+> once each, so the next person answers this from one line instead of a session.
 
 > **v0.2.0 was inert and nobody had run it.** Packaging flipped the recon
 > defaults off, and two pieces of load-bearing machinery were sitting behind
@@ -74,13 +93,21 @@ and subscription whenever the movie-created callback fires, and drop stale
       confirmed working. New: the pointer is a diamond moved around the reticle
       circle rather than a rotated arrow, and the list now includes every body
       in the system (dash for distance on ones the HUD is not tracking).
-- [ ] **Confirm the v0.7.0 settlement icons in game.** The join is verified
-      against the file offline (below), but the C++ that reads it has never
-      run. The check is one log line — `[bodies] N locations, 47 settlements
-      (2 reached no body), 17 settled bodies: …` — and the names on it should
-      match the seventeen listed below. Note the cache format changed, so
-      `ShipNavPanelBodies.txt` rebuilds on first launch (a few seconds, on a
-      background thread) rather than being read.
+- [x] **Settlement icons — confirmed in game on v0.7.0.** The seventeen bodies
+      are marked and the icons appear.
+- [ ] **Eyeball the v0.7.1 skyline glyph and the C rebind.** v0.7.0 drew only
+      the ground slab: `poly` closes each shape with `endFill`, and
+      `settlement()` called `beginFill` once up front, so the three towers came
+      out unfilled. Every shape now opens its own fill — the same thing
+      `ringedGiant` was already doing, which is why only the new glyph was
+      wrong. **Any new drawn glyph must fill per shape.**
+
+      Deimos, Suvorov, Deepala and Dalvik are marked for orbital stations (the
+      staryard, The Key, The Clinic, Stroud-Eklund) rather than for anything on
+      the surface — Deimos is far too small to land on. That is the game's own
+      data and it is arguably the more useful reading: the mark means *there is
+      somewhere to go here*, not *there is a city down there*. Worth saying that
+      way on the mod page rather than calling it a settlement icon.
 These three come before release.
 
 - [ ] **1. Icons — body class DONE in v0.6.0, settlements DONE in v0.7.0; POI
@@ -232,6 +259,12 @@ Later, and not blocking release:
 - [ ] **Discard `build/packages/ShipNavPanel-0.2.0.zip`** — that archive is the
       inert build described above. Never hand it to anyone; re-package from
       0.2.1 or later, and only after the in-game test above has actually passed.
+- [ ] **Rewrite `README.md` — it is still the Phase 0 recon description** and
+      is now wrong in every particular that matters: it says the repo "changes
+      nothing in game", that the list is navigated "with W/S" and confirmed
+      "with the target key". W/S was ruled out in v0.2.1 and the target key
+      still cycles targets. It is the front door of the repo, so it cannot go
+      public like this.
 - [ ] Flip `frstwlf/ShipNavPanel` public — **GPL obligation** once a DLL is
       distributed (CommonLibSF is GPL-3.0-or-later).
 - [ ] Scan history first for `C:\Users\<you>\...` paths and log excerpts; deleting
@@ -266,6 +299,21 @@ The one real hazard of holding an id is **FF-prefixed runtime forms** — ships
 and spawned POIs, whose ids the engine can recycle. A lock on one is dropped
 after 60 seconds out of the feed (v0.4.4) so it cannot silently follow whatever
 inherits the number. Static bodies are unaffected.
+
+## Controls
+
+| key | user event(s) | what it does |
+|---|---|---|
+| scanner | `SHMonocle` | open / close the panel |
+| mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (spliced away from the camera while open) |
+| **C** | `StarbornPower`, `ExitShip` | lock the highlighted body, or clear it if already locked |
+
+`sConfirmEvent` is a comma-separated list of user-event **names**, never id
+codes — the ids in `PHASE0-FINDINGS.md` are one tester's own bindings, and the
+same id carries different names in different contexts. Confirmed free in cruise
+besides the above: `Quickkey2`, `Quickkey3`. Confirmed NOT free: `SelectTarget`
+(E, still cycles targets), `RepairShip` (4), and `XButton` (R, which opens the
+planet map once a target is selected). W/S is permanently out.
 
 ## Settled — do not re-derive
 
@@ -393,6 +441,11 @@ Each of these cost real time; the reasoning is in the findings docs.
     `BT_ASTEROID_BELT`) would have answered this, but only with the map open.
     Extracted SWFs live in `M:\Starfield\Extracted\interface\` (CWS = zlib from
     byte 8; PowerShell `DeflateStream` after skipping the 2-byte zlib header).
+- **`endFill` ends the run, so every drawn shape needs its own `beginFill`.**
+  One fill up front draws the first shape and silently leaves the rest
+  unfilled — v0.7.0's settlement glyph shipped as a bare ground line with three
+  invisible towers above it. `ringedGiant` had it right from the start, which is
+  the only reason the giants were unaffected.
 - **A borrowed `TextFormat` carries the DONOR's alignment.** The donor is the
   HUD's centred lock-on caption, so any field using it is centred until `align`
   is set explicitly. Cost one build: the panel shipped with centred names.

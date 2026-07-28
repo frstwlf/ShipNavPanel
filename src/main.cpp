@@ -99,15 +99,27 @@ namespace
 	// The list panel, and the key that locks the highlighted body or clears it
 	// again. The confirm key is a NAME, matched against the user event, so it
 	// follows a rebind - never write an id code here.
-	REX::TIniSetting<bool>        bPanel{ "Panel", "bPanel", true };
-	REX::TIniSetting<std::string> sConfirmEvent{ "Panel", "sConfirmEvent", "XButton" };
+	REX::TIniSetting<bool> bPanel{ "Panel", "bPanel", true };
+
+	// A comma-separated LIST of user-event names - see MatchesConfirmEvent for
+	// why it cannot be a single name. Both of these are C on the bindings this
+	// was built against, and the key reports one or the other depending on when
+	// it is read.
+	//
+	// They replaced `XButton` (R) in v0.7.1, and the reason is worth keeping:
+	// **"the game ignores this key in cruise" is not the same as "this key is
+	// free"**. R does nothing while merely flying, which is how it passed, but
+	// it opens the planet map once a target is SELECTED - a state the panel
+	// exists to put you in, so the collision was with the mod's own happy path.
+	// Any candidate has to be tried with a target locked, not just in an empty
+	// sky.
+	REX::TIniSetting<std::string> sConfirmEvent{ "Panel", "sConfirmEvent", "StarbornPower,ExitShip" };
 
 	// The control hint along the bottom. The label is a separate setting because
 	// the mod knows the confirm key's user-event NAME, not which physical key it
-	// is bound to - `XButton` happens to be R on the bindings this was built
-	// against, and anyone who has moved it needs to say so here.
+	// is bound to, and anyone who has moved it needs to say so here.
 	REX::TIniSetting<bool>        bPanelHints{ "Panel", "bPanelHints", true };
-	REX::TIniSetting<std::string> sConfirmKeyLabel{ "Panel", "sConfirmKeyLabel", "R" };
+	REX::TIniSetting<std::string> sConfirmKeyLabel{ "Panel", "sConfirmKeyLabel", "C" };
 
 	// Stations and landing sites in the list, below the bodies. Ships are off by
 	// default: in traffic that would be a list of everything flying past rather
@@ -1604,6 +1616,46 @@ namespace
 								  std::strcmp(a_userEvent, kThrottleDownEvent) == 0);
 	}
 
+	// `sConfirmEvent` is a LIST of user-event names, any of which confirms.
+	//
+	// It has to be, because ONE PHYSICAL KEY CARRIES SEVERAL USER EVENTS and
+	// which name an event reports is resolved against the active context. Phase
+	// 0 logged a press arriving as `ExitShip` and its own release arriving as
+	// `StarbornPower` - the same C key, one keystroke, two names. The panel acts
+	// on the press, so naming only the release would give a key that is bound,
+	// documented, hinted, and silently dead.
+	//
+	// So "bind it to C" is spelled as every event that C can report. Nothing
+	// here needs the player to know which of them the engine will pick.
+	bool MatchesConfirmEvent(const char* a_userEvent)
+	{
+		if (!a_userEvent || !a_userEvent[0])
+			return false;
+
+		// Held by value: GetValue() returns a copy, so a view over a temporary
+		// would dangle before it was ever compared.
+		const std::string configured = sConfirmEvent.GetValue();
+
+		std::string_view rest{ configured };
+		while (!rest.empty()) {
+			const auto comma = rest.find(',');
+			auto       name = rest.substr(0, comma);
+			rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+
+			constexpr std::string_view kSpace = " \t";
+			if (const auto from = name.find_first_not_of(kSpace); from != std::string_view::npos)
+				name.remove_prefix(from);
+			else
+				continue;  // all spaces
+			if (const auto to = name.find_last_not_of(kSpace); to != std::string_view::npos)
+				name = name.substr(0, to + 1);
+
+			if (name == a_userEvent)
+				return true;
+		}
+		return false;
+	}
+
 	// The mouse wheel, which the cruise survey found arriving undisabled. It
 	// drives the camera's point of view rather than anything about flight.
 	constexpr const char* kWheelUpEvent = "ZoomIn";
@@ -2043,8 +2095,24 @@ namespace
 					} else if (std::strcmp(userEvent, kWheelDownEvent) == 0) {
 						MoveHighlight(1);
 						REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
-					} else if (sConfirmEvent.GetValue() == userEvent) {
+					} else if (MatchesConfirmEvent(userEvent)) {
 						ConfirmHighlight();
+					} else {
+						// Everything else pressed while the panel is open, named
+						// once each and capped. This is the answer to "I bound my
+						// key and nothing happens" - the log says what the key
+						// ACTUALLY reports, which is not always what the bindings
+						// menu calls it, and can differ between a press and its
+						// own release. Without it that question costs a session.
+						static std::mutex                    s_seenMutex;
+						static std::unordered_set<std::string> s_seen;
+
+						std::lock_guard lock{ s_seenMutex };
+						if (s_seen.size() < 12 && s_seen.emplace(userEvent).second)
+							REX::INFO("[panel] '{}' pressed with the panel open, and it is not one of the "
+									  "panel's controls - if that is the key you meant, add the name to "
+									  "sConfirmEvent",
+								userEvent);
 					}
 				}
 			}
@@ -3743,16 +3811,24 @@ namespace
 		// the borrowed font carries only the glyphs its author embedded. The
 		// clip's origin is the middle of the row, and y grows downwards, so the
 		// ground sits below zero and the towers rise above it.
-		const auto rect = [&](double a_left, double a_top, double a_right, double a_bottom) {
-			poly({ { a_left, a_top }, { a_right, a_top }, { a_right, a_bottom }, { a_left, a_bottom } });
-		};
 		const auto settlement = [&] {
-			fill(0x66CCFF, 0.95);
 			constexpr double kGround = 3.0;
-			rect(-6.0, kGround, 6.0, kGround + 1.0);
-			rect(-5.5, kGround - 4.0, -2.5, kGround);
-			rect(-1.5, kGround - 7.0, 1.5, kGround);
-			rect(2.5, kGround - 5.0, 5.5, kGround);
+
+			// EVERY shape opens its own fill. `poly` closes with endFill, which
+			// ends the run - so one beginFill up front draws the first shape and
+			// silently leaves the rest unfilled. That is exactly what v0.7.0
+			// shipped: a bare ground line with three invisible towers above it.
+			// `ringedGiant` gets this right by filling before each of its two
+			// shapes, which is why only the new glyph was wrong.
+			const auto slab = [&](double a_left, double a_top, double a_right, double a_bottom) {
+				fill(0x66CCFF, 0.95);  // the panel's own marker colour
+				poly({ { a_left, a_top }, { a_right, a_top }, { a_right, a_bottom }, { a_left, a_bottom } });
+			};
+
+			slab(-6.0, kGround, 6.0, kGround + 1.0);
+			slab(-5.5, kGround - 4.0, -2.5, kGround);
+			slab(-1.5, kGround - 7.0, 1.5, kGround);
+			slab(2.5, kGround - 5.0, 5.5, kGround);
 		};
 
 		// Settlement wins over the giant glyph, and the precedence is stated
