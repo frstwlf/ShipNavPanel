@@ -387,6 +387,34 @@ The same session also caught the whole-system list silently dead in Sol —
 strike for that trap; the settled list in TODO.md now says presence is a
 separate bool, never the value.
 
+## 10. v0.8.7 — the hiding follows intent, not the flight mode
+
+The tester's redesign once the Sol fix let them fly the whole model: hiding
+every off-screen blip for the entire cruise was the original pitch, but in
+practice the decluttering is only wanted while the mod is actually being
+used. The hide condition moved from `cruising` to `cruising && (panel open
+|| lock exists)`:
+
+- **Idle cruise** (panel closed, nothing locked): the vanilla HUD is
+  completely untouched, and the cheap gate returns before a single VM call —
+  the mod is passive.
+- **Panel open**: everything hides except the highlighted body's blip and
+  the locked one — browsing happens against a quiet ring.
+- **Locked, panel closed**: only the locked blip remains. Clearing the lock
+  restores the lot.
+
+Everything downstream — the keep passes, the coverage logic, the faux
+marker, the overlap fade, the tripwire — was already driven by the selection
+and needed no change; only the gate moved.
+
+Same version, the tester's other call: **moons list only once the HUD
+tracks them.** A dash-row moon cannot be pointed at and only fills in right
+beside its parent — by which point the feed offers it anyway — so
+`AppendSystemBodies` now appends planets only. The one exception is the
+LOCKED moon, listed wherever you are: a lock is what keeps the blips hidden,
+so a lock that could not be re-selected and cleared would hide them
+forever.
+
 ### Failure modes accepted
 
 - Plugin dies mid-hide → blips return on the next HUD movie rebuild (map

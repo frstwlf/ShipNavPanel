@@ -3274,6 +3274,20 @@ namespace
 			if (entry == g_bodyTable.end() || !entry->second.authored || entry->second.name.empty())
 				continue;  // generated bodies are the HUD's business, not ours
 
+			// Moons list only once the HUD actually tracks them (v0.8.7, the
+			// tester's call): a dash-row moon cannot be pointed at, and it
+			// only fills in right next to its parent - by which point the
+			// feed offers it anyway - so listing it from across the system
+			// was noise. Planets keep their dash rows: locking one across
+			// the system and flying at it is the whole point of the list.
+			// The one exception is the LOCKED moon: its row stays listed
+			// wherever you are, or the lock could not be cleared - and a
+			// lock is what keeps the blips hidden, so an unclearable one
+			// would hide them forever.
+			if (entry->second.galaxy.parentPlanetID != 0 &&
+				formID != g_lockedID.load(std::memory_order_acquire))
+				continue;
+
 			const auto already = std::find_if(a_rows.begin(), a_rows.end(),
 				[&](const Candidate& a_row) { return a_row.id == formID; });
 			if (already != a_rows.end())
@@ -4302,11 +4316,17 @@ namespace
 		if (!WorldSettled())
 			return false;
 
-		// Cheap gate: outside cruise with nothing hidden there is nothing to do,
-		// and this runs every high-frequency tick.
-		if (!g_inCruise.load(std::memory_order_acquire) &&
-			!g_blipsHidden.load(std::memory_order_acquire))
-			return false;
+		// Cheap gates, in order - this runs every high-frequency tick, and in
+		// the v0.8.7 model idle cruising (no panel, no lock, nothing to undo)
+		// must cost nothing: the vanilla HUD is genuinely untouched then.
+		const bool stateDirty = g_blipsHidden.load(std::memory_order_acquire) ||
+		                        g_iconsFaded.load(std::memory_order_acquire);
+		if (!stateDirty) {
+			if (!g_inCruise.load(std::memory_order_acquire))
+				return false;  // out of cruise, nothing to undo
+			if (!g_panelOpen.load(std::memory_order_acquire) && a_lockedID == 0)
+				return false;  // cruising idle - stay entirely hands-off
+		}
 
 		const auto ui = RE::UI::GetSingleton();
 		if (!ui)
@@ -4347,7 +4367,15 @@ namespace
 
 		using V = RE::Scaleform::GFx::Value;
 
-		if (!cruising) {
+		// The v0.8.7 model, the tester's design: cruise alone leaves the
+		// vanilla HUD untouched. The blips hide only while the mod has a
+		// stake - the panel is up (its hovered body and the lock stay
+		// visible), or a lock exists (only it stays). Clear the lock with the
+		// panel closed and everything is vanilla again: the decluttering
+		// follows intent instead of the flight mode.
+		const bool wantHidden = cruising &&
+		                        (g_panelOpen.load(std::memory_order_acquire) || a_lockedID != 0);
+		if (!wantHidden) {
 			RestoreFadedIcons(root, base);
 			RestoreVanillaBlips(container);
 			return false;
@@ -4359,7 +4387,7 @@ namespace
 		// there is no per-frame fight to lose.
 		container.SetMember("visible", V{ false });
 		if (!g_blipsHidden.exchange(true, std::memory_order_acq_rel))
-			REX::INFO("[blip] off-screen blips hidden for cruise");
+			REX::INFO("[blip] off-screen blips hidden - panel open or target locked");
 
 		if (WorldSettled()) {
 			TryCreateBlipHolder(root, base, container);

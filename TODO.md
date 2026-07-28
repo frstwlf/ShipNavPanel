@@ -8,21 +8,23 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.8.6 — two fixes from the v0.8.5 session; built, not yet run.** First:
-the overlap fade now covers BOTH directions. v0.8.5 only faded planets, so
-with Earth selected, the nearby Staryard still sat on top — legitimately, by
-vanilla's sort: anything *nearer* than a planet outranks it (the 1 LS planet
-cap only beats FAR non-planets). The pass now fades whatever on-screen icon
-crowds the selection, any type, by enumerating the reticle's icon children —
-with quest-marked icons and the E-target's icon still exempt (the info
-target's identity is now captured from the low feed's `iInfoTargetIndex`,
-resolved through the index-aligned candidates). Second: **the whole-system
-list was silently dead in Sol** — `AppendSystemBodies` gated on
-`systemID != 0`, and Sol IS system 0. THIRD strike for that trap (settled
-list updated). Luna, Phobos and Deimos now list as dash rows like any other
-untracked body, which also unblocks the Luna-vs-Earth overlap test.
+**v0.8.7 — the hiding follows intent, not the flight mode; built, not yet
+run.** The tester's redesign after flying v0.8.6: plain cruising now leaves
+the vanilla HUD completely untouched (and costs the mod nothing per tick).
+The blips hide only while the mod has a stake — panel OPEN (the highlighted
+body and the lock stay visible) or a target LOCKED with the panel closed
+(only it stays). Clear the lock and everything is vanilla again. Same
+version: MOONS list only once the HUD actually tracks them — a dash-row
+moon cannot be pointed at and only fills in beside its parent, so
+whole-system listing is now planets-only. The locked moon is the one
+exception (always listed): a lock is what keeps blips hidden, so an
+unclearable lock would hide them forever.
 
-**v0.8.5's forward direction passed in game (2026-07-28): Earth faded for
+Confirmed in the v0.8.6 session (2026-07-28): the Sol system-0 fix (Luna
+listed from afar — its lock correctly showed no marker, being a dash row,
+which prompted the moons redesign above).
+
+**v0.8.5's forward direction passed earlier the same day: Earth faded for
 the locked Staryard, marker and restore both correct.** The tester's case: a locked station's marker
 vanished whenever Earth slid into view — vanilla sorts overlapping on-screen
 icons by priority (`UpdateBSV`: info target −2, cruise-autopilot −1, quest 0,
@@ -154,17 +156,19 @@ and subscription whenever the movie-created callback fires, and drop stale
 ## Open work
 
 - [ ] **★ Remaining in-game checks** — checklist in
-      [PHASE3-BLIP-PLAN.md §7–9](PHASE3-BLIP-PLAN.md). Confirmed through
-      v0.8.5-forward: blips hidden, locked/highlight blip reappearing, faux
-      vanilla-art marker correct, label gone, HUD clean, load stable, Earth
-      fading for a locked station. New to eyeball — **v0.8.6**: the REVERSE
+      [PHASE3-BLIP-PLAN.md §7–10](PHASE3-BLIP-PLAN.md). New to eyeball —
+      **v0.8.7's state machine**: idle cruise = fully vanilla HUD; open the
+      panel = blips vanish except the highlight (and lock); lock and close =
+      only the locked blip; clear the lock = everything returns. **Moon
+      listing**: from afar only planets have dash rows; moons appear as you
+      close on their parent; a locked moon's row survives flying away (and
+      the "..." shows while it waits). Still open from v0.8.6: the REVERSE
       overlap (lock Earth with the Staryard near — the station's marker
-      should now fade and Earth's show), **Sol's moons listing as dash rows**
-      (Luna, Phobos, Deimos in the panel from anywhere in-system), and with
-      them the moon-behind-parent overlap (lock Luna with Earth crowding
-      it). Still open from before: the plain **on-screen yield**, **quest
-      blips** surviving the cull, the **interdiction tripwire**, and the
-      `[blip]` census transforms being zeros and ones.
+      should fade), and the moon-behind-parent overlap once a moon is
+      tracked (lock Luna with Earth crowding it). Still open from before:
+      the plain **on-screen yield**, **quest blips** surviving the cull, the
+      **interdiction tripwire**, and the `[blip]` census transforms being
+      zeros and ones.
 
 - [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
       confirmed working. New: the pointer is a diamond moved around the reticle
