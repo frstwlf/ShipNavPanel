@@ -1676,6 +1676,29 @@ namespace
 	// no timer doing the guarding. Reset with the movie.
 	std::atomic<std::uint32_t> g_lockSeenInFeed{ 0 };
 
+	// The game's own generic labels for undiscovered markers ("Starstation",
+	// "Asteroids", ...), learned at runtime per POI kind: when an undiscovered
+	// candidate's on-screen icon is in view, vanilla has written the masked
+	// generic into its text field - the one place the string exists outside
+	// the engine. Keyed by (uPoiType << 32) | uPoiCategory; kept for the
+	// session (labels are game-global, not per-movie).
+	std::mutex                                     g_poiLabelMutex;
+	std::unordered_map<std::uint64_t, std::string> g_poiLabels;
+
+	// An undiscovered POI/station candidate whose kind has no learned label
+	// yet - what the learner pass looks for on screen.
+	struct MaskedKind
+	{
+		std::string   name;
+		std::uint32_t poiType{ 0 };
+		std::uint32_t poiCategory{ 0 };
+	};
+
+	inline std::uint64_t PoiKindKey(std::uint32_t a_type, std::uint32_t a_category)
+	{
+		return (static_cast<std::uint64_t>(a_type) << 32) | a_category;
+	}
+
 	// The faux blip: a real OffScreenIcon instance the mod owns, wearing
 	// vanilla's art and driven through the same public methods the reticle
 	// calls. It replaces the drawn diamond for planet and star targets; other
@@ -1735,7 +1758,7 @@ namespace
 	void RefreshCruiseState();
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
-		const std::string& a_infoTargetName);
+		const std::string& a_infoTargetName, const std::vector<MaskedKind>& a_maskedKinds);
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
@@ -3592,6 +3615,7 @@ namespace
 			std::string   infoTargetName;
 			bool          feedAlive = false;
 			bool          lockedInFeed = false;
+			std::vector<MaskedKind> maskedKinds;
 
 			{
 				std::lock_guard lock{ g_candidateMutex };
@@ -3625,6 +3649,13 @@ namespace
 						feedAlive = true;
 						if (row.id == lockedForBlips)
 							lockedInFeed = true;
+						// Undiscovered POI kinds the label learner should
+						// look for on screen; filtered against the learned
+						// set outside this lock.
+						if (!row.discovered && row.havePoi && !row.name.empty() &&
+							(row.type == kTargetTypePOI || row.type == kTargetTypeStation))
+							maskedKinds.push_back(
+								MaskedKind{ row.name, row.poiType, row.poiCategory });
 					}
 				}
 				const auto infoIdx = g_infoTargetIndex.load(std::memory_order_acquire);
@@ -3754,12 +3785,20 @@ namespace
 					s_moonWatchID = 0;
 			}
 
+			// Kinds whose label is already learned need no learner pass.
+			if (!maskedKinds.empty()) {
+				std::lock_guard labels{ g_poiLabelMutex };
+				std::erase_if(maskedKinds, [](const MaskedKind& a_kind) {
+					return g_poiLabels.contains(PoiKindKey(a_kind.poiType, a_kind.poiCategory));
+				});
+			}
+
 			// The vanilla blip pass: hides the off-screen container in cruise
 			// and lets the selected and locked bodies' own blips back through.
 			// True means vanilla covers the selected body this tick - kept
 			// off-screen blip or visible on-screen icon.
 			const bool selectedCovered = ManageVanillaBlips(selectedID, selectedBlipName,
-				lockedForBlips, lockedName, infoTargetName);
+				lockedForBlips, lockedName, infoTargetName, maskedKinds);
 
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
@@ -4455,7 +4494,7 @@ namespace
 	// targeting keep outranking the panel.
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
-		const std::string& a_infoTargetName)
+		const std::string& a_infoTargetName, const std::vector<MaskedKind>& a_maskedKinds)
 	{
 		if (!bHideVanillaBlips.GetValue())
 			return false;
@@ -4592,7 +4631,7 @@ namespace
 		// the info target - so that exact signature is the only rejection.
 		RE::Scaleform::GFx::Value reticle;
 		const bool haveReticle =
-			(a_selectedID != 0 || a_lockedID != 0) &&
+			(a_selectedID != 0 || a_lockedID != 0 || !a_maskedKinds.empty()) &&
 			root->GetVariable(&reticle, (base + ".Reticle_mc").c_str()) &&
 			(reticle.IsObject() || reticle.IsDisplayObject());
 
@@ -4635,6 +4674,55 @@ namespace
 			RE::Scaleform::GFx::Value lockIcon;
 			if (findIcon(a_lockedName, lockIcon))
 				lockIconVisible = isVisible(lockIcon);
+		}
+
+		// Learn the game's own undiscovered labels (v0.8.15, the tester's
+		// ask): vanilla writes the masked generic - "Starstation",
+		// "Asteroids" - into an undiscovered marker's on-screen text field,
+		// the only place the string exists outside the engine. Whenever an
+		// undiscovered candidate of an unlearned kind exists, look its icon
+		// up by name and take the text as that kind's label. Rate-limited: a
+		// missed tick costs nothing but a short wait, and the set empties
+		// itself as kinds get learned.
+		if (haveReticle && !a_maskedKinds.empty()) {
+			using clock = std::chrono::steady_clock;
+			static std::atomic<std::int64_t> s_lastLearnMs{ 0 };
+			const auto                       nowMs =
+				std::chrono::duration_cast<std::chrono::milliseconds>(
+					clock::now().time_since_epoch())
+					.count();
+			// A racing double pass costs one redundant lookup, nothing more.
+			if (nowMs - s_lastLearnMs.load(std::memory_order_acquire) > 2000) {
+				s_lastLearnMs.store(nowMs, std::memory_order_release);
+				for (const auto& kind : a_maskedKinds) {
+					RE::Scaleform::GFx::Value icon;
+					const std::string         childName =
+						std::string{ "OnScreenIcon: " } + kind.name;
+					RE::Scaleform::GFx::Value arg{ childName.c_str() };
+					if (!reticle.Invoke("getChildByName", &icon, &arg, 1) ||
+						!(icon.IsObject() || icon.IsDisplayObject()))
+						continue;
+					RE::Scaleform::GFx::Value nameField, text;
+					if (!icon.GetMember("Name_tf", &nameField) ||
+						!(nameField.IsObject() || nameField.IsDisplayObject()) ||
+						!nameField.GetMember("text", &text) || !text.IsString())
+						continue;
+					const std::string label = text.GetString() ? text.GetString() : "";
+					// The label must be a real string, must not be the feed
+					// name (that would mean the entry is unmasked right now),
+					// and must not be the info target's name (the paired
+					// indicator wearing a stale instance name).
+					if (label.empty() || label == kind.name ||
+						(!a_infoTargetName.empty() && label == a_infoTargetName))
+						continue;
+					{
+						std::lock_guard labels{ g_poiLabelMutex };
+						g_poiLabels[PoiKindKey(kind.poiType, kind.poiCategory)] = label;
+					}
+					REX::INFO("[blip] learned undiscovered label '{}' for POI kind {}/{}",
+						label, kind.poiType, kind.poiCategory);
+				}
+			}
 		}
 
 		// Pass 1: the container. Keepers move into the holder; everything else
@@ -5584,11 +5672,25 @@ namespace
 					const bool  masked = !row.discovered &&
 					                    (row.type == kTargetTypeStation ||
 					                        row.type == kTargetTypePOI);
-					const auto name = std::format("{}{}", mark,
-						masked ? (row.type == kTargetTypeStation ?
-										 sUndiscoveredStationLabel.GetValue() :
-										 sUndiscoveredPoiLabel.GetValue()) :
-								  row.name);
+					std::string display = row.name;
+					if (masked) {
+						// The game's own generic for this POI kind, if the
+						// learner has seen one of its markers; the ini labels
+						// are the fallback until then.
+						display.clear();
+						if (row.havePoi) {
+							std::lock_guard labels{ g_poiLabelMutex };
+							if (const auto hit =
+									g_poiLabels.find(PoiKindKey(row.poiType, row.poiCategory));
+								hit != g_poiLabels.end())
+								display = hit->second;
+						}
+						if (display.empty())
+							display = row.type == kTargetTypeStation ?
+							              sUndiscoveredStationLabel.GetValue() :
+							              sUndiscoveredPoiLabel.GetValue();
+					}
+					const auto name = std::format("{}{}", mark, display);
 					nameField.SetMember("text", V{ name.c_str() });
 					// defaultTextFormat only applies to text present when it was
 					// set, so re-apply after every assignment or the new glyphs

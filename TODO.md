@@ -72,12 +72,22 @@ the same blip-to-icon handover planets get. **The cull passed its session;
 v0.8.14 closes the last leak the same census exposed:** the feed's `name`
 field carries the REAL name for undiscovered markers, so the panel was
 spoiling what the HUD masks. Undiscovered station/POI rows now wear a
-generic label off `bMarkerDiscovered` (defaults `Starstation` / `Unknown`,
-ini-overridable for localised games — no in-game string source was found:
-the SWF text fields are authored empty and the masked text arrives through
-the engine). Discovery republishes the feed and the row unmasks itself.
-All blip matching stays on the real name — vanilla names its clips with
-it, masked or not.
+generic label off `bMarkerDiscovered`. Discovery republishes the feed and
+the row unmasks itself. All blip matching stays on the real name — vanilla
+names its clips with it, masked or not.
+
+**v0.8.14's session showed the labels need to come from the game** — the
+station arrived typed TT_POI (the old "stations arrive as POIs" note), so
+the type-split mislabeled it "Unknown", and the generics are per POI KIND
+("Starstation", "Asteroids"...), which no fixed pair can cover. v0.8.15
+**learns them at runtime**: when an undiscovered candidate of an unlearned
+kind exists, its on-screen icon's text — where vanilla writes the masked
+generic, the only place the string exists outside the engine — is read and
+cached per `(uPoiType, uPoiCategory)`, in whatever language the game runs.
+Learned within ~2 s of a kind's marker being in view; panel rows upgrade
+live; the ini labels demote to first-sight fallbacks. Guards: the text
+must differ from the feed name (else the entry is unmasked right now) and
+from the info target's name (the paired-indicator spoof).
 
 **v0.8.7 passed its session on 2026-07-28: all four states of the hiding
 model work as intended** (idle cruise vanilla, panel-open cull with
