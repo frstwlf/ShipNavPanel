@@ -420,11 +420,19 @@ An EXEMPT icon (E-target or quest) crowding the selection now counts as
 *coverage* — the tester locked the Staryard, E-targeted Earth, and got the
 mod's diamond beside Earth's rightful marker; vanilla deliberately showing
 an outranking marker over the selection means the mod should draw nothing.
-And a locked moon that leaves tracking clears its own lock after ~10 s
-continuously absent from a live feed — the grace period is load-bearing,
-because candidates rebuild empty after every movie teardown and an instant
-clear would eat the lock on every save load. Planets keep lock-and-wait;
-the locked-moon listing exception now effectively serves the grace window.
+And a locked moon that leaves tracking clears its own lock. The tester
+asked why this needed a grace period at all — "no distance means not in the
+feed" — and they were right about the signal: distance-shown and
+feed-presence are the same fact. What the delay guarded was trusting a
+single *reading* of it, since candidates rebuild empty-then-refilling after
+every movie teardown. v0.8.9 sharpened it into an **edge trigger**: only a
+moon *confirmed present* in a live payload since the last teardown
+(`g_lockSeenInFeed`, reset with the movie) can be cleared by absence — a
+load can never eat a lock *by construction*, no timer involved. The
+remaining ~3 s debounce covers only the unverified case of the engine
+momentarily omitting a body from a live payload. Planets keep
+lock-and-wait; the locked-moon listing exception serves the debounce
+window.
 
 ### Failure modes accepted
 

@@ -1650,6 +1650,14 @@ namespace
 	// own targeting outranks the panel.
 	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
+	// The locked body's feed presence, CONFIRMED since the last movie
+	// teardown - the id of the lock that has actually been seen in a live
+	// payload. Moon-lock auto-clear is edge-triggered on this: only a
+	// present-then-absent moon can clear, so the empty-then-refilling
+	// candidate list after a load or map rebuild can never eat a lock, with
+	// no timer doing the guarding. Reset with the movie.
+	std::atomic<std::uint32_t> g_lockSeenInFeed{ 0 };
+
 	// The faux blip: a real OffScreenIcon instance the mod owns, wearing
 	// vanilla's art and driven through the same public methods the reticle
 	// calls. It replaces the drawn diamond for planet and star targets; other
@@ -2614,6 +2622,10 @@ namespace
 			// Any faded on-screen icons went down with the movie too.
 			g_iconsFaded.store(false, std::memory_order_release);
 			g_infoTargetIndex.store(-1, std::memory_order_release);
+
+			// The lock's feed presence must be re-confirmed against the NEW
+			// movie's payloads before absence may clear a moon lock.
+			g_lockSeenInFeed.store(0, std::memory_order_release);
 
 			// The list belonged to the old movie too.
 			g_panelReady.store(false, std::memory_order_release);
@@ -3627,22 +3639,33 @@ namespace
 				}
 			}
 
-			// A locked MOON that leaves tracking range clears itself (v0.8.8,
-			// the tester's call): a moon only fills in beside its parent, so
-			// once the feed drops it the lock would sit as "..." indefinitely
-			// - and in the v0.8.7 model a lock is what keeps the blips
-			// hidden. Planets keep the lock-and-wait behaviour: flying at a
-			// distant dash-row planet is the list's whole point. The grace
-			// period is what makes this safe: candidates rebuild EMPTY after
-			// every movie teardown, so an instant clear would eat the lock on
-			// every save load - the feed must be alive and the moon missing
-			// from it continuously before the lock goes.
+			// A locked MOON that leaves tracking range clears itself (v0.8.8;
+			// v0.8.9 made it edge-triggered on the tester's question): a moon
+			// only fills in beside its parent, so once the feed drops it the
+			// lock would sit as "..." indefinitely - and in the v0.8.7 model
+			// a lock is what keeps the blips hidden. Planets keep the
+			// lock-and-wait behaviour: flying at a distant dash-row planet is
+			// the list's whole point.
+			//
+			// "Absent from the feed" is the same fact the panel's dash shows -
+			// the signal is fine; what needs care is trusting a single
+			// reading of it. Candidates rebuild EMPTY and then refill after
+			// every movie teardown (map, load screen), so absence alone must
+			// never clear anything. Hence the edge trigger: only a moon
+			// CONFIRMED present since the last teardown (g_lockSeenInFeed)
+			// can be cleared by absence - loads cannot eat a lock by
+			// construction, timer not involved. The short debounce that
+			// remains only covers the engine momentarily omitting a body
+			// from a live payload, which is unverified but cheap to survive.
+			if (lockedInFeed)
+				g_lockSeenInFeed.store(lockedForBlips, std::memory_order_release);
 			{
 				using clock = std::chrono::steady_clock;
 				static clock::time_point  s_moonAbsentSince{};
 				static std::uint32_t      s_moonWatchID{ 0 };
 				bool                      watching = false;
-				if (lockedForBlips != 0 && feedAlive && !lockedInFeed) {
+				if (lockedForBlips != 0 && feedAlive && !lockedInFeed &&
+					g_lockSeenInFeed.load(std::memory_order_acquire) == lockedForBlips) {
 					GalaxyData galaxy{};
 					if (ReadGalaxyData(lockedForBlips, galaxy) && galaxy.parentPlanetID != 0) {
 						watching = true;
@@ -3650,8 +3673,9 @@ namespace
 						if (s_moonWatchID != lockedForBlips) {
 							s_moonWatchID = lockedForBlips;
 							s_moonAbsentSince = now;
-						} else if (std::chrono::duration<float>(now - s_moonAbsentSince).count() > 10.0f) {
+						} else if (std::chrono::duration<float>(now - s_moonAbsentSince).count() > 3.0f) {
 							g_lockedID.store(0, std::memory_order_release);
+							g_lockSeenInFeed.store(0, std::memory_order_release);
 							lockedForBlips = 0;
 							lockedName.clear();
 							std::string moonName;

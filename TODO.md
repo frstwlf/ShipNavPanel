@@ -16,12 +16,13 @@ tester's case: Staryard locked, Earth E-targeted — Earth's marker
 (rightfully) stayed on top of the blocked station icon, and the mod added a
 redundant diamond next to it. Now it stays quiet: vanilla is deliberately
 showing that marker over where the selection is. Second: **a locked moon
-that leaves tracking range clears its own lock** after ~10 s continuously
-absent from a live feed (row shows "..." until then, log says why). The
-grace period is load-bearing: candidates rebuild EMPTY after every movie
-teardown, so an instant clear would eat the lock on every save load.
-Planets keep lock-and-wait. The always-list-the-locked-moon exception stays
-for the grace window.
+that leaves tracking range clears its own lock** (row shows "..." until
+then, log says why). v0.8.9, on the tester's question, made it
+**edge-triggered**: only a moon confirmed present in a live payload since
+the last movie teardown can be cleared by absence — a load can never eat a
+lock by construction — and the remaining debounce dropped to ~3 s, covering
+only the unverified engine-hiccup case. Planets keep lock-and-wait. The
+always-list-the-locked-moon exception stays for the debounce window.
 
 **v0.8.7 passed its session on 2026-07-28: all four states of the hiding
 model work as intended** (idle cruise vanilla, panel-open cull with
