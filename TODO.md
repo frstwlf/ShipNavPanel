@@ -8,13 +8,25 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.8.4 — no name text anywhere on the HUD; built, not yet run.** The
-tester's call after v0.8.3 passed: vanilla shows no names on blips, the
-panel row already carries name and distance, and the mod exists to QUIET the
-HUD — so the marker's name/distance label is gone entirely, code and
-setting both (`bLabel` no longer exists). What remains on the HUD in cruise:
-the vanilla blip for the highlighted/locked body, or the mod's vanilla-art
-marker for bodies the game is not blipping. Text lives in the panel.
+**v0.8.5 — the panel selection wins screen-overlap fights against planet
+markers; built, not yet run.** The tester's case: a locked station's marker
+vanished whenever Earth slid into view — vanilla sorts overlapping on-screen
+icons by priority (`UpdateBSV`: info target −2, cruise-autopilot −1, quest 0,
+then distance with PLANETS CAPPED AT ONE LIGHT-SECOND) and hides the losers.
+The sort key is private and recomputed per pass, but the blocker gate reads
+the icon's root **alpha**, which nothing in the SWF writes: fading a crowding
+planet icon to zero hides it AND disqualifies it as a blocker, so vanilla
+itself then shows the selection's named marker — the E-target visual, driven
+by the panel. Rect-tested per tick with vanilla's own
+`GetPositionAdjustedBounds`, planets/moons only, quest and info-target icons
+deliberately still outrank the panel, restores on deselect/separation/exit.
+`bSelectionWinsOverlap` in the ini; mechanism in
+[PHASE3-BLIP-PLAN.md §9](PHASE3-BLIP-PLAN.md).
+
+**v0.8.4 passed its session on 2026-07-28: label gone, HUD clean, all
+working as intended.** No name text anywhere on the HUD — the vanilla blip
+for the highlighted/locked body, or the mod's vanilla-art marker for bodies
+the game is not blipping. Text lives in the panel.
 
 **v0.8.3 passed its session on 2026-07-28: load works, no freeze recurrence,
 and the vanilla-look (faux `OffScreenIcon`) marker shows correctly.** The
@@ -128,16 +140,19 @@ and subscription whenever the movie-created callback fires, and drop stale
 ## Open work
 
 - [ ] **★ Remaining in-game checks** — checklist in
-      [PHASE3-BLIP-PLAN.md §7–8](PHASE3-BLIP-PLAN.md). Confirmed through
-      v0.8.3: blips hidden, locked/highlight blip reappearing, faux
-      vanilla-art marker showing correctly, load with no freeze. Still to
-      eyeball: **v0.8.4's label removal** (nothing but the marker on the
-      HUD); the **on-screen yield** specifically (fly toward the selected
-      body until it enters view — the mod's marker should vanish as the
-      vanilla circle-with-name appears); **quest blips** surviving the cull;
-      the **interdiction tripwire** (ship blips return instantly when combat
-      drops you out of cruise); and the `[blip]` census log's transforms
-      being zeros and ones.
+      [PHASE3-BLIP-PLAN.md §7–9](PHASE3-BLIP-PLAN.md). Confirmed through
+      v0.8.4: blips hidden, locked/highlight blip reappearing, faux
+      vanilla-art marker correct, label gone, HUD clean, load stable. New to
+      eyeball — **v0.8.5, the tester's own scenario**: lock the Nova
+      Galactic Staryard, let Earth slide into view — Earth's marker should
+      fade and the station's named marker stay, then Earth return on
+      deselect or once they separate on screen ("[blip] fading 'Earth'" /
+      "planet markers restored" in the log). Also check a moon behind its
+      parent (lock Luna with Earth crowding it). Still open from before:
+      the plain **on-screen yield** (marker vanishes as the vanilla
+      circle-with-name appears), **quest blips** surviving the cull, the
+      **interdiction tripwire**, and the `[blip]` census transforms being
+      zeros and ones.
 
 - [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
       confirmed working. New: the pointer is a diamond moved around the reticle

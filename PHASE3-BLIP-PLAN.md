@@ -313,6 +313,60 @@ in game: vanilla blips carry no names, the panel row already shows name and
 distance, and the mod's whole purpose is a quieter HUD. `bLabel` and all
 label code are gone; nothing the mod draws on the HUD carries text.
 
+## 9. v0.8.5 — the selection wins screen-overlap fights against planets
+
+The tester's case: Nova Galactic Staryard locked in the panel, working
+perfectly — until Earth slid into view and the station's marker vanished in
+favour of the planet's, dropping the mod back to its own marker. E-targeting
+the station flipped it back, which was the clue that the precedence is
+dynamic. The mechanism, read from `HideOverlappingClipsForCruiseMode`:
+
+```actionscript
+param1.sort(TargetIconBase.Compare);          // earlier icon = blocker
+if(_loc6_.visible && _loc6_.alpha >= MinBlockingAlpha)   // blocker gate
+...
+_loc9_.visible = !this.CruiseModeHUDActive || _loc17_ > 0.05;  // loser hidden
+```
+
+and `TargetIconBase.UpdateBSV`, the sort key, recomputed every pass:
+
+| rank | condition |
+|---|---|
+| −2 | `isInfoTarget` — the E-target (the tester's observation, explained) |
+| −1 | `bIsCruiseTargetLock` — the cruise autopilot body |
+| 0 | has a quest target |
+| distance, **capped at 1 LS** | `TT_PLANET` in cruise |
+| raw distance | everything else |
+
+The cap is why planets beat stations: Earth at 300 LS sorts as 1 LS, ahead of
+any station beyond one light-second. `_bsv` is private and recomputed per
+pass, so the sort cannot be influenced — but the **blocker gate can**: a
+blocker must pass `alpha >= MinBlockingAlpha`, and **nothing in the SWF ever
+writes an on-screen icon's root alpha** (`SetBlockedClipAlpha` dims
+`Internal_mc`, a child). Zeroing the planet icon's root alpha therefore hides
+it AND disqualifies it as a blocker in one uncontested write — vanilla's own
+overlap pass then leaves the selection's named icon visible, exactly the
+E-target visual. The clip pool is untouched: `GetClip` keys on `visible`,
+which is never written.
+
+Implementation: while the selected body's on-screen icon exists, every
+tracked TT_PLANET body's icon (moons included, stale-name-verified via
+`Name_tf.text`) is tested for rect overlap against it — the same public
+`GetPositionAdjustedBounds` vanilla intersects — and gets `alpha = 0` when
+crowding, `alpha = 1` otherwise, re-asserted per tick. Level-based, so no
+oscillation: a faded icon keeps its geometry. Quest icons and the info
+target's icon are deliberately never faded — missions and the player's own
+E-target continue to outrank the panel. Restores run on deselect, separation,
+cruise exit, the ship-type tripwire, and movie teardown; a clip pooled
+*while* faded is unreachable until it revives, at which point the per-tick
+pass or the next rebuild squares it — planet-class icons only, so the
+residual worst case is a briefly invisible planet marker, never a ship's.
+
+One deliberate coverage nuance: a freshly faded blocker leaves the
+selection's icon hidden until vanilla's next overlap pass, so "covered"
+counts `fadedBlocker` for that tick and the mod's marker does not flash into
+the gap.
+
 ### Failure modes accepted
 
 - Plugin dies mid-hide → blips return on the next HUD movie rebuild (map
