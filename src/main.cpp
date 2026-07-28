@@ -211,10 +211,14 @@ namespace
 	REX::TIniSetting<bool> bVanillaStyleMarker{ "Panel", "bVanillaStyleMarker", true };
 	// Undiscovered stations and POIs list under a generic label, as the HUD's
 	// own icons show them - the feed's name field leaks the real name early
-	// (v0.8.14). Plain text; a localised game wants these overridden in the
-	// custom ini with that language's own words.
+	// (v0.8.14). The label normally comes from the game's own localisation
+	// (the $MapMarkerGenericType* tokens, v0.8.17); these two are the
+	// fallback for categories with no token or a failed translation, and
+	// with bUseCustomUndiscoveredLabels they REPLACE the game's words
+	// outright for anyone preferring their own.
 	REX::TIniSetting<std::string> sUndiscoveredStationLabel{ "Panel", "sUndiscoveredStationLabel", "Starstation" };
 	REX::TIniSetting<std::string> sUndiscoveredPoiLabel{ "Panel", "sUndiscoveredPoiLabel", "Unknown" };
+	REX::TIniSetting<bool>        bUseCustomUndiscoveredLabels{ "Panel", "bUseCustomUndiscoveredLabels", false };
 
 	// The panel selection wins screen-overlap fights against PLANET markers
 	// (v0.8.5). Vanilla sorts overlapping on-screen icons by priority and
@@ -1677,34 +1681,45 @@ namespace
 	std::atomic<std::uint32_t> g_lockSeenInFeed{ 0 };
 
 	// The game's own generic labels for undiscovered markers ("Starstation",
-	// "Asteroids", ...), learned at runtime per POI kind, two ways: read off
-	// an undiscovered candidate's on-screen icon text (authoritative - that
-	// string is vanilla's own display), or taken from the OLD name when an
-	// undiscovered POI's feed name CHANGES across publishes - the feed
-	// carries the masked generic until proximity reveals the real name, so
-	// the pre-change value is the generic (provisional: the unmask direction
-	// is assumed, and an icon sighting may overwrite it). Keyed by
-	// (uPoiType << 32) | uPoiCategory; kept for the session.
-	struct PoiLabel
-	{
-		std::string label;
-		bool        provisional{ false };
-	};
-	std::mutex                                  g_poiLabelMutex;
-	std::unordered_map<std::uint64_t, PoiLabel> g_poiLabels;
+	// "Asteroids", ...), fetched through the game's own localisation: the SWF
+	// maps each uPoiCategory (MapMarkerUtils.MARKER_TYPE_*) to a translation
+	// token via GetGenericTypeLocString - "$MapMarkerGenericTypeStation" and
+	// friends - and GlobalFunc.SetText resolves such tokens into whatever
+	// language the game runs. The mod sets the token on a scratch TextField,
+	// reads the translated word back, and caches it per category. This
+	// replaced two generations of "learn it off a marker" machinery: the
+	// token is available the moment the category is (with the feed entry),
+	// needs nothing on screen, and is localisation-correct by construction.
+	std::mutex                                     g_genericLabelMutex;
+	std::unordered_map<std::uint32_t, std::string> g_genericLabels;
+	RE::Scaleform::GFx::Value                      g_translatorField;
+	std::atomic<bool>                              g_translatorReady{ false };
+	std::atomic<bool>                              g_translatorFailed{ false };
 
-	// An undiscovered POI/station candidate whose kind has no learned label
-	// yet - what the learner pass looks for on screen.
-	struct MaskedKind
+	// uPoiCategory values are MapMarkerUtils.MARKER_TYPE_*, EnumHelper-
+	// sequential from 0 (verified: The Eye sampled category 7 = STATION).
+	const char* GenericLabelToken(std::uint32_t a_category)
 	{
-		std::string   name;
-		std::uint32_t poiType{ 0 };
-		std::uint32_t poiCategory{ 0 };
-	};
-
-	inline std::uint64_t PoiKindKey(std::uint32_t a_type, std::uint32_t a_category)
-	{
-		return (static_cast<std::uint64_t>(a_type) << 32) | a_category;
+		switch (a_category) {
+		case 1:
+			return "$MapMarkerGenericTypeLandmark";
+		case 2:
+			return "$MapMarkerGenericTypeStructure";
+		case 3:
+			return "$MapMarkerGenericTypeLifeSigns";
+		case 4:
+			return "$MapMarkerGenericTypeHazard";
+		case 5:
+			return "$MapMarkerGenericTypeSpaceLandmark";
+		case 6:
+			return "$MapMarkerGenericTypeShip";
+		case 7:
+			return "$MapMarkerGenericTypeStation";
+		case 8:
+			return "$MapMarkerGenericTypeAsteroids";
+		default:
+			return nullptr;  // NONE, SIMPLE and anything newer: no generic word
+		}
 	}
 
 	// The faux blip: a real OffScreenIcon instance the mod owns, wearing
@@ -1766,7 +1781,7 @@ namespace
 	void RefreshCruiseState();
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
-		const std::string& a_infoTargetName, const std::vector<MaskedKind>& a_maskedKinds);
+		const std::string& a_infoTargetName);
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
@@ -2677,6 +2692,12 @@ namespace
 			// movie's payloads before absence may clear a moon lock.
 			g_lockSeenInFeed.store(0, std::memory_order_release);
 
+			// The translation scratch field belonged to the old movie; the
+			// cached words survive - the language does not change mid-game.
+			g_translatorField = RE::Scaleform::GFx::Value{};
+			g_translatorReady.store(false, std::memory_order_release);
+			g_translatorFailed.store(false, std::memory_order_release);
+
 			// The list belonged to the old movie too.
 			g_panelReady.store(false, std::memory_order_release);
 			g_panelFailed.store(false, std::memory_order_release);
@@ -3468,27 +3489,6 @@ namespace
 					for (const auto& old : previous) {
 						if (old.id == row.id) {
 							row.distance = old.distance;
-
-							// An undiscovered POI whose feed name CHANGED
-							// across publishes was masked before: the feed
-							// carries the generic until proximity reveals the
-							// real name, so the OLD value is the kind's label
-							// (v0.8.16, the tester's before-it-is-in-view
-							// ask). Provisional - the unmask direction is
-							// assumed - and never overwrites; an icon
-							// sighting is the authority.
-							if (row.fromFeed && old.fromFeed && !row.discovered &&
-								!old.discovered && row.havePoi && !old.name.empty() &&
-								!row.name.empty() && old.name != row.name) {
-								const auto      key = PoiKindKey(row.poiType, row.poiCategory);
-								std::lock_guard labels{ g_poiLabelMutex };
-								if (!g_poiLabels.contains(key)) {
-									g_poiLabels[key] = PoiLabel{ old.name, true };
-									REX::INFO("[blip] provisionally learned undiscovered label "
-											  "'{}' for POI kind {}/{} (name change)",
-										old.name, row.poiType, row.poiCategory);
-								}
-							}
 							break;
 						}
 					}
@@ -3644,7 +3644,6 @@ namespace
 			std::string   infoTargetName;
 			bool          feedAlive = false;
 			bool          lockedInFeed = false;
-			std::vector<MaskedKind> maskedKinds;
 
 			{
 				std::lock_guard lock{ g_candidateMutex };
@@ -3678,13 +3677,6 @@ namespace
 						feedAlive = true;
 						if (row.id == lockedForBlips)
 							lockedInFeed = true;
-						// Undiscovered POI kinds the label learner should
-						// look for on screen; filtered against the learned
-						// set outside this lock.
-						if (!row.discovered && row.havePoi && !row.name.empty() &&
-							(row.type == kTargetTypePOI || row.type == kTargetTypeStation))
-							maskedKinds.push_back(
-								MaskedKind{ row.name, row.poiType, row.poiCategory });
 					}
 				}
 				const auto infoIdx = g_infoTargetIndex.load(std::memory_order_acquire);
@@ -3814,24 +3806,12 @@ namespace
 					s_moonWatchID = 0;
 			}
 
-			// Kinds with an authoritative label need no learner pass; a
-			// PROVISIONAL one (from a name change) keeps its kind listed so
-			// an icon sighting can confirm or correct it.
-			if (!maskedKinds.empty()) {
-				std::lock_guard labels{ g_poiLabelMutex };
-				std::erase_if(maskedKinds, [](const MaskedKind& a_kind) {
-					const auto hit =
-						g_poiLabels.find(PoiKindKey(a_kind.poiType, a_kind.poiCategory));
-					return hit != g_poiLabels.end() && !hit->second.provisional;
-				});
-			}
-
 			// The vanilla blip pass: hides the off-screen container in cruise
 			// and lets the selected and locked bodies' own blips back through.
 			// True means vanilla covers the selected body this tick - kept
 			// off-screen blip or visible on-screen icon.
 			const bool selectedCovered = ManageVanillaBlips(selectedID, selectedBlipName,
-				lockedForBlips, lockedName, infoTargetName, maskedKinds);
+				lockedForBlips, lockedName, infoTargetName);
 
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
@@ -4527,7 +4507,7 @@ namespace
 	// targeting keep outranking the panel.
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
-		const std::string& a_infoTargetName, const std::vector<MaskedKind>& a_maskedKinds)
+		const std::string& a_infoTargetName)
 	{
 		if (!bHideVanillaBlips.GetValue())
 			return false;
@@ -4664,7 +4644,7 @@ namespace
 		// the info target - so that exact signature is the only rejection.
 		RE::Scaleform::GFx::Value reticle;
 		const bool haveReticle =
-			(a_selectedID != 0 || a_lockedID != 0 || !a_maskedKinds.empty()) &&
+			(a_selectedID != 0 || a_lockedID != 0) &&
 			root->GetVariable(&reticle, (base + ".Reticle_mc").c_str()) &&
 			(reticle.IsObject() || reticle.IsDisplayObject());
 
@@ -4707,56 +4687,6 @@ namespace
 			RE::Scaleform::GFx::Value lockIcon;
 			if (findIcon(a_lockedName, lockIcon))
 				lockIconVisible = isVisible(lockIcon);
-		}
-
-		// Learn the game's own undiscovered labels (v0.8.15, the tester's
-		// ask): vanilla writes the masked generic - "Starstation",
-		// "Asteroids" - into an undiscovered marker's on-screen text field,
-		// the only place the string exists outside the engine. Whenever an
-		// undiscovered candidate of an unlearned kind exists, look its icon
-		// up by name and take the text as that kind's label. Rate-limited: a
-		// missed tick costs nothing but a short wait, and the set empties
-		// itself as kinds get learned.
-		if (haveReticle && !a_maskedKinds.empty()) {
-			using clock = std::chrono::steady_clock;
-			static std::atomic<std::int64_t> s_lastLearnMs{ 0 };
-			const auto                       nowMs =
-				std::chrono::duration_cast<std::chrono::milliseconds>(
-					clock::now().time_since_epoch())
-					.count();
-			// A racing double pass costs one redundant lookup, nothing more.
-			if (nowMs - s_lastLearnMs.load(std::memory_order_acquire) > 2000) {
-				s_lastLearnMs.store(nowMs, std::memory_order_release);
-				for (const auto& kind : a_maskedKinds) {
-					RE::Scaleform::GFx::Value icon;
-					const std::string         childName =
-						std::string{ "OnScreenIcon: " } + kind.name;
-					RE::Scaleform::GFx::Value arg{ childName.c_str() };
-					if (!reticle.Invoke("getChildByName", &icon, &arg, 1) ||
-						!(icon.IsObject() || icon.IsDisplayObject()))
-						continue;
-					RE::Scaleform::GFx::Value nameField, text;
-					if (!icon.GetMember("Name_tf", &nameField) ||
-						!(nameField.IsObject() || nameField.IsDisplayObject()) ||
-						!nameField.GetMember("text", &text) || !text.IsString())
-						continue;
-					const std::string label = text.GetString() ? text.GetString() : "";
-					// The label must be a real string, must not be the feed
-					// name (that would mean the entry is unmasked right now),
-					// and must not be the info target's name (the paired
-					// indicator wearing a stale instance name).
-					if (label.empty() || label == kind.name ||
-						(!a_infoTargetName.empty() && label == a_infoTargetName))
-						continue;
-					{
-						std::lock_guard labels{ g_poiLabelMutex };
-						g_poiLabels[PoiKindKey(kind.poiType, kind.poiCategory)] =
-							PoiLabel{ label, false };
-					}
-					REX::INFO("[blip] learned undiscovered label '{}' for POI kind {}/{}",
-						label, kind.poiType, kind.poiCategory);
-				}
-			}
 		}
 
 		// Pass 1: the container. Keepers move into the holder; everything else
@@ -5603,6 +5533,88 @@ namespace
 	// tick - distances crawl, and ten TextField writes per frame is a cost with
 	// nothing to show for it. The highlight moves immediately, because that is
 	// the part the player is waiting on.
+	// Fetch the game's own word for an undiscovered marker category through
+	// the game's own localisation: set the category's translation token on a
+	// scratch TextField with GlobalFunc.SetText - the call vanilla itself uses
+	// for its "$ENGINES"-style labels - and read the translated text back.
+	// Cached per category for the session; the scratch field dies with the
+	// movie and rebuilds on demand. Returns empty when the category has no
+	// token or the translation fails, and caches the failure so a broken
+	// translator costs one attempt, not one per refresh.
+	std::string TranslateGenericLabel(std::uint32_t a_category)
+	{
+		{
+			std::lock_guard labels{ g_genericLabelMutex };
+			if (const auto hit = g_genericLabels.find(a_category); hit != g_genericLabels.end())
+				return hit->second;
+		}
+		const char* token = GenericLabelToken(a_category);
+		if (!token)
+			return {};
+		if (g_translatorFailed.load(std::memory_order_acquire))
+			return {};
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return {};
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		const auto                     menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return {};
+		auto* root = menu->uiMovie->asMovieRoot.get();
+
+		using V = RE::Scaleform::GFx::Value;
+		if (!g_translatorReady.load(std::memory_order_acquire)) {
+			// Constructs through the AS3 VM - single-winner like every other
+			// builder; a losing thread just falls back until next refresh.
+			static std::atomic<bool> s_buildInFlight{ false };
+			const SingleWinner       winner{ s_buildInFlight };
+			if (!winner.Won())
+				return {};
+			if (!g_translatorReady.load(std::memory_order_acquire)) {
+				root->CreateObject(&g_translatorField, "flash.text.TextField");
+				if (!g_translatorField.IsObject() && !g_translatorField.IsDisplayObject()) {
+					g_translatorFailed.store(true, std::memory_order_release);
+					REX::WARN("[panel] no scratch TextField - undiscovered labels use the "
+							  "ini words");
+					return {};
+				}
+				g_translatorReady.store(true, std::memory_order_release);
+			}
+		}
+
+		// The proven route to a static: resolve the class object, Invoke on it.
+		RE::Scaleform::GFx::Value globalFunc;
+		if (!root->GetVariable(&globalFunc, "Shared.GlobalFunc") ||
+			!(globalFunc.IsObject() || globalFunc.IsDisplayObject()))
+			return {};
+
+		V args[2];
+		args[0] = g_translatorField;
+		root->CreateString(&args[1], token);
+		if (!globalFunc.Invoke("SetText", nullptr, args, 2))
+			return {};
+
+		V           text;
+		std::string word;
+		if (g_translatorField.GetMember("text", &text) && text.IsString() && text.GetString())
+			word = text.GetString();
+		if (!word.empty() && word.front() == '$')
+			word.clear();  // came back untranslated - not a display string
+
+		{
+			// Cache even the failure: one attempt per category per session.
+			std::lock_guard labels{ g_genericLabelMutex };
+			g_genericLabels[a_category] = word;
+		}
+		if (word.empty())
+			REX::WARN("[panel] token '{}' did not translate - category {} uses the ini word",
+				token, a_category);
+		else
+			REX::INFO("[panel] undiscovered label for category {}: '{}'", a_category, word);
+		return word;
+	}
+
 	void RefreshPanel()
 	{
 		if (!g_panelReady.load(std::memory_order_acquire))
@@ -5708,17 +5720,13 @@ namespace
 					                        row.type == kTargetTypePOI);
 					std::string display = row.name;
 					if (masked) {
-						// The game's own generic for this POI kind, if the
-						// learner has seen one of its markers; the ini labels
-						// are the fallback until then.
+						// The game's own generic for this category, through
+						// its own localisation; the ini words are the
+						// fallback, or the whole story if the player prefers
+						// their own.
 						display.clear();
-						if (row.havePoi) {
-							std::lock_guard labels{ g_poiLabelMutex };
-							if (const auto hit =
-									g_poiLabels.find(PoiKindKey(row.poiType, row.poiCategory));
-								hit != g_poiLabels.end())
-								display = hit->second.label;
-						}
+						if (!bUseCustomUndiscoveredLabels.GetValue() && row.havePoi)
+							display = TranslateGenericLabel(row.poiCategory);
 						if (display.empty())
 							display = row.type == kTargetTypeStation ?
 							              sUndiscoveredStationLabel.GetValue() :

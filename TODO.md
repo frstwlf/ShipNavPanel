@@ -89,19 +89,22 @@ live; the ini labels demote to first-sight fallbacks. Guards: the text
 must differ from the feed name (else the entry is unmasked right now) and
 from the info target's name (the paired-indicator spoof).
 
-**v0.8.15 confirmed in game (both labels learned); v0.8.16 grabs them
-earlier, on the tester's observation** that the ring blip knows the kind
-before any FOV marker exists: the string exists earliest in the FEED
-ITSELF — an undiscovered POI's `name` field carries the masked generic
-until proximity reveals the real name. The candidate carry-over now spots
-that name CHANGE (same id, both publishes undiscovered) and learns the OLD
-value as the kind's label, marked PROVISIONAL: the unmask direction is
-assumed (a re-mask on departure, if the engine does that, would teach a
-real name), so provisional kinds stay on the icon learner's list and a
-sighting confirms or corrects them — the log distinguishes "provisionally
-learned ... (name change)" from the authoritative form. Net effect: fly
-toward an undiscovered POI and its label is usually learned the moment the
-game reveals the real name — before the marker ever enters the FOV.
+**v0.8.15 confirmed in game (both labels learned from icons). v0.8.16's
+transition learner FAILED its test** — no name change was ever observed in
+the feed while tracked, so that theory is dead and the machinery removed.
+**v0.8.17 replaces ALL the learning with the real source, found in
+`MapMarkerUtils`:** the SWF maps each `uPoiCategory`
+(`MARKER_TYPE_*`, sequential from 0 — The Eye's sampled category 7 =
+STATION confirms) to a **localisation token** via `GetGenericTypeLocString`
+— `$MapMarkerGenericTypeStation`, `$MapMarkerGenericTypeAsteroids`, and
+six more. The mod sets the token on a scratch TextField through
+`Shared.GlobalFunc.SetText` (vanilla's own `$ENGINES`-style path), reads
+the translated word back, and caches it per category — **the game's word,
+the player's language, available the moment the category field arrives
+with the feed entry, nothing on screen required.** Failures cache too (one
+attempt per category); ini words remain the fallback, and
+`bUseCustomUndiscoveredLabels=true` forces them outright (the tester's
+requested escape hatch).
 
 **v0.8.7 passed its session on 2026-07-28: all four states of the hiding
 model work as intended** (idle cruise vanilla, panel-open cull with
