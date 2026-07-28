@@ -8,15 +8,20 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.7.1 — the Phase 2 panel works in game.** In cruise the scanner key opens a
-list of the system's bodies; the mouse wheel moves the highlight and the arrow
-previews it; **C** locks the highlighted body onto the HUD, or clears it if it is
-already locked. Closing without confirming changes nothing. Outside cruise the
-mod is idle and the scanner key keeps its vanilla job.
+**v0.8.0 — the vanilla-blip pivot, built, NOT yet run in game.** In cruise the
+mod now hides the HUD's own off-screen circle-and-arrow blips and, when a body
+is locked in the panel, moves that body's own blip back into view so the
+vanilla marker does the pointing — the drawn diamond remains only as the
+fallback for bodies the HUD is not blipping (the cap: five nearest planets
+plus quest targets). Mechanism, evidence and the in-game checklist are in
+[PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md).
 
-Confirmed in game through v0.7.0: the panel, nesting, the whole-system list,
-localised names, gas-giant icons and settlement detection all work. Not yet
-eyeballed: the v0.7.1 skyline glyph and the C rebind.
+Through v0.7.5, all confirmed in game: the panel, nesting, whole-system list,
+localised names, gas-giant and settlement icons, the skyline glyph, confirm on
+`TogglePOV` without the view swinging. In cruise the scanner key opens the
+list; the wheel moves the highlight and the arrow previews it; the confirm key
+locks the highlighted body or clears it again. Closing without confirming
+changes nothing. Outside cruise the mod is idle.
 
 > **"The game ignores this key in cruise" is not the same as "this key is
 > free".** `XButton` (R) was the confirm key from v0.3.1 to v0.7.0 and it passed
@@ -105,6 +110,17 @@ and subscription whenever the movie-created callback fires, and drop stale
 `GFx::Value` handles.
 
 ## Open work
+
+- [ ] **★ Run the v0.8.0 blip pass in game** — the checklist is
+      [PHASE3-BLIP-PLAN.md §7](PHASE3-BLIP-PLAN.md). The short version: blips
+      gone in cruise, named markers untouched, locked body's blip back with the
+      diamond suppressed, dash-row lock falls back to the diamond, quest blips
+      survive, ship blips return instantly on leaving cruise (including by
+      interdiction — the ship-type tripwire), and the `[blip]` census log
+      confirms the container path, child names and identity transforms. If the
+      transforms in the log are NOT zeros and ones, the holder is in the wrong
+      place and the kept blip will sit offset — that is the first thing to
+      check if it looks wrong.
 
 - [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
       confirmed working. New: the pointer is a diamond moved around the reticle
@@ -618,6 +634,17 @@ Each of these cost real time; the reasoning is in the findings docs.
   `IDs_VTABLE.h` has zero `{ 0 }` entries, `IDs.h` has 505. So a vtable-based
   hook can use its Address Library id directly — the live-object trick is only
   needed where a *function* id is missing.
+
+- **Never hide an individual HUD icon with `visible=false`, and never cache the
+  off-screen container's handle.** `ShipReticle.GetClip` uses `visible==false`
+  as its "pooled, free to recycle" test — an outside write corrupts the pool
+  (duplicate live-array entries, clips re-keyed to other targets mid-flight).
+  And `OffScreenIndicatorParent_mc` is timeline-placed art the reticle's
+  animations can re-create, so the path is resolved fresh every tick. Both
+  facts read out of the decompiled SWF; full trace in
+  [PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md), which also records why per-icon
+  `alpha=0` and fighting `CruiseModeOffScreenPlanetIconLimit` (a private
+  const) were rejected.
 
 - **Targeting a body by id is impossible from the UI layer.** No such event
   exists; `ShipHud_Target` is parameterless ("target what is hovered") and

@@ -198,6 +198,14 @@ namespace
 	REX::TIniSetting<bool>  bArrowInvertAngle{ "Panel", "bArrowInvertAngle", false };
 	REX::TIniSetting<bool>  bLabel{ "Panel", "bLabel", true };
 
+	// Vanilla blip management (Phase 3, PHASE3-BLIP-PLAN.md). In cruise, hide
+	// the HUD's own off-screen circle-and-arrow blips and let the locked body's
+	// one back through, so the game's own marker does the pointing. The named
+	// in-view markers are in a different container and are never touched.
+	REX::TIniSetting<bool> bHideVanillaBlips{ "Panel", "bHideVanillaBlips", true };
+	REX::TIniSetting<bool> bKeepQuestBlips{ "Panel", "bKeepQuestBlips", true };
+	REX::TIniSetting<bool> bShowLockedBlip{ "Panel", "bShowLockedBlip", true };
+
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
 	// hit costs nothing and a miss teaches nothing. The authoritative list of
@@ -1602,6 +1610,20 @@ namespace
 	// panel must stay out of the way there - the gate identified back in Phase 0.
 	std::atomic<bool> g_inCruise{ false };
 
+	// Vanilla blip management. The holder is the mod's container for blips it
+	// keeps visible while the vanilla one is hidden; the vanilla container's
+	// handle is deliberately NOT here - it is timeline-placed art that the
+	// reticle's animations can re-create, so it is resolved fresh every tick
+	// (PHASE3-BLIP-PLAN.md, section 5).
+	RE::Scaleform::GFx::Value g_blipHolder;
+	std::atomic<bool>         g_blipHolderReady{ false };
+	std::atomic<bool>         g_blipHolderFailed{ false };
+	std::atomic<bool>         g_blipHolderBuildInFlight{ false };
+	// True while the mod believes it has the vanilla container hidden. Used for
+	// transition logging and for restore-on-exit; the hide itself is re-asserted
+	// per tick, so a stale false here costs one log line, nothing more.
+	std::atomic<bool> g_blipsHidden{ false };
+
 	// The panel is open. While this is set the wheel is hidden from the camera
 	// and drives the highlight instead.
 	std::atomic<bool>          g_panelOpen{ false };
@@ -1645,6 +1667,7 @@ namespace
 	void TryCreatePanel();
 	void RefreshPanel();
 	void RefreshCruiseState();
+	bool ManageVanillaBlips(std::uint32_t a_lockedID, const std::string& a_lockedName);
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
@@ -2527,6 +2550,13 @@ namespace
 			g_labelField = RE::Scaleform::GFx::Value{};
 			g_labelFormat = RE::Scaleform::GFx::Value{};
 			g_labelReady.store(false, std::memory_order_release);
+
+			// The blip holder too - and the hidden container went down with the
+			// movie, so the new one starts visible on its own.
+			g_blipHolderReady.store(false, std::memory_order_release);
+			g_blipHolderFailed.store(false, std::memory_order_release);
+			g_blipHolder = RE::Scaleform::GFx::Value{};
+			g_blipsHidden.store(false, std::memory_order_release);
 
 			// The list belonged to the old movie too.
 			g_panelReady.store(false, std::memory_order_release);
@@ -3411,11 +3441,14 @@ namespace
 			BearingCollector bearings;
 			entries.VisitElements(&bearings);
 
-			bool        haveSelected = false;
-			double      selectedAngle = 0.0;
-			double      selectedDistance = 0.0;
-			std::string selectedName;
-			std::string labelText;
+			bool          haveSelected = false;
+			double        selectedAngle = 0.0;
+			double        selectedDistance = 0.0;
+			std::string   selectedName;
+			std::string   labelText;
+			std::uint32_t selectedID = 0;
+			std::uint32_t lockedForBlips = 0;
+			std::string   lockedName;
 
 			{
 				std::lock_guard lock{ g_candidateMutex };
@@ -3427,9 +3460,23 @@ namespace
 				// is the preview - and falls back to the locked body once it
 				// closes. Closing without confirming therefore reverts it, which
 				// is exactly what the confirm key is for.
-				const auto selected = g_panelOpen.load(std::memory_order_acquire) ?
-				                          g_highlightID.load(std::memory_order_acquire) :
-				                          g_lockedID.load(std::memory_order_acquire);
+				selectedID = g_panelOpen.load(std::memory_order_acquire) ?
+				                 g_highlightID.load(std::memory_order_acquire) :
+				                 g_lockedID.load(std::memory_order_acquire);
+				const auto selected = selectedID;
+
+				// The locked body's feed name is the key that finds its vanilla
+				// blip - the SWF names the icon clips "OffScreenIcon: <name>".
+				// Read under the same lock as everything else candidate-shaped.
+				lockedForBlips = g_lockedID.load(std::memory_order_acquire);
+				if (lockedForBlips != 0) {
+					for (const auto& row : g_candidates) {
+						if (row.id == lockedForBlips) {
+							lockedName = row.name;
+							break;
+						}
+					}
+				}
 
 				// A lock on a RUNTIME form is the one case where holding an id
 				// can go wrong. FF-prefixed ids belong to things the game
@@ -3474,10 +3521,21 @@ namespace
 				}
 			}
 
+			// The vanilla blip pass: hides the off-screen container in cruise
+			// and lets the locked body's own blip back through. True means that
+			// blip is on screen this tick, doing the pointing.
+			const bool lockedBlipShown = ManageVanillaBlips(lockedForBlips, lockedName);
+
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
 				haveSelected = haveSelected && g_inCruise.load(std::memory_order_acquire);
-				g_arrowClip.SetMember("visible", V{ haveSelected });
+				// When the vanilla blip is pointing at the selected body, the
+				// diamond would be a second marker on the same target - drop it.
+				// The label stays: the blip carries no text, and name plus live
+				// distance is the part vanilla cannot provide.
+				const bool blipCovers = lockedBlipShown && selectedID != 0 &&
+				                        selectedID == lockedForBlips;
+				g_arrowClip.SetMember("visible", V{ haveSelected && !blipCovers });
 				if (haveSelected) {
 					// The marker is placed on the circle rather than rotated, so
 					// there is no orientation to be wrong at any bearing.
@@ -3777,6 +3835,318 @@ namespace
 					SurveyDump();
 			}
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Vanilla blip management (Phase 3 - PHASE3-BLIP-PLAN.md).
+	//
+	// The circle-and-arrow blips are OffScreenIcon clips, every one a child of
+	// Reticle_mc.ShipReticle_mc.OffScreenIndicatorParent_mc and named
+	// "OffScreenIcon: <feed name>" by the SWF itself. Hiding that container hides
+	// exactly the off-screen set - the named in-view markers live on Reticle_mc.
+	//
+	// Individual icons must NEVER be hidden with `visible=false`: the SWF's
+	// GetClip uses that as its "pooled, free to recycle" test, so an outside
+	// write corrupts the pool (duplicate live-array entries, clips re-keyed to
+	// other targets). The container is the only safe handle, and a blip is kept
+	// on screen by MOVING it into the mod's own holder - GetClip re-parents a
+	// clip only when reviving it, so a live one stays in the holder while the
+	// SWF keeps feeding it rotation, faction frames and selection state.
+	// ---------------------------------------------------------------------------
+
+	constexpr const char* kOffScreenIconPrefix = "OffScreenIcon: ";
+
+	// One-shot builder, per movie. The holder hangs off Reticle_mc - the stable
+	// home the arrow proved - NOT off the animated ShipReticle_mc, whose timeline
+	// can re-create its children. It mirrors the vanilla container's transform so
+	// a reparented blip lands exactly where it would have drawn: icons are never
+	// positioned by the SWF, only rotated about their parent's origin.
+	void TryCreateBlipHolder(RE::Scaleform::GFx::ASMovieRootBase* a_root, const std::string& a_base,
+		RE::Scaleform::GFx::Value& a_container)
+	{
+		if (g_blipHolderReady.load(std::memory_order_acquire) ||
+			g_blipHolderFailed.load(std::memory_order_acquire))
+			return;
+
+		// Enters the AS3 VM, so it is serialised like every other one-shot
+		// builder - see SingleWinner.
+		const SingleWinner winner{ g_blipHolderBuildInFlight };
+		if (!winner.Won())
+			return;
+		if (g_blipHolderReady.load(std::memory_order_acquire))
+			return;
+
+		RE::Scaleform::GFx::Value reticle;
+		if (!a_root->GetVariable(&reticle, (a_base + ".Reticle_mc").c_str()))
+			return;  // transient - retry next tick rather than latch a failure
+
+		using V = RE::Scaleform::GFx::Value;
+
+		bool made = reticle.CreateEmptyMovieClip(&g_blipHolder, "ShipNavPanelBlips", 19990);
+		if (!made) {
+			a_root->CreateObject(&g_blipHolder, "flash.display.Sprite");
+			if (!g_blipHolder.IsObject() && !g_blipHolder.IsDisplayObject()) {
+				g_blipHolderFailed.store(true, std::memory_order_release);
+				REX::WARN("[blip] holder not created - locked-blip reappearance disabled, "
+						  "hide-all still works");
+				return;
+			}
+			RE::Scaleform::GFx::Value added;
+			if (!reticle.Invoke("addChild", &added, &g_blipHolder, 1)) {
+				g_blipHolder = RE::Scaleform::GFx::Value{};
+				g_blipHolderFailed.store(true, std::memory_order_release);
+				REX::WARN("[blip] holder addChild failed - locked-blip reappearance disabled");
+				return;
+			}
+		}
+
+		// Compose the container's placement relative to Reticle_mc. Expected all
+		// zeros and unit scales; read and logged rather than assumed, so a wrong
+		// expectation shows up as a number in the log instead of a mystery.
+		const auto num = [](RE::Scaleform::GFx::Value& a_obj, const char* a_name, double a_default) {
+			RE::Scaleform::GFx::Value v;
+			return a_obj.GetMember(a_name, &v) ? AsNumber(v) : a_default;
+		};
+		RE::Scaleform::GFx::Value shipReticle;
+		if (!a_root->GetVariable(&shipReticle, (a_base + ".Reticle_mc.ShipReticle_mc").c_str()))
+			shipReticle = RE::Scaleform::GFx::Value{};
+
+		double srX = 0.0, srY = 0.0, srSX = 1.0, srSY = 1.0, srRot = 0.0;
+		if (shipReticle.IsObject() || shipReticle.IsDisplayObject()) {
+			srX = num(shipReticle, "x", 0.0);
+			srY = num(shipReticle, "y", 0.0);
+			srSX = num(shipReticle, "scaleX", 1.0);
+			srSY = num(shipReticle, "scaleY", 1.0);
+			srRot = num(shipReticle, "rotation", 0.0);
+		}
+		const double cX = num(a_container, "x", 0.0);
+		const double cY = num(a_container, "y", 0.0);
+		double       cSX = num(a_container, "scaleX", 1.0);
+		double       cSY = num(a_container, "scaleY", 1.0);
+		const double cRot = num(a_container, "rotation", 0.0);
+		if (srSX == 0.0)
+			srSX = 1.0;
+		if (srSY == 0.0)
+			srSY = 1.0;
+		if (cSX == 0.0)
+			cSX = 1.0;
+		if (cSY == 0.0)
+			cSY = 1.0;
+
+		g_blipHolder.SetMember("x", V{ srX + cX * srSX });
+		g_blipHolder.SetMember("y", V{ srY + cY * srSY });
+		g_blipHolder.SetMember("scaleX", V{ srSX * cSX });
+		g_blipHolder.SetMember("scaleY", V{ srSY * cSY });
+		g_blipHolder.SetMember("rotation", V{ srRot + cRot });
+
+		REX::INFO("[blip] holder ready ({}) - ShipReticle_mc at ({:.1f},{:.1f}) scale ({:.2f},{:.2f}) "
+				  "rot {:.1f}; container at ({:.1f},{:.1f}) scale ({:.2f},{:.2f}) rot {:.1f}",
+			made ? "movie clip" : "sprite", srX, srY, srSX, srSY, srRot, cX, cY, cSX, cSY, cRot);
+
+		// One-time census of what the container holds, for checking the naming
+		// assumption against the live movie - the in-game test's first item.
+		RE::Scaleform::GFx::Value count;
+		if (a_container.GetMember("numChildren", &count)) {
+			const int n = static_cast<int>(AsNumber(count));
+			REX::INFO("[blip] container census: {} children", n);
+			for (int i = 0; i < n; ++i) {
+				V idx{ static_cast<double>(i) };
+				V child;
+				if (a_container.Invoke("getChildAt", &child, &idx, 1)) {
+					V name;
+					const char* text = child.GetMember("name", &name) && name.IsString() ?
+					                       name.GetString() :
+					                       "<unnamed>";
+					REX::INFO("[blip]   [{}] {}", i, SafeStr(text));
+				}
+			}
+		}
+
+		g_blipHolderReady.store(true, std::memory_order_release);
+	}
+
+	// Put everything back: every kept blip returns to the vanilla container,
+	// then the container is unhidden. Children first, so no blip renders in the
+	// mod's holder after the vanilla set is already showing.
+	void RestoreVanillaBlips(RE::Scaleform::GFx::Value& a_container)
+	{
+		using V = RE::Scaleform::GFx::Value;
+
+		if (g_blipHolderReady.load(std::memory_order_acquire)) {
+			RE::Scaleform::GFx::Value count;
+			if (g_blipHolder.GetMember("numChildren", &count)) {
+				for (int i = static_cast<int>(AsNumber(count)) - 1; i >= 0; --i) {
+					V idx{ static_cast<double>(i) };
+					V child;
+					if (g_blipHolder.Invoke("getChildAt", &child, &idx, 1) &&
+						(child.IsObject() || child.IsDisplayObject()))
+						a_container.Invoke("addChild", nullptr, &child, 1);
+				}
+			}
+		}
+
+		if (g_blipsHidden.exchange(false, std::memory_order_acq_rel)) {
+			a_container.SetMember("visible", V{ true });
+			REX::INFO("[blip] restored - off-screen blips back to vanilla");
+		}
+	}
+
+	// The per-tick pass, from the high-frequency callback (the engine's UI
+	// thread). Returns whether the locked body's vanilla blip is visible this
+	// tick - if it is, the diamond would be a second marker on the same body.
+	bool ManageVanillaBlips(std::uint32_t a_lockedID, const std::string& a_lockedName)
+	{
+		if (!bHideVanillaBlips.GetValue())
+			return false;
+
+		// Cheap gate: outside cruise with nothing hidden there is nothing to do,
+		// and this runs every high-frequency tick.
+		if (!g_inCruise.load(std::memory_order_acquire) &&
+			!g_blipsHidden.load(std::memory_order_acquire))
+			return false;
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return false;
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud)) {
+			// The container went down with the movie; the next one starts
+			// visible on its own.
+			g_blipsHidden.store(false, std::memory_order_release);
+			return false;
+		}
+		const auto menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return false;
+
+		auto*             root = menu->uiMovie->asMovieRoot.get();
+		const char*       rootPath = menu->GetRootPath();
+		const std::string base = std::string{ rootPath ? rootPath : "root" };
+
+		// Resolved fresh EVERY tick - the container is timeline-placed art the
+		// reticle's animations can re-create, so yesterday's handle may be a
+		// detached orphan. During such an animation the path can also briefly
+		// fail to resolve; skip the tick rather than latch anything.
+		RE::Scaleform::GFx::Value container;
+		if (!root->GetVariable(&container,
+				(base + ".Reticle_mc.ShipReticle_mc.OffScreenIndicatorParent_mc").c_str()) ||
+			!(container.IsObject() || container.IsDisplayObject()))
+			return false;
+
+		// Cruise read fresh rather than from g_inCruise: the cached flag follows
+		// the low-frequency feed and lags a forced exit, and this container also
+		// serves normal flight's ship blips - restore must be frame-accurate.
+		RE::Scaleform::GFx::Value flag;
+		const bool                cruising =
+			root->GetVariable(&flag, (base + ".Reticle_mc.CruiseModeHUDActive").c_str()) &&
+			flag.IsBoolean() && flag.GetBoolean();
+
+		using V = RE::Scaleform::GFx::Value;
+
+		if (!cruising) {
+			RestoreVanillaBlips(container);
+			return false;
+		}
+
+		// Hide, re-asserted every tick: a timeline rebuild hands back a fresh
+		// container with visible=true, and one SetMember is cheap. The SWF only
+		// ever writes this container's ALPHA (the boost fade), never visible, so
+		// there is no per-frame fight to lose.
+		container.SetMember("visible", V{ false });
+		if (!g_blipsHidden.exchange(true, std::memory_order_acq_rel))
+			REX::INFO("[blip] off-screen blips hidden for cruise");
+
+		if (WorldSettled())
+			TryCreateBlipHolder(root, base, container);
+
+		const bool holderReady = g_blipHolderReady.load(std::memory_order_acquire);
+		const bool wantLocked = bShowLockedBlip.GetValue() && a_lockedID != 0 &&
+		                        !a_lockedName.empty() && holderReady;
+		const bool        keepQuest = bKeepQuestBlips.GetValue() && holderReady;
+		const std::string lockedClipName =
+			wantLocked ? std::string{ kOffScreenIconPrefix } + a_lockedName : std::string{};
+
+		bool lockedShown = false;
+		bool sawShipType = false;
+
+		const auto readName = [](RE::Scaleform::GFx::Value& a_child) -> std::string {
+			RE::Scaleform::GFx::Value name;
+			if (a_child.GetMember("name", &name) && name.IsString())
+				return name.GetString();
+			return {};
+		};
+		const auto isQuest = [](RE::Scaleform::GFx::Value& a_child) {
+			RE::Scaleform::GFx::Value quest;
+			return a_child.GetMember("HasQuestTarget", &quest) && quest.IsBoolean() &&
+			       quest.GetBoolean();
+		};
+
+		// Pass 1: the container. Keepers move into the holder; everything else
+		// stays hidden with its parent. Descending index, because a move
+		// reindexes the children above the removed slot.
+		RE::Scaleform::GFx::Value count;
+		if (container.GetMember("numChildren", &count)) {
+			for (int i = static_cast<int>(AsNumber(count)) - 1; i >= 0; --i) {
+				V idx{ static_cast<double>(i) };
+				V child;
+				if (!container.Invoke("getChildAt", &child, &idx, 1) ||
+					!(child.IsObject() || child.IsDisplayObject()))
+					continue;
+				const std::string childName = readName(child);
+				if (childName.rfind(kOffScreenIconPrefix, 0) != 0)
+					continue;
+
+				// Ships never get off-screen icons in cruise - one existing
+				// means cruise is over, whatever the flag still says. This is
+				// the independent "still cruising?" signal, and it fires
+				// exactly when hidden blips would hurt: combat.
+				RE::Scaleform::GFx::Value type;
+				if (child.GetMember("QLastTargetType", &type) &&
+					static_cast<std::uint32_t>(AsNumber(type)) == kTargetTypeShip)
+					sawShipType = true;
+
+				const bool lockedMatch = wantLocked && childName == lockedClipName;
+				if (lockedMatch || (keepQuest && isQuest(child))) {
+					if (g_blipHolder.Invoke("addChild", nullptr, &child, 1)) {
+						if (lockedMatch)
+							lockedShown = true;
+						REX::INFO("[blip] kept '{}'{}", childName,
+							lockedMatch ? " (locked body)" : " (quest target)");
+					}
+				}
+			}
+		}
+
+		// Pass 2: the holder. A kept blip whose reason lapsed - lock moved,
+		// quest done - goes back to the (hidden) container for vanilla to pool
+		// or re-show as it pleases. A pooled blip never appears here: the SWF's
+		// sweep removes it from whatever parent it has.
+		if (holderReady && g_blipHolder.GetMember("numChildren", &count)) {
+			for (int i = static_cast<int>(AsNumber(count)) - 1; i >= 0; --i) {
+				V idx{ static_cast<double>(i) };
+				V child;
+				if (!g_blipHolder.Invoke("getChildAt", &child, &idx, 1) ||
+					!(child.IsObject() || child.IsDisplayObject()))
+					continue;
+				const std::string childName = readName(child);
+				const bool        lockedMatch = wantLocked && childName == lockedClipName;
+				if (lockedMatch) {
+					lockedShown = true;
+				} else if (!(keepQuest && isQuest(child))) {
+					container.Invoke("addChild", nullptr, &child, 1);
+					REX::INFO("[blip] returned '{}'", childName);
+				}
+			}
+		}
+
+		if (sawShipType) {
+			RestoreVanillaBlips(container);
+			REX::INFO("[blip] ship-type blip seen while 'cruising' - trusting the data "
+					  "over the flag and restoring");
+			return false;
+		}
+
+		return lockedShown;
 	}
 
 	// Borrow a TextFormat from a field the HUD already owns. A TextField built at
