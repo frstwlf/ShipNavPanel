@@ -8,18 +8,31 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.8.2 — the mod's marker yields to ANY vanilla presence and wears vanilla's
-art when it does show; built, not yet run.** v0.8.0 (hide the off-screen
-blips, reappear the locked one) and v0.8.1 (a showing blip replaces diamond
-AND label; highlight preview via blip too) **both passed in-game sessions on
-2026-07-28**. v0.8.2 adds the tester's next two calls: the mod also stands
-down when the selected body's ON-screen icon is visible (the circle-with-name
-where the body actually is — vanilla and mod were double-marking in-view
-bodies), and the fallback marker is now a real `OffScreenIcon` instance the
-mod instantiates and drives through vanilla's own public methods — vanilla
-art, faction-neutral, planets and stars only, drawn-diamond fallback if
-construction fails. The label keeps the donor format verbatim instead of the
-invented cyan. Mechanism, evidence and the checklist are in
+**v0.8.3 — the load-freeze hardening; built, not yet run.** The v0.8.2
+session froze as a save finished loading (hang, no crashlog — Windows killed
+it). The plugin's own log settled a lot: none of the v0.8.2 feature code had
+run yet, the subscribe round had passed the menus-closed gate **while the
+load transition was still on screen**, the movie was mid-init (high-freq feed
+not registered yet — first failure ever observed) and was rebuilt within
+50 ms. v0.8.3 closes every hazard that surfaced: `WorldSettled` now requires
+menus closed **continuously for 2.5 s** (the ShipHullRegen settle-timer rule
+this project had skipped), `RefreshPanel` no longer holds the candidate mutex
+across VM calls (a real lock-order inversion against concurrent feed
+callbacks — silent-freeze shaped, present since v0.3), feeds subscribe
+per-feed with the missing one retried (a failed high-freq subscribe used to
+be logged and forgotten), the blip pass is settle-gated, `g_inCruise` resets
+on movie rebuild, and every builder logs a line BEFORE entering the VM so a
+future frozen log ends at the culprit's name. Full account in
+`STARFIELD-NOTES.md` ("A load-time FREEZE"). The freeze's true cause is
+unproven — these are the real hazards that were found. **The v0.8.2 feature
+set is unchanged and still awaits its in-game pass.**
+
+v0.8.0 (hide the off-screen blips, reappear the locked one) and v0.8.1 (a
+showing blip replaces diamond AND label; highlight preview via blip too)
+**both passed in-game sessions on 2026-07-28**. v0.8.2 adds: the mod stands
+down when the selected body's ON-screen icon is visible, and the fallback
+marker is a real `OffScreenIcon` the mod drives — planets and stars only,
+drawn-diamond fallback. Mechanism and checklist in
 [PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md) (§8 for v0.8.2).
 
 Through v0.7.5, all confirmed in game: the panel, nesting, whole-system list,
@@ -643,6 +656,19 @@ Each of these cost real time; the reasoning is in the findings docs.
   `IDs_VTABLE.h` has zero `{ 0 }` entries, `IDs.h` has 505. So a vtable-based
   hook can use its Address Library id directly — the live-object trick is only
   needed where a *function* id is missing.
+
+- **Never hold a plugin mutex across a Scaleform call, and menus-closed is not
+  world-settled.** Feed callbacks take plugin mutexes from inside the engine's
+  dispatch and run concurrently across the BSJobs pool, so a mutex held while
+  entering the VM is a lock-order inversion — a silent freeze, not a crash.
+  `RefreshPanel` carried exactly that for ~20 versions; it now snapshots under
+  the lock and renders outside. And the 2026-07-28 freeze log proved the
+  menus-closed gate passes while the load transition is still on screen, the
+  movie mid-init and about to be rebuilt — `WorldSettled` therefore requires
+  2.5 s of continuous menus-closed. Full account in `STARFIELD-NOTES.md`
+  ("A load-time FREEZE"); also there: `Subscribe` fires the new handler
+  synchronously with current data, and each feed subscribes separately with
+  its own failure to track.
 
 - **Never hide an individual HUD icon with `visible=false`, and never cache the
   off-screen container's handle.** `ShipReticle.GetClip` uses `visible==false`

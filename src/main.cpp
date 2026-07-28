@@ -257,6 +257,13 @@ namespace
 	std::atomic<bool> g_interposeInstalled{ false };
 	std::atomic<bool> g_interposeFailed{ false };
 	std::atomic<bool> g_subscribed{ false };
+	// The high-frequency feed is subscribed SEPARATELY and can fail on its own:
+	// the 2026-07-28 freeze log caught it failing while the low-frequency
+	// subscribe on the same manager succeeded 50 ms earlier - a mid-init movie
+	// where the provider was not yet registered. The old code logged that
+	// result and never looked at it, which would have silently cost the whole
+	// session its bearings. Each round now subscribes only what is missing.
+	std::atomic<bool> g_subscribedHigh{ false };
 	std::atomic<bool> g_subscribeFailed{ false };
 
 	// ---------------------------------------------------------------------------
@@ -2557,8 +2564,14 @@ namespace
 			g_interposeInstalled.store(false, std::memory_order_release);
 			g_interposeFailed.store(false, std::memory_order_release);
 			g_subscribed.store(false, std::memory_order_release);
+			g_subscribedHigh.store(false, std::memory_order_release);
 			g_subscribeFailed.store(false, std::memory_order_release);
 			g_subscribeAttempts.store(0, std::memory_order_release);
+
+			// A new movie means cruise state is unknown until read fresh. Left
+			// stale-true across an in-cruise reload, the blip pass would run
+			// against the next HALF-BUILT movie during the load transition.
+			g_inCruise.store(false, std::memory_order_release);
 
 			// The arrow belonged to the old movie. Without this the plugin keeps
 			// writing rotation to a clip whose movie has been destroyed - the log
@@ -3650,7 +3663,8 @@ namespace
 	void TryInstallSubscriber()
 	{
 		if (!bInterposeTargetData.GetValue() ||
-			g_subscribed.load(std::memory_order_acquire) ||
+			(g_subscribed.load(std::memory_order_acquire) &&
+				g_subscribedHigh.load(std::memory_order_acquire)) ||
 			g_subscribeFailed.load(std::memory_order_acquire))
 			return;
 
@@ -3662,7 +3676,8 @@ namespace
 
 		// Re-read now the claim is held: the thread that just finished may have
 		// subscribed between our load above and this line.
-		if (g_subscribed.load(std::memory_order_acquire))
+		if (g_subscribed.load(std::memory_order_acquire) &&
+			g_subscribedHigh.load(std::memory_order_acquire))
 			return;
 
 		const auto ui = RE::UI::GetSingleton();
@@ -3701,21 +3716,41 @@ namespace
 			if (resolved && (manager.IsObject() || manager.IsDisplayObject())) {
 				anyResolved = true;
 				if (manager.HasMember("Subscribe")) {
-					RE::Scaleform::GFx::Value args[2];
-					a_root->CreateString(&args[0], kTargetFeed);
-					a_root->CreateFunction(&args[1], &g_feedHandler);
-					if (manager.Invoke("Subscribe", nullptr, args, 2)) {
-						g_subscribed.store(true, std::memory_order_release);
-						REX::INFO("[nav] SUBSCRIBED to '{}' via {}.Subscribe", kTargetFeed, path);
+					// Each feed is subscribed at most ONCE per movie, whatever
+					// order the rounds succeed in. Re-subscribing an already
+					// live feed would register the handler twice - every later
+					// dispatch would then run it twice, all session.
+					bool lowOK = g_subscribed.load(std::memory_order_acquire);
+					if (!lowOK) {
+						RE::Scaleform::GFx::Value args[2];
+						a_root->CreateString(&args[0], kTargetFeed);
+						a_root->CreateFunction(&args[1], &g_feedHandler);
+						if (manager.Invoke("Subscribe", nullptr, args, 2)) {
+							lowOK = true;
+							g_subscribed.store(true, std::memory_order_release);
+							REX::INFO("[nav] SUBSCRIBED to '{}' via {}.Subscribe", kTargetFeed, path);
+						} else {
+							REX::WARN("[nav] '{}.Subscribe' rejected the call", path);
+						}
+					}
 
-						// The screen positions live on the other feed.
+					// The screen positions live on the other feed. It can fail
+					// on its own on a mid-init movie (seen 2026-07-28: the
+					// provider was not yet registered), so its result is
+					// TRACKED and retried next round rather than shrugged at.
+					if (lowOK && !g_subscribedHigh.load(std::memory_order_acquire)) {
 						RE::Scaleform::GFx::Value hiArgs[2];
 						a_root->CreateString(&hiArgs[0], kHighFeed);
 						a_root->CreateFunction(&hiArgs[1], &g_highFeedHandler);
-						REX::INFO("[nav] {} to '{}'",
-							manager.Invoke("Subscribe", nullptr, hiArgs, 2) ? "SUBSCRIBED" : "FAILED to subscribe",
-							kHighFeed);
+						if (manager.Invoke("Subscribe", nullptr, hiArgs, 2)) {
+							g_subscribedHigh.store(true, std::memory_order_release);
+							REX::INFO("[nav] SUBSCRIBED to '{}'", kHighFeed);
+						} else {
+							REX::WARN("[nav] FAILED to subscribe to '{}' - will retry", kHighFeed);
+						}
+					}
 
+					if (lowOK && g_subscribedHigh.load(std::memory_order_acquire)) {
 						// The star map's body feed, if the probe is on. A
 						// failure here is informative and must not disturb the
 						// two subscriptions above, which the mod depends on.
@@ -3730,7 +3765,9 @@ namespace
 						}
 						return;
 					}
-					REX::WARN("[nav] '{}.Subscribe' rejected the call", path);
+					if (lowOK)
+						return;  // high retries next round; do not fall through
+					         // to the path-invoke fallback and double-subscribe
 				} else if (verbose) {
 					REX::INFO("[nav]   no 'Subscribe' member; its members follow:");
 					LevelCollector visitor{ std::string{ "[nav] " } + path, nullptr };
@@ -3740,18 +3777,22 @@ namespace
 			}
 
 			// Path-based Invoke resolves differently from GetVariable, so a
-			// class the latter cannot see may still be callable this way.
-			RE::Scaleform::GFx::Value args[2];
-			a_root->CreateString(&args[0], kTargetFeed);
-			a_root->CreateFunction(&args[1], &g_feedHandler);
-			const std::string method = std::string{ path } + ".Subscribe";
-			if (a_root->Invoke(method.c_str(), nullptr, args, 2)) {
-				g_subscribed.store(true, std::memory_order_release);
-				REX::INFO("[nav] SUBSCRIBED to '{}' via path-invoke '{}'", kTargetFeed, method);
-				return;
+			// class the latter cannot see may still be callable this way. Only
+			// ever for a low feed that is NOT yet subscribed - this route must
+			// never produce a second registration of a live handler.
+			if (!g_subscribed.load(std::memory_order_acquire)) {
+				RE::Scaleform::GFx::Value args[2];
+				a_root->CreateString(&args[0], kTargetFeed);
+				a_root->CreateFunction(&args[1], &g_feedHandler);
+				const std::string method = std::string{ path } + ".Subscribe";
+				if (a_root->Invoke(method.c_str(), nullptr, args, 2)) {
+					g_subscribed.store(true, std::memory_order_release);
+					REX::INFO("[nav] SUBSCRIBED to '{}' via path-invoke '{}'", kTargetFeed, method);
+					return;  // high follows via the manager route next round
+				}
+				if (verbose)
+					REX::INFO("[nav]   path-invoke '{}' failed too", method);
 			}
-			if (verbose)
-				REX::INFO("[nav]   path-invoke '{}' failed too", method);
 		}
 
 		if (anyResolved) {
@@ -3849,7 +3890,35 @@ namespace
 		static const RE::BSFixedString s_loadingMenu{ "LoadingMenu" };
 		static const RE::BSFixedString s_mainMenu{ "MainMenu" };
 		const auto                     ui = RE::UI::GetSingleton();
-		return ui && !ui->IsMenuOpen(s_loadingMenu) && !ui->IsMenuOpen(s_mainMenu);
+		if (!ui)
+			return false;
+
+		// Menus-closed alone is NOT settled. The 2026-07-28 freeze log shows a
+		// subscribe round running - so this returned true - while the load
+		// transition was still on screen: the ship HUD movie was mid-init (the
+		// high-frequency feed was not yet registered) and was then REBUILT
+		// within 50 ms. Poking a movie in that state from a worker thread is
+		// the prime suspect for the hang. So: LoadingMenu/MainMenu must have
+		// been closed for a couple of seconds continuously, the settle-timer
+		// pattern ShipHullRegen already uses. This function is called from the
+		// per-frame task and the feed callbacks, so the unsettled timestamp
+		// stays fresh while any load is up.
+		using clock = std::chrono::steady_clock;
+		static std::atomic<std::int64_t> s_lastUnsettledMs{ 0 };
+		const auto                       nowMs =
+			std::chrono::duration_cast<std::chrono::milliseconds>(clock::now().time_since_epoch()).count();
+		if (ui->IsMenuOpen(s_loadingMenu) || ui->IsMenuOpen(s_mainMenu)) {
+			s_lastUnsettledMs.store(nowMs, std::memory_order_release);
+			return false;
+		}
+		const auto last = s_lastUnsettledMs.load(std::memory_order_acquire);
+		// First call of the session lands here with 0: treat process start as
+		// the unsettled moment, which the timer then measures from.
+		if (last == 0) {
+			s_lastUnsettledMs.store(nowMs, std::memory_order_release);
+			return false;
+		}
+		return (nowMs - last) > 2500;
 	}
 
 	void RefreshCruiseState()
@@ -3938,6 +4007,8 @@ namespace
 
 		using V = RE::Scaleform::GFx::Value;
 
+		// A log that ENDS here names the frozen call.
+		REX::INFO("[blip] building holder - entering the VM");
 		bool made = reticle.CreateEmptyMovieClip(&g_blipHolder, "ShipNavPanelBlips", 19990);
 		if (!made) {
 			a_root->CreateObject(&g_blipHolder, "flash.display.Sprite");
@@ -4056,6 +4127,8 @@ namespace
 			g_fauxFailed.store(true, std::memory_order_release);
 		};
 
+		// A log that ENDS here names the frozen call.
+		REX::INFO("[blip] constructing OffScreenIcon - entering the VM");
 		a_root->CreateObject(&g_fauxBlip, "OffScreenIcon");
 		if (!g_fauxBlip.IsDisplayObject() && !g_fauxBlip.IsObject()) {
 			giveUp("class did not construct");
@@ -4146,6 +4219,14 @@ namespace
 		std::uint32_t a_lockedID, const std::string& a_lockedName)
 	{
 		if (!bHideVanillaBlips.GetValue())
+			return false;
+
+		// Nothing in here may touch a movie that is loading or freshly loaded -
+		// same settle gate as the builders (see WorldSettled for the 2026-07-28
+		// evidence). The container's own state needs no unwinding across a
+		// load: it goes down with the movie, and the rebuilt one starts
+		// visible.
+		if (!WorldSettled())
 			return false;
 
 		// Cheap gate: outside cruise with nothing hidden there is nothing to do,
@@ -4636,7 +4717,9 @@ namespace
 
 		using V = RE::Scaleform::GFx::Value;
 
-		// Depth 20001 puts the list above the arrow's 20000.
+		// Depth 20001 puts the list above the arrow's 20000. The pre-line means
+		// a log that ENDS here names the frozen call.
+		REX::INFO("[panel] building - entering the VM");
 		if (!reticle.CreateEmptyMovieClip(&g_panelClip, "ShipNavPanelList", 20001)) {
 			giveUp("CreateEmptyMovieClip refused a container for the list");
 			return;
@@ -4966,6 +5049,17 @@ namespace
 		std::size_t   highlightRow = 0;
 		bool          haveHighlightRow = false;
 
+		// Snapshot under the lock, render OUTSIDE it. The row loop below calls
+		// into the Scaleform VM, and a VM call must never happen while
+		// g_candidateMutex is held: the feed callbacks take this mutex from
+		// inside the engine's own dispatch, and they run concurrently across
+		// the BSJobs pool - so a thread rendering under the mutex while
+		// another waits for it inside the VM is a lock-order inversion. That
+		// deadlocks silently: no exception, no crash log, the game just stops
+		// responding. Prime suspect for the 2026-07-28 load-time freeze, and
+		// wrong regardless. Copying up to sixteen rows is nothing next to one
+		// SetMember.
+		std::vector<Candidate> visibleRows;
 		{
 			std::lock_guard          lock{ g_candidateMutex };
 			std::vector<std::size_t> local;
@@ -4982,14 +5076,23 @@ namespace
 				}
 			}
 
+			visibleRows.reserve(rowCount);
 			for (std::size_t r = 0; r < rowCount; ++r) {
 				const std::size_t n = first + r;
-				auto&             nameField = g_panelRows[r];
-				auto&             distField = g_panelDists[r];
+				if (n >= local.size())
+					break;
+				visibleRows.push_back(g_candidates[local[n]]);
+			}
+		}
+
+		{
+			for (std::size_t r = 0; r < rowCount; ++r) {
+				auto& nameField = g_panelRows[r];
+				auto& distField = g_panelDists[r];
 				auto& iconClip = g_panelIcons[r];
 				const bool haveIcon = iconClip.IsObject() || iconClip.IsDisplayObject();
 
-				if (n >= local.size()) {
+				if (r >= visibleRows.size()) {
 					nameField.SetMember("visible", V{ false });
 					distField.SetMember("visible", V{ false });
 					if (haveIcon)
@@ -4997,7 +5100,7 @@ namespace
 					continue;
 				}
 
-				const auto& row = g_candidates[local[n]];
+				const auto& row = visibleRows[r];
 				if (row.id == highlight) {
 					highlightRow = r;
 					haveHighlightRow = true;
@@ -5123,6 +5226,8 @@ namespace
 
 		// CreateEmptyMovieClip is the AS2-era call and may not exist on an AS3
 		// display object, so fall back to constructing a Sprite and adding it.
+		// The pre-line means a log that ENDS here names the frozen call.
+		REX::INFO("[arrow] building - entering the VM");
 		bool made = reticle.CreateEmptyMovieClip(&g_arrowClip, "ShipNavPanelArrow", 20000);
 		REX::INFO("[arrow] CreateEmptyMovieClip: {}", made ? "ok" : "failed, trying Sprite");
 		if (!made) {
