@@ -415,6 +415,17 @@ LOCKED moon, listed wherever you are: a lock is what keeps the blips hidden,
 so a lock that could not be re-selected and cleared would hide them
 forever.
 
+**v0.8.8, after the session confirmed all four states:** two refinements.
+An EXEMPT icon (E-target or quest) crowding the selection now counts as
+*coverage* — the tester locked the Staryard, E-targeted Earth, and got the
+mod's diamond beside Earth's rightful marker; vanilla deliberately showing
+an outranking marker over the selection means the mod should draw nothing.
+And a locked moon that leaves tracking clears its own lock after ~10 s
+continuously absent from a live feed — the grace period is load-bearing,
+because candidates rebuild empty after every movie teardown and an instant
+clear would eat the lock on every save load. Planets keep lock-and-wait;
+the locked-moon listing exception now effectively serves the grace window.
+
 ### Failure modes accepted
 
 - Plugin dies mid-hide → blips return on the next HUD movie rebuild (map

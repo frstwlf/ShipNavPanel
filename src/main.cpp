@@ -3542,6 +3542,8 @@ namespace
 			std::uint32_t lockedForBlips = 0;
 			std::string   lockedName;
 			std::string   infoTargetName;
+			bool          feedAlive = false;
+			bool          lockedInFeed = false;
 
 			{
 				std::lock_guard lock{ g_candidateMutex };
@@ -3571,6 +3573,11 @@ namespace
 						lockedName = row.name;
 					if (selectedID != 0 && selectedBlipName.empty() && row.id == selectedID)
 						selectedBlipName = row.name;
+					if (row.fromFeed) {
+						feedAlive = true;
+						if (row.id == lockedForBlips)
+							lockedInFeed = true;
+					}
 				}
 				const auto infoIdx = g_infoTargetIndex.load(std::memory_order_acquire);
 				if (infoIdx >= 0 && static_cast<std::size_t>(infoIdx) < g_candidates.size() &&
@@ -3618,6 +3625,51 @@ namespace
 						break;
 					}
 				}
+			}
+
+			// A locked MOON that leaves tracking range clears itself (v0.8.8,
+			// the tester's call): a moon only fills in beside its parent, so
+			// once the feed drops it the lock would sit as "..." indefinitely
+			// - and in the v0.8.7 model a lock is what keeps the blips
+			// hidden. Planets keep the lock-and-wait behaviour: flying at a
+			// distant dash-row planet is the list's whole point. The grace
+			// period is what makes this safe: candidates rebuild EMPTY after
+			// every movie teardown, so an instant clear would eat the lock on
+			// every save load - the feed must be alive and the moon missing
+			// from it continuously before the lock goes.
+			{
+				using clock = std::chrono::steady_clock;
+				static clock::time_point  s_moonAbsentSince{};
+				static std::uint32_t      s_moonWatchID{ 0 };
+				bool                      watching = false;
+				if (lockedForBlips != 0 && feedAlive && !lockedInFeed) {
+					GalaxyData galaxy{};
+					if (ReadGalaxyData(lockedForBlips, galaxy) && galaxy.parentPlanetID != 0) {
+						watching = true;
+						const auto now = clock::now();
+						if (s_moonWatchID != lockedForBlips) {
+							s_moonWatchID = lockedForBlips;
+							s_moonAbsentSince = now;
+						} else if (std::chrono::duration<float>(now - s_moonAbsentSince).count() > 10.0f) {
+							g_lockedID.store(0, std::memory_order_release);
+							lockedForBlips = 0;
+							lockedName.clear();
+							std::string moonName;
+							{
+								std::lock_guard bodies{ g_bodyTableMutex };
+								if (const auto body = g_bodyTable.find(s_moonWatchID);
+									body != g_bodyTable.end())
+									moonName = body->second.name;
+							}
+							REX::INFO("[panel] cleared the lock on '{}' - the moon left "
+									  "tracking range",
+								moonName.empty() ? std::format("{:08X}", s_moonWatchID) : moonName);
+							watching = false;
+						}
+					}
+				}
+				if (!watching)
+					s_moonWatchID = 0;
 			}
 
 			// The vanilla blip pass: hides the off-screen container in cruise
@@ -4564,9 +4616,18 @@ namespace
 			// invisible, and the overlap is re-tested from fresh rectangles
 			// every tick, using the same GetPositionAdjustedBounds vanilla's
 			// own overlap pass intersects. Quest-marked icons and the
-			// E-target's icon are exempt and re-asserted to full alpha.
+			// E-target's icon are exempt and re-asserted to full alpha - and
+			// when an EXEMPT icon is the one crowding the selection, that
+			// counts as coverage (v0.8.8): vanilla is deliberately showing
+			// the E-target or mission marker on top of where the selection
+			// is, and the mod adding its own marker beside it was clutter.
 			bool fadedBlocker = false;
+			bool exemptCovers = false;
 			if (haveReticle && selFound && bSelectionWinsOverlap.GetValue()) {
+				const auto intersects = [](const Rect& a_a, const Rect& a_b) {
+					return a_a.x < a_b.x + a_b.w && a_b.x < a_a.x + a_a.w &&
+					       a_a.y < a_b.y + a_b.h && a_b.y < a_a.y + a_a.h;
+				};
 				Rect selRect;
 				V    childCount;
 				if (readBounds(selIcon, selRect) && reticle.GetMember("numChildren", &childCount)) {
@@ -4604,17 +4665,17 @@ namespace
 							(child.GetMember("HasQT", &quest) && quest.IsBoolean() &&
 								quest.GetBoolean()) ||
 							(!a_infoTargetName.empty() && bodyName == a_infoTargetName);
+						Rect childRect;
 						if (exempt) {
 							child.SetMember("alpha", V{ 1.0 });
+							if (!exemptCovers && readBounds(child, childRect) &&
+								intersects(selRect, childRect))
+								exemptCovers = true;
 							continue;
 						}
 
-						Rect       childRect;
 						const bool overlap = readBounds(child, childRect) &&
-						                     selRect.x < childRect.x + childRect.w &&
-						                     childRect.x < selRect.x + selRect.w &&
-						                     selRect.y < childRect.y + childRect.h &&
-						                     childRect.y < selRect.y + selRect.h;
+						                     intersects(selRect, childRect);
 						child.SetMember("alpha", V{ overlap ? 0.0 : 1.0 });
 						if (overlap) {
 							fadedBlocker = true;
@@ -4630,11 +4691,11 @@ namespace
 				RestoreFadedIcons(root, base);
 			}
 
-			// Covered: visibly marked, or about to be - a freshly faded
-			// blocker leaves the selection's icon hidden until vanilla's next
-			// overlap pass runs, and the mod's marker must not flash into
-			// that one-tick gap.
-			onScreenCovered = selFound && (selVisible || fadedBlocker);
+			// Covered: visibly marked, about to be (a freshly faded blocker
+			// leaves the selection's icon hidden until vanilla's next overlap
+			// pass runs, and the mod's marker must not flash into that
+			// one-tick gap), or deliberately marked-over by an exempt icon.
+			onScreenCovered = selFound && (selVisible || fadedBlocker || exemptCovers);
 		}
 
 		return selectedShown || onScreenCovered;

@@ -8,24 +8,24 @@ and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
 
 ## Where it is
 
-**v0.8.7 — the hiding follows intent, not the flight mode; built, not yet
-run.** The tester's redesign after flying v0.8.6: plain cruising now leaves
-the vanilla HUD completely untouched (and costs the mod nothing per tick).
-The blips hide only while the mod has a stake — panel OPEN (the highlighted
-body and the lock stay visible) or a target LOCKED with the panel closed
-(only it stays). Clear the lock and everything is vanilla again. Same
-version: MOONS list only once the HUD actually tracks them — a dash-row
-moon cannot be pointed at and only fills in beside its parent, so
-whole-system listing is now planets-only. The locked moon is the one
-exception (always listed): a lock is what keeps blips hidden, so an
-unclearable lock would hide them forever.
+**v0.8.8 — two refinements from the v0.8.7 session; built, not yet run.**
+First: when the icon crowding the panel selection is an EXEMPT one — the
+E-target's or a quest marker's, which the fade pass deliberately never
+touches — that now counts as coverage, and the mod draws nothing. The
+tester's case: Staryard locked, Earth E-targeted — Earth's marker
+(rightfully) stayed on top of the blocked station icon, and the mod added a
+redundant diamond next to it. Now it stays quiet: vanilla is deliberately
+showing that marker over where the selection is. Second: **a locked moon
+that leaves tracking range clears its own lock** after ~10 s continuously
+absent from a live feed (row shows "..." until then, log says why). The
+grace period is load-bearing: candidates rebuild EMPTY after every movie
+teardown, so an instant clear would eat the lock on every save load.
+Planets keep lock-and-wait. The always-list-the-locked-moon exception stays
+for the grace window.
 
-Confirmed in the v0.8.6 session (2026-07-28): the Sol system-0 fix (Luna
-listed from afar — its lock correctly showed no marker, being a dash row,
-which prompted the moons redesign above).
-
-**v0.8.5's forward direction passed earlier the same day: Earth faded for
-the locked Staryard, marker and restore both correct.** The tester's case: a locked station's marker
+**v0.8.7 passed its session on 2026-07-28: all four states of the hiding
+model work as intended** (idle cruise vanilla, panel-open cull with
+highlight+lock kept, locked-only after closing, full restore on clearing). The tester's case: a locked station's marker
 vanished whenever Earth slid into view — vanilla sorts overlapping on-screen
 icons by priority (`UpdateBSV`: info target −2, cruise-autopilot −1, quest 0,
 then distance with PLANETS CAPPED AT ONE LIGHT-SECOND) and hides the losers.
@@ -157,18 +157,16 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 - [ ] **★ Remaining in-game checks** — checklist in
       [PHASE3-BLIP-PLAN.md §7–10](PHASE3-BLIP-PLAN.md). New to eyeball —
-      **v0.8.7's state machine**: idle cruise = fully vanilla HUD; open the
-      panel = blips vanish except the highlight (and lock); lock and close =
-      only the locked blip; clear the lock = everything returns. **Moon
-      listing**: from afar only planets have dash rows; moons appear as you
-      close on their parent; a locked moon's row survives flying away (and
-      the "..." shows while it waits). Still open from v0.8.6: the REVERSE
-      overlap (lock Earth with the Staryard near — the station's marker
-      should fade), and the moon-behind-parent overlap once a moon is
-      tracked (lock Luna with Earth crowding it). Still open from before:
-      the plain **on-screen yield**, **quest blips** surviving the cull, the
-      **interdiction tripwire**, and the `[blip]` census transforms being
-      zeros and ones.
+      **v0.8.8**: with the Staryard locked, E-target Earth over it — no mod
+      diamond beside Earth's marker (exempt-covers); and fly away from a
+      tracked locked moon — "..." for ~10 s, then the lock clears itself
+      (log line) and the blips restore. Still open from v0.8.6/0.8.7: the
+      REVERSE overlap (lock Earth with the Staryard near — the station's
+      marker should fade), the moon-behind-parent overlap (lock Luna with
+      Earth crowding it), and moon rows appearing/disappearing with
+      tracking. Still open from before: the plain **on-screen yield**,
+      **quest blips** surviving the cull, the **interdiction tripwire**, and
+      the `[blip]` census transforms being zeros and ones.
 
 - [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
       confirmed working. New: the pointer is a diamond moved around the reticle
