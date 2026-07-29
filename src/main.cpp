@@ -171,6 +171,11 @@ namespace
 	// equivalent at row size) and remain the fallback everywhere else.
 	REX::TIniSetting<bool>  bPanelVanillaIcons{ "Panel", "bPanelVanillaIcons", true };
 	REX::TIniSetting<float> fPanelVanillaIconScale{ "Panel", "fPanelVanillaIconScale", 0.28f };
+	// The giants' icon (v0.11.1, the tester's design): the in-POV marker's
+	// own circle with a ring-line drawn across it - one icon for every giant
+	// class. The circle is ~15 px at natural scale, so it takes a slightly
+	// larger factor than the 70 px badges to sit at the same size.
+	REX::TIniSetting<float> fPanelGiantIconScale{ "Panel", "fPanelGiantIconScale", 1.25f };
 
 	// List every body in the system, not just the ones the HUD happens to be
 	// offering. Bodies the game is not tracking have no distance and cannot be
@@ -1810,6 +1815,11 @@ namespace
 	RE::Scaleform::GFx::Value g_panelPoiIcons[kPanelMaxRowsHard];
 	std::uint64_t             g_panelPoiIconKey[kPanelMaxRowsHard]{};
 	std::atomic<bool>         g_panelPoiIconsFailed{ false };
+	// The giants' icon: the in-POV marker circle with the mod's ring-line
+	// child inside it (one scale drives both). Static art - built once,
+	// only visibility changes per refresh.
+	RE::Scaleform::GFx::Value g_panelGiantIcons[kPanelMaxRowsHard];
+	std::atomic<bool>         g_panelGiantIconsFailed{ false };
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -2814,8 +2824,10 @@ namespace
 				g_panelIconDrawn[i] = false;
 				g_panelPoiIcons[i] = RE::Scaleform::GFx::Value{};
 				g_panelPoiIconKey[i] = 0;
+				g_panelGiantIcons[i] = RE::Scaleform::GFx::Value{};
 			}
 			g_panelPoiIconsFailed.store(false, std::memory_order_release);
+			g_panelGiantIconsFailed.store(false, std::memory_order_release);
 			for (auto& row : g_panelRows)
 				row = RE::Scaleform::GFx::Value{};
 			g_panelRowCount.store(0, std::memory_order_release);
@@ -5647,6 +5659,60 @@ namespace
 			}
 			g_panelPoiIconKey[i] = 0;
 
+			// The giants' icon: the in-POV marker's own circle (a 3-state
+			// symbol whose every frame stops; it parks on the plain ring)
+			// with the ring-line drawn across it in a child clip - script-
+			// added children render ABOVE the timeline art, so the line
+			// sits over the circle. Both centred on origin (measured
+			// ±7.4 px), so the column's anchor fits unchanged.
+			if (iconColumn > 0.0 && bPanelVanillaIcons.GetValue() &&
+				!g_panelGiantIconsFailed.load(std::memory_order_acquire)) {
+				root->CreateObject(&g_panelGiantIcons[i], "ShipReticle_fla.PlanetIconCircle_37");
+				bool giantOk = false;
+				if (g_panelGiantIcons[i].IsObject() || g_panelGiantIcons[i].IsDisplayObject()) {
+					RE::Scaleform::GFx::Value giantAdded;
+					if (g_panelClip.Invoke("addChild", &giantAdded, &g_panelGiantIcons[i], 1)) {
+						RE::Scaleform::GFx::Value ringLine;
+						if (g_panelGiantIcons[i].CreateEmptyMovieClip(&ringLine, "NavRingLine", 10)) {
+							RE::Scaleform::GFx::Value lineGfx;
+							if (ringLine.GetMember("graphics", &lineGfx)) {
+								// Local units: the instance scale drives the
+								// line with the circle. Wider than the ring
+								// (±9.5 vs ±7.4) so the tips read as rings
+								// seen edge-on, not as a strike-through.
+								V lineFill[]{ V{ static_cast<std::uint32_t>(0xFFFFFF) }, V{ 0.85 } };
+								lineGfx.Invoke("beginFill", nullptr, lineFill, 2);
+								V p0[]{ V{ -9.5 }, V{ -0.8 } };
+								lineGfx.Invoke("moveTo", nullptr, p0, 2);
+								V p1[]{ V{ 9.5 }, V{ -0.8 } };
+								lineGfx.Invoke("lineTo", nullptr, p1, 2);
+								V p2[]{ V{ 9.5 }, V{ 0.8 } };
+								lineGfx.Invoke("lineTo", nullptr, p2, 2);
+								V p3[]{ V{ -9.5 }, V{ 0.8 } };
+								lineGfx.Invoke("lineTo", nullptr, p3, 2);
+								lineGfx.Invoke("lineTo", nullptr, p0, 2);
+								lineGfx.Invoke("endFill", nullptr, nullptr, 0);
+								giantOk = true;
+							}
+						}
+						if (giantOk) {
+							const double gs = static_cast<double>(fPanelGiantIconScale.GetValue());
+							g_panelGiantIcons[i].SetMember("x", V{ kNamePad + iconColumn * 0.5 });
+							g_panelGiantIcons[i].SetMember("y", V{ rowY + rowHeight * 0.5 });
+							g_panelGiantIcons[i].SetMember("scaleX", V{ gs });
+							g_panelGiantIcons[i].SetMember("scaleY", V{ gs });
+							g_panelGiantIcons[i].SetMember("visible", V{ false });
+						}
+					}
+				}
+				if (!giantOk) {
+					g_panelGiantIcons[i] = RE::Scaleform::GFx::Value{};
+					if (!g_panelGiantIconsFailed.exchange(true, std::memory_order_acq_rel))
+						REX::WARN("[icons] PlanetIconCircle did not construct - the giants "
+								  "keep the drawn ring");
+				}
+			}
+
 			++made;
 		}
 
@@ -6254,8 +6320,10 @@ namespace
 				auto& distField = g_panelDists[r];
 				auto& iconClip = g_panelIcons[r];
 				auto& poiIcon = g_panelPoiIcons[r];
+				auto& giantIcon = g_panelGiantIcons[r];
 				const bool haveIcon = iconClip.IsObject() || iconClip.IsDisplayObject();
 				const bool havePoiIcon = poiIcon.IsObject() || poiIcon.IsDisplayObject();
+				const bool haveGiantIcon = giantIcon.IsObject() || giantIcon.IsDisplayObject();
 
 				if (r >= visibleRows.size()) {
 					nameField.SetMember("visible", V{ false });
@@ -6264,6 +6332,8 @@ namespace
 						iconClip.SetMember("visible", V{ false });
 					if (havePoiIcon)
 						poiIcon.SetMember("visible", V{ false });
+					if (haveGiantIcon)
+						giantIcon.SetMember("visible", V{ false });
 					continue;
 				}
 
@@ -6337,7 +6407,7 @@ namespace
 				}
 				// Redrawn only when this row's class actually changes, which is
 				// rare - scrolling a list, not every frame.
-				if (haveIcon || havePoiIcon) {
+				if (haveIcon || havePoiIcon || haveGiantIcon) {
 					PlanetClass rowClass = PlanetClass::kUnknown;
 					bool        rowSettled = false;
 					{
@@ -6394,8 +6464,17 @@ namespace
 					if (havePoiIcon)
 						poiIcon.SetMember("visible", V{ vanillaShown });
 
-					// The drawn glyphs keep the giants - no vanilla equivalent
-					// at row size - and remain the fallback everywhere else.
+					// The giants wear the in-POV circle with the ring-line -
+					// one icon for every giant class, the tester's design.
+					const bool giantClass = rowClass == PlanetClass::kGasGiant ||
+					                        rowClass == PlanetClass::kHotGasGiant ||
+					                        rowClass == PlanetClass::kIceGiant;
+					const bool giantShown = giantClass && haveGiantIcon && !vanillaShown;
+					if (haveGiantIcon)
+						giantIcon.SetMember("visible", V{ giantShown });
+
+					// The drawn glyphs are the fallback wherever a vanilla
+					// piece is missing or failed.
 					if (haveIcon) {
 						if (!g_panelIconDrawn[r] || g_panelIconClass[r] != rowClass ||
 							g_panelIconSettled[r] != rowSettled) {
@@ -6409,7 +6488,7 @@ namespace
 							}
 						}
 						iconClip.SetMember("visible",
-							V{ !vanillaShown && HasRowIcon(rowClass, rowSettled) });
+							V{ !vanillaShown && !giantShown && HasRowIcon(rowClass, rowSettled) });
 					}
 				}
 
