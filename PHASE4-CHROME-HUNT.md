@@ -203,6 +203,21 @@ not a hack: mul-only darkens, mul=0 + add=target sets an exact colour.
   restamped). Vanilla width ~423 is close to the drawn panel's 340 — using
   it as-is is the cheap default.
 
+## v0.9.1: the decoration pass (built, awaiting test)
+
+Every lever above, exercised on the live probe: `Text_mc` shifted to x=29
+opening a 20 px icon column (the drawn panel's own `DrawRowIcon` painter -
+skyline on Jemison, ring on Olivas, bare rows stay bare by design), a
+distance TextField per row at x=272/w=90 wearing the row's own
+`getTextFormat` clone (align right), row heights stamped to
+`fProbeChromeRowHeight` (default 26, 0 = vanilla ~31) with
+`UpdateContainerRect()` relayout, and an optional exact-colour header tint
+(`uProbeHeaderTint`, mul-0-add-target ColorTransform - vanilla's own
+mechanism). `StampChromeRowHeights` re-runs after every selection change:
+normally a no-op walk, and if the deselect goto ever reverts the authored
+matrix it logs the answer ONCE and keeps the layout right regardless - the
+open frame-persistence question resolves itself either way, in the log.
+
 ## Probe checklist for the next session (log-gated, Phase-3 style)
 
 1. `CreateObject("ShipHudQuickContainer")` from the held movie — log

@@ -183,6 +183,13 @@ namespace
 	REX::TIniSetting<float> fProbeChromeOffsetX{ "Recon", "fProbeChromeOffsetX", 220.0f };
 	REX::TIniSetting<float> fProbeChromeOffsetY{ "Recon", "fProbeChromeOffsetY", -160.0f };
 
+	// v0.9.1, the decoration pass: every lever from the manipulation survey
+	// exercised on the live donor. Row heights restamped to this value
+	// (0 keeps vanilla's ~31); the header tinted to an exact colour with
+	// vanilla's own mul-0-add-target idiom (0 keeps the authentic teal).
+	REX::TIniSetting<float>         fProbeChromeRowHeight{ "Recon", "fProbeChromeRowHeight", 26.0f };
+	REX::TIniSetting<std::uint32_t> uProbeHeaderTint{ "Recon", "uProbeHeaderTint", 0 };
+
 	REX::TIniSetting<bool>          bDumpPlanetRecords{ "Recon", "bDumpPlanetRecords", false };
 	REX::TIniSetting<std::uint32_t> uDumpPlanetBytes{ "Recon", "uDumpPlanetBytes", 0x400 };
 
@@ -1796,6 +1803,14 @@ namespace
 	std::atomic<bool>           g_chromeProbeReady{ false };
 	std::atomic<bool>           g_chromeProbeFailed{ false };
 	std::atomic<std::int32_t>   g_chromeProbeLastSel{ -1 };
+	// v0.9.1 decorations: per-row mod-owned children (script-added, so
+	// timeline navigation can never touch them), the row text format cloned
+	// for the distance column, and a counter that answers the one open
+	// frame-persistence question if it ever fires.
+	RE::Scaleform::GFx::Value  g_chromeProbeIcons[kChromeProbeRows];
+	RE::Scaleform::GFx::Value  g_chromeProbeDists[kChromeProbeRows];
+	RE::Scaleform::GFx::Value  g_chromeProbeRowFormat;
+	std::atomic<std::uint32_t> g_chromeProbeRestamps{ 0 };
 
 	// Defined further down, but called from the data-feed callbacks above them.
 	bool WorldSettled();
@@ -2729,6 +2744,12 @@ namespace
 			g_chromeProbe = RE::Scaleform::GFx::Value{};
 			g_chromeProbeList = RE::Scaleform::GFx::Value{};
 			g_chromeProbeLastSel.store(-1, std::memory_order_release);
+			for (auto& icon : g_chromeProbeIcons)
+				icon = RE::Scaleform::GFx::Value{};
+			for (auto& dist : g_chromeProbeDists)
+				dist = RE::Scaleform::GFx::Value{};
+			g_chromeProbeRowFormat = RE::Scaleform::GFx::Value{};
+			g_chromeProbeRestamps.store(0, std::memory_order_release);
 
 			// The list belonged to the old movie too.
 			g_panelReady.store(false, std::memory_order_release);
@@ -5561,6 +5582,70 @@ namespace
 			fPanelOffsetX.GetValue(), fPanelOffsetY.GetValue());
 	}
 
+	// Stamp every probe row's height to fProbeChromeRowHeight (0 = leave
+	// vanilla's ~31). The container lays rows out by each clip's clipHeight,
+	// which is literally its Border_mc.height, so this plus one relayout call
+	// is the whole densify mechanism. Returns how many rows needed stamping:
+	// at build time all of them, afterwards none - the Selected/Normal frame
+	// MOVEs carry no matrix - so a nonzero count arriving from a selection
+	// change is the answer to the one open frame-persistence question
+	// (a backward goto DOES re-apply the authored matrix), logged once. The
+	// restamp itself keeps the layout right either way.
+	std::uint32_t StampChromeRowHeights(bool a_fromSelectionChange)
+	{
+		const double target = static_cast<double>(fProbeChromeRowHeight.GetValue());
+		if (target <= 0.0 || !(g_chromeProbeList.IsObject() || g_chromeProbeList.IsDisplayObject()))
+			return 0;
+
+		using V = RE::Scaleform::GFx::Value;
+
+		std::uint32_t stamped = 0;
+		for (std::size_t i = 0; i < kChromeProbeRows; ++i) {
+			V idx{ static_cast<double>(i) };
+			V clip;
+			if (!g_chromeProbeList.Invoke("GetClipByIndex", &clip, &idx, 1) ||
+				!(clip.IsObject() || clip.IsDisplayObject()))
+				continue;
+			V border;
+			if (!clip.GetMember("Border_mc", &border) ||
+				!(border.IsObject() || border.IsDisplayObject()))
+				continue;
+			V current;
+			if (border.GetMember("height", &current) && std::abs(AsNumber(current) - target) < 0.5)
+				continue;
+			border.SetMember("height", V{ target });
+
+			// The gradient sheen is the unnamed child between the border and
+			// the text (timeline depth order: border, sheen, Text_mc, badges).
+			// Sized with the border so it cannot hang below a shortened row.
+			// The name check keeps this from ever squashing Text_mc if a patch
+			// reorders the timeline.
+			V one{ 1.0 };
+			V overlay;
+			if (clip.Invoke("getChildAt", &overlay, &one, 1) &&
+				(overlay.IsObject() || overlay.IsDisplayObject())) {
+				V overlayName;
+				const bool isTextMc = overlay.GetMember("name", &overlayName) &&
+				                      overlayName.IsString() && overlayName.GetString() &&
+				                      std::string_view{ overlayName.GetString() } == "Text_mc";
+				if (!isTextMc)
+					overlay.SetMember("height", V{ target });
+			}
+			++stamped;
+		}
+
+		if (stamped > 0) {
+			g_chromeProbeList.Invoke("UpdateContainerRect", nullptr, nullptr, 0);
+			if (a_fromSelectionChange &&
+				g_chromeProbeRestamps.fetch_add(1, std::memory_order_acq_rel) == 0)
+				REX::INFO("[chrome] row heights REVERTED on a selection goto and were "
+						  "restamped ({} rows) - so the authored matrix IS re-applied by "
+						  "backward gotos, and restamp-after-change stays for good",
+					stamped);
+		}
+		return stamped;
+	}
+
 	// Phase 4 chrome probe (PHASE4-CHROME-HUNT.md): construct the chosen donor -
 	// the ship HUD's own loot panel - and drive it with hardcoded rows, so one
 	// cruise answers whether the whole-panel route works. Every step logs before
@@ -5633,7 +5718,7 @@ namespace
 		};
 		V header, invData, buttonBar, titleField;
 		const bool haveList = child("List_mc", g_chromeProbeList);
-		child("Header_mc", header);
+		const bool haveHeader = child("Header_mc", header);
 		const bool haveTitle = child("TargetName_tf", titleField);
 		const bool haveInv = child("PlayerInvData_mc", invData);
 		const bool haveBar = child("ButtonBar_mc", buttonBar);
@@ -5686,20 +5771,32 @@ namespace
 			}
 		}
 
-		// Four rows, hardcoded: the probe tests chrome, not data. The last name
-		// is longer than the entry's 39-character budget on purpose, to see the
-		// vanilla truncation do its job. Every field SetEntryText reads is
-		// stated explicitly; fWeight/uCount also feed the selection-change
-		// listener the ctor registered (capacity maths on a hidden meter).
-		static constexpr const char* kProbeNames[kChromeProbeRows] = {
-			"Jemison",
-			"Kurtz",
-			"Akila",
-			"Undiscovered Deep Space Manufacturing Platform",
+		// Four rows, hardcoded: the probe tests chrome, not data. Names are
+		// pre-capped the way production will cap them (the entry recomputes
+		// its own character budget every update, so feeding short strings
+		// beats fighting it) - the fourth stays long enough to show the cap
+		// AND to prove it clears the new distance column. Icon classes give
+		// the column something to draw where the drawn panel would: only the
+		// exceptions get a glyph, so two rows carry one and two are bare.
+		// Every field SetEntryText reads is stated explicitly; fWeight/uCount
+		// also feed the selection-change listener the ctor registered
+		// (capacity maths on a hidden meter).
+		struct ProbeRow
+		{
+			const char* name;
+			const char* dist;
+			PlanetClass cls;
+			bool        settled;
+		};
+		static constexpr ProbeRow kProbeRows[kChromeProbeRows] = {
+			{ "Jemison", "1.2 LS", PlanetClass::kRock, true },
+			{ "Olivas", "870 km", PlanetClass::kGasGiant, false },
+			{ "Kurtz", "-", PlanetClass::kBarren, false },
+			{ "Undiscovered Deep Space Manu...", "...", PlanetClass::kUnknown, false },
 		};
 		V items;
 		root->CreateArray(&items);
-		for (const char* name : kProbeNames) {
+		for (const auto& probeRow : kProbeRows) {
 			V row;
 			root->CreateObject(&row);
 			if (!row.IsObject()) {
@@ -5707,7 +5804,7 @@ namespace
 				return;
 			}
 			V nameVal;
-			root->CreateString(&nameVal, name);
+			root->CreateString(&nameVal, probeRow.name);
 			row.SetMember("sName", nameVal);
 			row.SetMember("uCount", V{ static_cast<std::uint32_t>(1) });
 			row.SetMember("uRarity", V{ static_cast<std::uint32_t>(0) });
@@ -5757,11 +5854,114 @@ namespace
 			REX::INFO("[chrome]   clip {}: name='{}' label='{}'", i, clipName, label);
 		}
 
+		// --- v0.9.1: the decoration pass. Script-ADDED children survive
+		// timeline navigation by rule; script-SET properties are restamped
+		// after every selection change the mod drives, which self-heals the
+		// one open question (does a backward goto re-apply the authored row
+		// matrix) and logs the answer if it ever fires.
+
+		// The rows' own text format, cloned so the distance column wears the
+		// donor's exact face rather than the borrowed HUD format.
+		{
+			V idx0{ 0.0 };
+			V clip0, textMc0, textTf0;
+			if (g_chromeProbeList.Invoke("GetClipByIndex", &clip0, &idx0, 1) &&
+				(clip0.IsObject() || clip0.IsDisplayObject()) &&
+				clip0.GetMember("Text_mc", &textMc0) &&
+				(textMc0.IsObject() || textMc0.IsDisplayObject()) &&
+				textMc0.GetMember("Text_tf", &textTf0) &&
+				(textTf0.IsObject() || textTf0.IsDisplayObject()) &&
+				textTf0.Invoke("getTextFormat", &g_chromeProbeRowFormat) &&
+				g_chromeProbeRowFormat.IsObject()) {
+				g_chromeProbeRowFormat.SetMember("align", V{ "right" });
+				REX::INFO("[chrome] row text format cloned for the distance column");
+			} else {
+				g_chromeProbeRowFormat = RE::Scaleform::GFx::Value{};
+				REX::WARN("[chrome] could not clone the row text format - distances go plain white");
+			}
+		}
+
+		const double rowH = fProbeChromeRowHeight.GetValue() > 0.0f ?
+		                        static_cast<double>(fProbeChromeRowHeight.GetValue()) :
+		                        31.0;
+		for (std::size_t i = 0; i < kChromeProbeRows; ++i) {
+			V idx{ static_cast<double>(i) };
+			V clip;
+			if (!g_chromeProbeList.Invoke("GetClipByIndex", &clip, &idx, 1) ||
+				!(clip.IsObject() || clip.IsDisplayObject()))
+				continue;
+
+			// Open the icon column: Text_mc is authored at x=9 and is MOVEd
+			// only by rarity frames, which the probe never enters, so this
+			// shift survives selection changes.
+			V textMc;
+			if (clip.GetMember("Text_mc", &textMc) &&
+				(textMc.IsObject() || textMc.IsDisplayObject()))
+				textMc.SetMember("x", V{ 29.0 });
+
+			// The mod's own glyph in the vacated space - same painter as the
+			// drawn panel, so the giants' ring and the settlement skyline
+			// carry over unchanged.
+			if (clip.CreateEmptyMovieClip(&g_chromeProbeIcons[i], "NavProbeIcon", 200)) {
+				RE::Scaleform::GFx::Value gfx;
+				if (g_chromeProbeIcons[i].GetMember("graphics", &gfx))
+					DrawRowIcon(gfx, kProbeRows[i].cls, kProbeRows[i].settled);
+				g_chromeProbeIcons[i].SetMember("x", V{ 19.0 });
+				g_chromeProbeIcons[i].SetMember("y", V{ rowH * 0.5 });
+			}
+
+			// The distance column, right-aligned at the row's edge (row art is
+			// ~372 wide; the field ends 10 short of it, clear of the capped
+			// names on the left).
+			root->CreateObject(&g_chromeProbeDists[i], "flash.text.TextField");
+			if (g_chromeProbeDists[i].IsObject() || g_chromeProbeDists[i].IsDisplayObject()) {
+				auto& dist = g_chromeProbeDists[i];
+				dist.SetMember("selectable", V{ false });
+				dist.SetMember("mouseEnabled", V{ false });
+				dist.SetMember("multiline", V{ false });
+				dist.SetMember("width", V{ 90.0 });
+				dist.SetMember("height", V{ 24.0 });
+				dist.SetMember("x", V{ 272.0 });
+				dist.SetMember("y", V{ 4.0 });
+				if (g_chromeProbeRowFormat.IsObject()) {
+					dist.SetMember("embedFonts", V{ true });
+					dist.SetMember("defaultTextFormat", g_chromeProbeRowFormat);
+				} else {
+					dist.SetMember("textColor", V{ static_cast<std::uint32_t>(0xFFFFFF) });
+				}
+				RE::Scaleform::GFx::Value distAdded;
+				clip.Invoke("addChild", &distAdded, &dist, 1);
+				dist.SetMember("text", V{ kProbeRows[i].dist });
+				if (g_chromeProbeRowFormat.IsObject())
+					dist.Invoke("setTextFormat", nullptr, &g_chromeProbeRowFormat, 1);
+			}
+		}
+
+		// Row density: heights stamped, then one relayout inside the call.
+		const auto stampedRows = StampChromeRowHeights(false);
+
+		// The header tint sample: exact colour via vanilla's own idiom -
+		// mul 0 + add target, the same trick the Selected frame plays on the
+		// row bar. 0 keeps the authentic teal.
+		if (const auto tint = uProbeHeaderTint.GetValue(); tint != 0 && haveHeader) {
+			V ct;
+			root->CreateObject(&ct, "flash.geom.ColorTransform");
+			RE::Scaleform::GFx::Value transform;
+			if (ct.IsObject() &&
+				ct.SetMember("color", V{ static_cast<std::uint32_t>(tint & 0xFFFFFF) }) &&
+				header.GetMember("transform", &transform) && transform.IsObject() &&
+				transform.SetMember("colorTransform", ct))
+				REX::INFO("[chrome] header tinted to #{:06X}", tint & 0xFFFFFF);
+			else
+				REX::WARN("[chrome] header tint failed - the vanilla teal stays");
+		}
+
 		g_chromeProbeLastSel.store(sel, std::memory_order_release);
 		g_chromeProbeReady.store(true, std::memory_order_release);
-		REX::INFO("[chrome] probe ready at ({}, {}) - opens and closes with the panel, "
-				  "wheel mirrors into its highlight",
-			fProbeChromeOffsetX.GetValue(), fProbeChromeOffsetY.GetValue());
+		REX::INFO("[chrome] probe ready at ({}, {}) - decorated: icon column open, "
+				  "distances in the row's own format, {} row heights -> {:.0f}px",
+			fProbeChromeOffsetX.GetValue(), fProbeChromeOffsetY.GetValue(),
+			stampedRows, rowH);
 	}
 
 	// Called from the high-frequency feed, on the UI thread, with distances
@@ -5931,8 +6131,14 @@ namespace
 		// like everything else here.
 		if (probeReady && haveHighlightPos) {
 			const auto sel = static_cast<std::int32_t>(highlightPos % kChromeProbeRows);
-			if (g_chromeProbeLastSel.exchange(sel, std::memory_order_acq_rel) != sel)
+			if (g_chromeProbeLastSel.exchange(sel, std::memory_order_acq_rel) != sel) {
 				g_chromeProbeList.SetMember("selectedIndex", V{ static_cast<double>(sel) });
+				// The deselected row just took a backward goto - the one case
+				// that could revert a stamped height. Normally a no-op walk;
+				// if it ever stamps, it logs the answer once and keeps the
+				// layout right regardless.
+				StampChromeRowHeights(true);
+			}
 		}
 
 		{
