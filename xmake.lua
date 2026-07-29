@@ -14,7 +14,7 @@ set_xmakever("3.0.0")
 
 -- set project constants
 set_project("ShipNavPanel")
-set_version("0.16.1")
+set_version("0.16.2")
 set_license("GPL-3.0-or-later")
 
 set_arch("x64")
