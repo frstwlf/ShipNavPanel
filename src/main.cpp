@@ -169,7 +169,20 @@ namespace
 	REX::TIniSetting<std::string> sPanelBrowseLabel{ "Panel", "sPanelBrowseLabel", "$CycleTarget" };
 	REX::TIniSetting<std::string> sPanelConfirmLabel{ "Panel", "sPanelConfirmLabel", "$ShipHUD_SelectTarget" };
 	REX::TIniSetting<float>       fPanelHintPillScale{ "Panel", "fPanelHintPillScale", 0.8f };
-	REX::TIniSetting<float>       fPanelConfirmPillRightPad{ "Panel", "fPanelConfirmPillRightPad", 130.0f };
+	// The pill CENTRES its label+key on its origin and its width depends on
+	// both, so edge alignment is a pad from the panel's right edge to the
+	// pill's centre - 75 puts the default label's right edge at the plate's
+	// (v0.16.0; was 130, which the tester read as name-column alignment).
+	REX::TIniSetting<float> fPanelConfirmPillRightPad{ "Panel", "fPanelConfirmPillRightPad", 75.0f };
+	// The wheel hint is a pill too (v0.16.0, the tester's ask): driven by
+	// ZoomIn, so the cap wears whatever the game renders for the wheel
+	// binding. The drawn mouse glyph returns only as its fallback. The
+	// browse pill's centre sits this far from the panel's LEFT edge.
+	REX::TIniSetting<float> fPanelBrowsePillX{ "Panel", "fPanelBrowsePillX", 100.0f };
+	// Every text in the panel except the header wears the pills' own label
+	// colour (v0.16.0, measured off the SWF: the filled button's Label_tf
+	// is 0xB7B7B7). The header keeps its cyan.
+	REX::TIniSetting<std::uint32_t> uPanelTextColor{ "Panel", "uPanelTextColor", 0xB7B7B7 };
 
 	REX::TIniSetting<bool>        bPanelSounds{ "Panel", "bPanelSounds", true };
 	REX::TIniSetting<std::string> sPanelOpenSound{ "Panel", "sPanelOpenSound", "UICockpitHUDMonocleOpen" };
@@ -1896,8 +1909,10 @@ namespace
 	// cruise while the panel is fully closed. Failure latches per movie.
 	RE::Scaleform::GFx::Value g_scannerHint;
 	std::atomic<bool>         g_scannerHintFailed{ false };
-	// And its sibling inside the panel footer: the confirm-key pill.
+	// And its siblings inside the panel footer: the confirm-key pill and
+	// the wheel/browse pill.
 	RE::Scaleform::GFx::Value g_panelConfirmPill;
+	RE::Scaleform::GFx::Value g_panelBrowsePill;
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -2908,6 +2923,7 @@ namespace
 			g_scannerHint = RE::Scaleform::GFx::Value{};
 			g_scannerHintFailed.store(false, std::memory_order_release);
 			g_panelConfirmPill = RE::Scaleform::GFx::Value{};
+			g_panelBrowsePill = RE::Scaleform::GFx::Value{};
 			for (auto& dist : g_panelDists)
 				dist = RE::Scaleform::GFx::Value{};
 			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
@@ -5571,6 +5587,69 @@ namespace
 			gfx.Invoke("endFill", nullptr, nullptr, 0);
 		}
 
+		// One recipe for the footer pills (v0.16.0): the HUD's own filled
+		// button driven by a user event, parented to the panel, display-only.
+		// The component centres its label+key assembly on its origin.
+		const auto makePill = [&](RE::Scaleform::GFx::Value& a_out, const std::string& a_label,
+								   const char* a_event, double a_x, double a_y) {
+			RE::Scaleform::GFx::Value ued;
+			{
+				V eventName;
+				root->CreateString(&eventName, a_event);
+				root->CreateObject(&ued,
+					"Shared.Components.ButtonControls.ButtonData.UserEventData", &eventName, 1);
+			}
+			RE::Scaleform::GFx::Value data;
+			if (ued.IsObject()) {
+				V dataArgs[2];
+				root->CreateString(&dataArgs[0], a_label.c_str());
+				dataArgs[1] = ued;
+				root->CreateObject(&data,
+					"Shared.Components.ButtonControls.ButtonData.ButtonBaseData", dataArgs, 2);
+			}
+			if (!data.IsObject())
+				return false;
+			root->CreateObject(&a_out, "BasicButton_Filled");
+			if (!(a_out.IsObject() || a_out.IsDisplayObject())) {
+				a_out = RE::Scaleform::GFx::Value{};
+				return false;
+			}
+			RE::Scaleform::GFx::Value added;
+			if (!g_panelClip.Invoke("addChild", &added, &a_out, 1)) {
+				a_out = RE::Scaleform::GFx::Value{};
+				return false;
+			}
+			const double ps = static_cast<double>(fPanelHintPillScale.GetValue());
+			a_out.SetMember("x", V{ a_x });
+			a_out.SetMember("y", V{ a_y });
+			a_out.SetMember("scaleX", V{ ps });
+			a_out.SetMember("scaleY", V{ ps });
+			a_out.SetMember("mouseEnabled", V{ false });
+			a_out.SetMember("mouseChildren", V{ false });
+			if (!a_out.Invoke("SetButtonData", nullptr, &data, 1)) {
+				a_out.SetMember("visible", V{ false });
+				a_out = RE::Scaleform::GFx::Value{};
+				return false;
+			}
+			return true;
+		};
+
+		// The wheel hint as a pill (the tester's ask): driven by ZoomIn, so
+		// the key cap wears whatever the game renders for the wheel binding.
+		// The drawn mouse glyph below survives as its fallback.
+		std::string browse = sPanelBrowseLabel.GetValue();
+		if (!browse.empty() && browse.front() == '$') {
+			const std::string translated = TranslateToken(browse.c_str());
+			browse = translated.empty() ? std::string{ "wheel to browse" } : translated;
+		}
+		bool browsePillOk = false;
+		if (hints) {
+			browsePillOk = makePill(g_panelBrowsePill, browse, "ZoomIn",
+				static_cast<double>(fPanelBrowsePillX.GetValue()), hintTop + hintHeight * 0.5);
+			if (!browsePillOk)
+				REX::WARN("[panel] browse pill could not be built - the drawn wheel glyph stays");
+		}
+
 		// The control hint's symbols are DRAWN, not typed. The font here is
 		// borrowed from the HUD and embedded, which means it carries only the
 		// glyphs its author included - arrows like U+25B2 would very likely come
@@ -5590,7 +5669,8 @@ namespace
 			gfx.Invoke("lineTo", nullptr, r3, 2);
 			gfx.Invoke("lineTo", nullptr, r0, 2);
 			gfx.Invoke("endFill", nullptr, nullptr, 0);
-
+		}
+		if (hints && !browsePillOk) {
 			const double midY = hintTop + hintHeight * 0.5;
 
 			const auto rect = [&](double a_x0, double a_y0, double a_x1, double a_y1,
@@ -5705,7 +5785,9 @@ namespace
 		if (haveFormat) {
 			g_panelFormat.SetMember("size", V{ 17.0 });
 			g_panelFormat.SetMember("bold", V{ false });
-			g_panelFormat.SetMember("color", V{ static_cast<std::uint32_t>(0xCCE6FF) });
+			// The pills' own label grey (v0.16.0) - every text in the panel
+			// wears it now except the header's cyan.
+			g_panelFormat.SetMember("color", V{ uPanelTextColor.GetValue() });
 			// A borrowed format brings the DONOR's alignment with it, and the
 			// donor here is the HUD's centred lock-on caption. Without this the
 			// names sit centred in their column, which is what v0.3.2 shipped.
@@ -5720,7 +5802,7 @@ namespace
 		if (haveDistFormat) {
 			g_panelDistFormat.SetMember("size", V{ 17.0 });
 			g_panelDistFormat.SetMember("bold", V{ false });
-			g_panelDistFormat.SetMember("color", V{ static_cast<std::uint32_t>(0x8FB8D4) });
+			g_panelDistFormat.SetMember("color", V{ uPanelTextColor.GetValue() });
 			g_panelDistFormat.SetMember("align", V{ "right" });
 		}
 
@@ -5756,7 +5838,7 @@ namespace
 					a_field.SetMember("embedFonts", V{ true });
 					a_field.SetMember("defaultTextFormat", a_useDist ? g_panelDistFormat : g_panelFormat);
 				} else {
-					a_field.SetMember("textColor", V{ static_cast<std::uint32_t>(0xCCE6FF) });
+					a_field.SetMember("textColor", V{ uPanelTextColor.GetValue() });
 				}
 
 				RE::Scaleform::GFx::Value added;
@@ -5920,25 +6002,22 @@ namespace
 		};
 
 		if (hints) {
-			// Left hint sits right against the wheel symbol, in the game's
-			// own words when the label is a token ($CycleTarget by default).
 			const double rightWidth = std::min(150.0, std::max(90.0, width * 0.36));
 			const double leftWidth = std::max(60.0, width - hintTextX - rightWidth - 14.0);
-			std::string  browse = sPanelBrowseLabel.GetValue();
-			if (!browse.empty() && browse.front() == '$') {
-				const std::string translated = TranslateToken(browse.c_str());
-				browse = translated.empty() ? std::string{ "wheel to browse" } : translated;
-			}
-			makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
-				browse, "left", hintTop + 2.0, 0x7FA8C4, 14.0);
 
-			// The confirm hint is the same vanilla pill as the HUD's scanner
-			// hint, driven by the first NAMED entry of sConfirmEvent - the
-			// key cap shows the player's real binding, which the old drawn
-			// "Q lock / clear" could never promise. An all-#id config has
-			// no name for the cap to resolve, so the drawn text (with
-			// sConfirmKeyLabel, now fallback-only) returns for it.
-			bool        pillOk = false;
+			// Drawn text on the left only when the browse pill above did not
+			// build; the words were resolved alongside it.
+			if (!browsePillOk)
+				makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
+					browse, "left", hintTop + 2.0, uPanelTextColor.GetValue(), 14.0);
+
+			// The confirm hint: the same pill, driven by the first NAMED
+			// entry of sConfirmEvent - the key cap shows the player's real
+			// binding, which the old drawn "Q lock / clear" could never
+			// promise. An all-#id config has no name for the cap to
+			// resolve, so the drawn text (with sConfirmKeyLabel, now
+			// fallback-only) returns for it.
+			bool        confirmPillOk = false;
 			std::string confirmEventName;
 			{
 				const std::string list = sConfirmEvent.GetValue();
@@ -5961,48 +6040,18 @@ namespace
 				}
 			}
 			if (!confirmEventName.empty()) {
-				RE::Scaleform::GFx::Value ued;
-				{
-					V eventName;
-					root->CreateString(&eventName, confirmEventName.c_str());
-					root->CreateObject(&ued,
-						"Shared.Components.ButtonControls.ButtonData.UserEventData", &eventName, 1);
-				}
-				RE::Scaleform::GFx::Value data;
-				if (ued.IsObject()) {
-					V dataArgs[2];
-					root->CreateString(&dataArgs[0], sPanelConfirmLabel.GetValue().c_str());
-					dataArgs[1] = ued;
-					root->CreateObject(&data,
-						"Shared.Components.ButtonControls.ButtonData.ButtonBaseData", dataArgs, 2);
-				}
-				if (data.IsObject()) {
-					root->CreateObject(&g_panelConfirmPill, "BasicButton_Filled");
-					if (g_panelConfirmPill.IsObject() || g_panelConfirmPill.IsDisplayObject()) {
-						RE::Scaleform::GFx::Value pillAdded;
-						if (g_panelClip.Invoke("addChild", &pillAdded, &g_panelConfirmPill, 1)) {
-							const double ps = static_cast<double>(fPanelHintPillScale.GetValue());
-							g_panelConfirmPill.SetMember("x",
-								V{ width - static_cast<double>(fPanelConfirmPillRightPad.GetValue()) });
-							g_panelConfirmPill.SetMember("y", V{ hintTop + hintHeight * 0.5 });
-							g_panelConfirmPill.SetMember("scaleX", V{ ps });
-							g_panelConfirmPill.SetMember("scaleY", V{ ps });
-							g_panelConfirmPill.SetMember("mouseEnabled", V{ false });
-							g_panelConfirmPill.SetMember("mouseChildren", V{ false });
-							pillOk = g_panelConfirmPill.Invoke("SetButtonData", nullptr, &data, 1);
-						}
-					}
-				}
-				if (!pillOk) {
-					g_panelConfirmPill = RE::Scaleform::GFx::Value{};
+				confirmPillOk = makePill(g_panelConfirmPill, sPanelConfirmLabel.GetValue(),
+					confirmEventName.c_str(),
+					width - static_cast<double>(fPanelConfirmPillRightPad.GetValue()),
+					hintTop + hintHeight * 0.5);
+				if (!confirmPillOk)
 					REX::WARN("[panel] confirm pill could not be built - the drawn hint text stays");
-				}
 			}
-			if (!pillOk)
+			if (!confirmPillOk)
 				makeHint(g_panelHintRight, g_panelHintRightFormat, width - rightWidth - 10.0,
 					rightWidth, "right",
 					std::format("{}  lock / clear", sConfirmKeyLabel.GetValue()), "right",
-					hintTop + 2.0, 0x7FA8C4, 14.0);
+					hintTop + 2.0, uPanelTextColor.GetValue(), 14.0);
 		}
 
 		// The title: row-bright and larger than the hints, so the strip reads
@@ -6590,11 +6639,13 @@ namespace
 				setVis(g_panelHint, true);
 				setVis(g_panelHintRight, true);
 				setVis(g_panelConfirmPill, true);
+				setVis(g_panelBrowsePill, true);
 			} else if (anim == PanelAnim::kOpening || anim == PanelAnim::kClosing) {
 				setVis(g_panelTitle, false);
 				setVis(g_panelHint, false);
 				setVis(g_panelHintRight, false);
 				setVis(g_panelConfirmPill, false);
+				setVis(g_panelBrowsePill, false);
 				setVis(g_panelHighlight, false);
 				setVis(g_panelScrollTrack, false);
 				setVis(g_panelScrollThumb, false);
