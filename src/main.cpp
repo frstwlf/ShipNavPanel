@@ -6366,19 +6366,16 @@ namespace
 			const double openness = anim == PanelAnim::kOpening ?
 			                            std::clamp(elapsed() / std::max(dur, 1e-6), 0.0, 1.0) :
 			                            std::clamp(1.0 - elapsed() / std::max(dur, 1e-6), 0.0, 1.0);
-			// The timeline splits (v0.13.1, the tester's tweak): the quarter
-			// nearest closed is a from-zero FADE of the small rectangle, the
-			// rest is the grow - so opening fades in then grows, and closing
-			// shrinks then fades out, with no pop at either end. Reversals
-			// keep working on the one openness value.
-			constexpr double kFadeFrac = 0.25;
-			const double     fade = std::clamp(openness / kFadeFrac, 0.0, 1.0);
-			const double     grow =
-				std::clamp((openness - kFadeFrac) / (1.0 - kFadeFrac), 0.0, 1.0);
-			const double scale = 0.12 + 0.88 * grow;
+			// Fade and grow run TOGETHER across the whole timeline (v0.13.2):
+			// v0.13.1 sequenced a short fade before the grow, and at this
+			// time scale it was imperceptible - four-odd frames on a plate
+			// twelve percent of its size reads as a pop. Concurrent, the
+			// fade spans the full duration and cannot be missed. One
+			// openness value still drives both, so reversals carry.
+			const double scale = 0.12 + 0.88 * openness;
 			const double w = static_cast<double>(fPanelWidth.GetValue());
 			const double h = g_panelHeight.load(std::memory_order_acquire);
-			g_panelClip.SetMember("alpha", V{ fade });
+			g_panelClip.SetMember("alpha", V{ openness });
 			g_panelClip.SetMember("scaleX", V{ scale });
 			g_panelClip.SetMember("scaleY", V{ scale });
 			g_panelClip.SetMember("x",
