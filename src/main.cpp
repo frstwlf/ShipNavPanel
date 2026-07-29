@@ -141,6 +141,10 @@ namespace
 	// the tester, played through vanilla's PlayMenuSound dispatcher (the
 	// same GlobalFunc static the menus themselves use). Any sound
 	// descriptor editor id works; an empty string silences that side.
+	// The open/close animation's length (v0.13.0). Tune by ear against the
+	// scanner sound; 0 disables it and the panel snaps as it always did.
+	REX::TIniSetting<float> fPanelAnimSeconds{ "Panel", "fPanelAnimSeconds", 0.30f };
+
 	REX::TIniSetting<bool>        bPanelSounds{ "Panel", "bPanelSounds", true };
 	REX::TIniSetting<std::string> sPanelOpenSound{ "Panel", "sPanelOpenSound", "UICockpitHUDMonocleOpen" };
 	REX::TIniSetting<std::string> sPanelCloseSound{ "Panel", "sPanelCloseSound", "UICockpitHUDMonocleClose" };
@@ -1846,6 +1850,20 @@ namespace
 	// input thread must never enter the VM itself (the v0.1.3 lesson).
 	// 0 = none, 1 = open, 2 = close.
 	std::atomic<std::uint32_t> g_pendingPanelSound{ 0 };
+
+	// The open/close animation (v0.13.0): the plate grows from a small
+	// rectangle and the content waits for it to finish; the close mirrors
+	// it. State advances inside RefreshPanel on the UI thread - atomic only
+	// so the movie teardown can reset it from its own thread.
+	enum class PanelAnim : std::uint32_t
+	{
+		kClosed = 0,
+		kOpening,
+		kOpen,
+		kClosing,
+	};
+	std::atomic<PanelAnim> g_panelAnimState{ PanelAnim::kClosed };
+	std::atomic<double>    g_panelHeight{ 0.0 };
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -2850,6 +2868,9 @@ namespace
 			g_panelScrollThumb = RE::Scaleform::GFx::Value{};
 			g_panelNameWidth.store(0.0, std::memory_order_release);
 			g_panelListTop.store(6.0, std::memory_order_release);
+			g_panelHeight.store(0.0, std::memory_order_release);
+			g_panelAnimState.store(PanelAnim::kClosed, std::memory_order_release);
+			g_pendingPanelSound.store(0, std::memory_order_release);
 			for (auto& dist : g_panelDists)
 				dist = RE::Scaleform::GFx::Value{};
 			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
@@ -5867,6 +5888,7 @@ namespace
 		g_panelClip.SetMember("visible", V{ false });
 
 		g_panelListTop.store(listTop, std::memory_order_release);
+		g_panelHeight.store(height, std::memory_order_release);
 		g_panelRowCount.store(static_cast<std::uint32_t>(made), std::memory_order_release);
 		g_panelReady.store(true, std::memory_order_release);
 		REX::INFO("[panel] ready - {} rows at ({}, {})", made,
@@ -6293,7 +6315,105 @@ namespace
 
 		const bool open = g_panelOpen.load(std::memory_order_acquire) &&
 		                  g_inCruise.load(std::memory_order_acquire);
-		g_panelClip.SetMember("visible", V{ open });
+
+		// The open/close animation (v0.13.0): a state machine on wall time,
+		// advanced here because this runs every feed tick - the cadence that
+		// keeps the arrow smooth. The plate grows from a small rectangle
+		// about its centre and the content waits for it to finish; closing
+		// mirrors it, and a toggle mid-flight reverses from the current
+		// progress rather than jumping. Duration 0 collapses everything to
+		// the old instant show/hide.
+		using animClock = std::chrono::steady_clock;
+		static animClock::time_point s_animStart{};
+		static PanelAnim             s_prevAnim = PanelAnim::kClosed;
+		const double dur = std::max(0.0, static_cast<double>(fPanelAnimSeconds.GetValue()));
+		const auto   nowAnim = animClock::now();
+		auto         anim = g_panelAnimState.load(std::memory_order_acquire);
+		const auto   elapsed = [&] {
+			return std::chrono::duration<double>(nowAnim - s_animStart).count();
+		};
+		const auto backdate = [&](double a_alreadyElapsed) {
+			s_animStart = nowAnim - std::chrono::duration_cast<animClock::duration>(
+										std::chrono::duration<double>(a_alreadyElapsed));
+		};
+
+		if (open && (anim == PanelAnim::kClosed || anim == PanelAnim::kClosing)) {
+			// Openness carries across a reversal: a plate half-shrunk starts
+			// growing from half, not from scratch.
+			double openness = 0.0;
+			if (anim == PanelAnim::kClosing && dur > 0.0)
+				openness = std::clamp(1.0 - elapsed() / dur, 0.0, 1.0);
+			anim = PanelAnim::kOpening;
+			backdate(openness * dur);
+		} else if (!open && (anim == PanelAnim::kOpen || anim == PanelAnim::kOpening)) {
+			double openness = 1.0;
+			if (anim == PanelAnim::kOpening && dur > 0.0)
+				openness = std::clamp(elapsed() / dur, 0.0, 1.0);
+			anim = PanelAnim::kClosing;
+			backdate((1.0 - openness) * dur);
+		}
+		if (anim == PanelAnim::kOpening && (dur <= 0.0 || elapsed() >= dur))
+			anim = PanelAnim::kOpen;
+		if (anim == PanelAnim::kClosing && (dur <= 0.0 || elapsed() >= dur))
+			anim = PanelAnim::kClosed;
+		g_panelAnimState.store(anim, std::memory_order_release);
+		const bool animEntered = anim != s_prevAnim;
+		s_prevAnim = anim;
+
+		g_panelClip.SetMember("visible", V{ anim != PanelAnim::kClosed });
+
+		if (anim == PanelAnim::kOpening || anim == PanelAnim::kClosing) {
+			const double openness = anim == PanelAnim::kOpening ?
+			                            std::clamp(elapsed() / std::max(dur, 1e-6), 0.0, 1.0) :
+			                            std::clamp(1.0 - elapsed() / std::max(dur, 1e-6), 0.0, 1.0);
+			// Never fully zero - it starts life as a small rectangle.
+			const double scale = 0.12 + 0.88 * openness;
+			const double w = static_cast<double>(fPanelWidth.GetValue());
+			const double h = g_panelHeight.load(std::memory_order_acquire);
+			g_panelClip.SetMember("scaleX", V{ scale });
+			g_panelClip.SetMember("scaleY", V{ scale });
+			g_panelClip.SetMember("x",
+				V{ static_cast<double>(fPanelOffsetX.GetValue()) + (1.0 - scale) * w * 0.5 });
+			g_panelClip.SetMember("y",
+				V{ static_cast<double>(fPanelOffsetY.GetValue()) + (1.0 - scale) * h * 0.5 });
+		} else if (animEntered && anim == PanelAnim::kOpen) {
+			g_panelClip.SetMember("scaleX", V{ 1.0 });
+			g_panelClip.SetMember("scaleY", V{ 1.0 });
+			g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
+			g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
+		}
+
+		// Content belongs to the settled-open state alone. Entering a moving
+		// state hides everything (title and hints included - static children
+		// the normal refresh never touches); entering open re-shows the
+		// statics, and the rows, scrollbar and highlight restore themselves
+		// through the normal pass below.
+		if (animEntered) {
+			const auto setVis = [&](RE::Scaleform::GFx::Value& a_v, bool a_show) {
+				if (a_v.IsObject() || a_v.IsDisplayObject())
+					a_v.SetMember("visible", V{ a_show });
+			};
+			if (anim == PanelAnim::kOpen) {
+				setVis(g_panelTitle, true);
+				setVis(g_panelHint, true);
+				setVis(g_panelHintRight, true);
+			} else if (anim == PanelAnim::kOpening || anim == PanelAnim::kClosing) {
+				setVis(g_panelTitle, false);
+				setVis(g_panelHint, false);
+				setVis(g_panelHintRight, false);
+				setVis(g_panelHighlight, false);
+				setVis(g_panelScrollTrack, false);
+				setVis(g_panelScrollThumb, false);
+				for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
+					setVis(g_panelRows[i], false);
+					setVis(g_panelDists[i], false);
+					setVis(g_panelIcons[i], false);
+					setVis(g_panelPoiIcons[i], false);
+					setVis(g_panelGiantIcons[i], false);
+				}
+			}
+		}
+
 		// The chrome probe rides the panel - and its visibility is written on
 		// the same tick, BEFORE the closed-panel return below.
 		const bool probeReady = g_chromeProbeReady.load(std::memory_order_acquire);
@@ -6325,7 +6445,10 @@ namespace
 			}
 		}
 
-		if (!open)
+		// Everything below is content, and content belongs to the settled-
+		// open state: while the plate is closed or in motion there is
+		// nothing else to update.
+		if (anim != PanelAnim::kOpen)
 			return;
 
 		using clock = std::chrono::steady_clock;
