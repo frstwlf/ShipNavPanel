@@ -404,33 +404,39 @@ These three come before release.
       `uPoiType`/`uPoiCategory` sampled from known locations — Jemison came back
       83/10, The Eye 43/7.
 
-- [ ] **2. THE HUNT: a vanilla UI donor for the panel itself — SURVEY DONE,
-      donor chosen, awaiting the in-game probe.** Full findings, method,
-      import graph, rejects and probe checklist in
-      [PHASE4-CHROME-HUNT.md](PHASE4-CHROME-HUNT.md). The short version:
+- [ ] **2. THE HUNT — CONCLUDED for the panel chrome; icon reuse remains.**
+      Full story in [PHASE4-CHROME-HUNT.md](PHASE4-CHROME-HUNT.md). The
+      donor (`ShipHudQuickContainer`) instantiated, drove and decorated
+      perfectly (v0.9.0–0.9.2) — and then **lost the side-by-side on looks:
+      the tester kept the drawn panel** (v0.10.0). What the hunt paid for
+      anyway: the drawn panel now wears the loot panel's own plate colour
+      (black @ 0.50, measured from the SWF), a title strip
+      (`bPanelHeader`/`sPanelTitle`), and the probe machinery stays behind
+      `bProbeVanillaChrome` (default off) for future part auditions.
 
-      - **Winner: `ShipHudQuickContainer` (symbol 70,
-        shiphudquickcontainer.swf)** — the ship HUD's own loot panel: teal
-        header + title textfield, dark body, rows with the pale highlight
-        bar, scrollbar. Reachable because the HUD movie ImportAssets2's that
-        SWF, and the working `OffScreenIcon` blip already PROVES imported
-        symbols are `CreateObject`-able (it lives in shipreticle.swf, also
-        imported). Ctor takes no feeds; vanilla drives only its own timeline
-        instance by direct member — a second instance cannot be fought over.
-        Drive: `OnItemsChanged({aItems})`, `List_mc.MoveSelection(±1)` /
-        `selectedIndex`, title via `TargetName_tf`;
-        **`List_mc.disableInput = true` is the safety pin** (kills all
-        mouse/key paths, leaves programmatic drive ungated); hide
-        `PlayerInvData_mc` + `ButtonBar_mc`.
-      - Fallback: bare `BSScrollingContainer` (61) + `QuickContainerListEntry`
-        (52) self-`Configure`d; floor: colour-borrow repaint of the drawn
-        panel.
-      - **The old prime suspect `TargetPanel` is REJECTED** — its render is
-        the amber hazard-striped enemy-subsystem meter box, wrong shape and
-        palette. Do not re-hunt; renders under `M:\Starfield\Extracted\art\`.
+      **Remaining piece — vanilla icons for settlement and POI rows,
+      pre-scouted, all in the HUD movie's domain:**
+      - `Components.Icons.DynamicPoiIcon` → symbol 162 in shipreticle.swf
+        (ONE import hop, the proven distance) — vanilla's own
+        pick-glyph-by-`uPoiType`/`uPoiCategory` component; likeliest single
+        donor for POI rows, drive it like the faux blip.
+      - `markers.swf` (two hops, via shipreticle) binds `SettlementMarker`,
+        `CityMarker`, `OutpostMarker`, `Components.Icons.BodyViewMarker`…
+      - `markers.swf` imports **`MapIcons.swf`** (three hops): the whole
+        per-kind library as bare default-package classes —
+        `Station_StarStation`, `Station_StarYard`, `Structure_Outpost`,
+        `Unique_SurfaceSettlement`, `City_NewAtlantis`, `Ship_*`,
+        `SpaceLandmark_*`… One `CreateObject("Station_StarStation")` probe
+        settles whether three-hop transitive imports resolve (one and two
+        hops are proven).
+      - Row glyphs are ~20 px; these symbols are marker-sized — expect a
+        `scaleX/scaleY` fit against the row height, and mind glyph colour
+        vs the panel palette.
 
-      The font is already the HUD's own (`$MAIN_Font_Bold` borrow), so type
-      matches once the chrome does. Skin only — data machinery stays.
+      The wheel regression note, for the record: v0.9.1's per-notch stamp
+      walk broke wheel scrolling somehow (never root-caused); deleting the
+      machinery in v0.9.2 fixed it. If a future feature adds per-notch VM
+      work on a live list, watch the wheel first.
 
 - [ ] **3. Reposition the panel to sit with the HUD.** Currently 540 left and
       160 up from screen centre, guessed against one resolution and never

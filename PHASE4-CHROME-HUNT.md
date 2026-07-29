@@ -218,6 +218,21 @@ normally a no-op walk, and if the deselect goto ever reverts the authored
 matrix it logs the answer ONCE and keeps the layout right regardless - the
 open frame-persistence question resolves itself either way, in the log.
 
+## Verdict (2026-07-29, v0.10.0): the drawn panel stays
+
+v0.9.2 fixed the wheel (the v0.9.1 stamp machinery was implicated though
+never root-caused — its removal was the fix; wary note in TODO.md). With
+both panels side by side and fully working, **the tester kept the drawn
+panel on looks.** The hunt still paid: the drawn panel now wears the
+donor's measured plate (black @ 0.50 instead of the invented navy), gained
+a title strip built like its own hint bar (`bPanelHeader` / `sPanelTitle`,
+default "NAVIGATION TARGETS"), and the probe retires behind
+`bProbeVanillaChrome=false` as a comparison/audition rig. Next and last
+chrome item: vanilla icons for settlement/POI rows — candidates and import
+distances pre-scouted in TODO.md item 2 (`DynamicPoiIcon` one hop;
+`markers.swf` two; its `MapIcons.swf` import three — the whole per-kind
+library as bare class names).
+
 ## Probe checklist for the next session (log-gated, Phase-3 style)
 
 1. `CreateObject("ShipHudQuickContainer")` from the held movie — log

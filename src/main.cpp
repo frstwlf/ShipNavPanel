@@ -137,6 +137,13 @@ namespace
 	// because a hint naming the wrong key is worse than no hint.
 	REX::TIniSetting<std::string> sConfirmKeyLabel{ "Panel", "sConfirmKeyLabel", "Q" };
 
+	// The title strip across the top, mirroring the hint bar along the bottom
+	// (v0.10.0, the tester's call after the donor comparison: the drawn panel
+	// stays, wearing vanilla's plate colour and a proper header). An empty
+	// title disables the strip as surely as the flag does.
+	REX::TIniSetting<bool>        bPanelHeader{ "Panel", "bPanelHeader", true };
+	REX::TIniSetting<std::string> sPanelTitle{ "Panel", "sPanelTitle", "NAVIGATION TARGETS" };
+
 	// Stations and landing sites in the list, below the bodies. Ships are off by
 	// default: in traffic that would be a list of everything flying past rather
 	// than of destinations.
@@ -172,14 +179,13 @@ namespace
 	REX::TIniSetting<bool>          bTestGraphicsClear{ "Recon", "bTestGraphicsClear", false };
 
 	// Phase 4 chrome probe (PHASE4-CHROME-HUNT.md): instantiate the ship HUD's
-	// own loot panel - ShipHudQuickContainer, the chosen chrome donor - beside
-	// the drawn panel, with four hardcoded rows, and mirror the wheel highlight
-	// into its selection. Answers in game: does the whole-panel ctor survive
-	// CreateObject, does the art come with it, does the highlight drive. The
-	// probe rides the panel: it shows while the panel is open and hides with
-	// it. ON by default in this build - it is the build's whole point - and
-	// isolated: any failure logs, gives up, and leaves the drawn panel alone.
-	REX::TIniSetting<bool>  bProbeVanillaChrome{ "Recon", "bProbeVanillaChrome", true };
+	// own loot panel - ShipHudQuickContainer - beside the drawn panel, with
+	// four hardcoded rows, the wheel highlight mirrored into its selection,
+	// and the decoration pass on top. It answered everything it was built to
+	// ask, and then the tester compared the two and kept the DRAWN panel - so
+	// it now defaults OFF, retired to a reference: flip it on to compare
+	// again, or to probe the next borrowed part against live vanilla art.
+	REX::TIniSetting<bool>  bProbeVanillaChrome{ "Recon", "bProbeVanillaChrome", false };
 	REX::TIniSetting<float> fProbeChromeOffsetX{ "Recon", "fProbeChromeOffsetX", 220.0f };
 	REX::TIniSetting<float> fProbeChromeOffsetY{ "Recon", "fProbeChromeOffsetY", -160.0f };
 
@@ -1789,9 +1795,14 @@ namespace
 	RE::Scaleform::GFx::Value g_panelHintRight;
 	RE::Scaleform::GFx::Value g_panelHintFormat;
 	RE::Scaleform::GFx::Value g_panelHintRightFormat;
+	RE::Scaleform::GFx::Value g_panelTitle;
+	RE::Scaleform::GFx::Value g_panelTitleFormat;
 	std::atomic<bool>          g_panelReady{ false };
 	std::atomic<bool>          g_panelFailed{ false };
 	std::atomic<std::uint32_t> g_panelRowCount{ 0 };
+	// Where the rows start, below the header when there is one. Written at
+	// panel build, read by the highlight positioning in RefreshPanel.
+	std::atomic<double>        g_panelListTop{ 6.0 };
 
 	// The Phase 4 chrome probe: a real ShipHudQuickContainer the mod owns.
 	// The list handle is kept separately because every wheel move drives its
@@ -2759,6 +2770,9 @@ namespace
 			g_panelHintRight = RE::Scaleform::GFx::Value{};
 			g_panelHintFormat = RE::Scaleform::GFx::Value{};
 			g_panelHintRightFormat = RE::Scaleform::GFx::Value{};
+			g_panelTitle = RE::Scaleform::GFx::Value{};
+			g_panelTitleFormat = RE::Scaleform::GFx::Value{};
+			g_panelListTop.store(6.0, std::memory_order_release);
 			for (auto& dist : g_panelDists)
 				dist = RE::Scaleform::GFx::Value{};
 			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
@@ -5291,19 +5305,29 @@ namespace
 		const double rowHeight = static_cast<double>(fPanelRowHeight.GetValue());
 		const double width = static_cast<double>(fPanelWidth.GetValue());
 
-		const bool   hints = bPanelHints.GetValue();
-		const double listBottom = 6.0 + rowHeight * static_cast<double>(rows);
+		const bool hints = bPanelHints.GetValue();
+		// The header mirrors the footer: a title where the hints have their
+		// text, a hairline between it and the rows, and the rows' 6.0 pad
+		// below its rule matching the pad above the footer's. An empty title
+		// disables it as surely as the flag does.
+		const bool   header = bPanelHeader.GetValue() && !sPanelTitle.GetValue().empty();
+		const double headerHeight = header ? 24.0 : 0.0;
+		const double listTop = 6.0 + headerHeight;
+		const double listBottom = listTop + rowHeight * static_cast<double>(rows);
 		const double hintHeight = 22.0;
 		const double hintTop = listBottom + 6.0;
 		const double height = hints ? (hintTop + hintHeight + 4.0) : (listBottom + 6.0);
 
-		// Background: a flat panel at 55% so the starfield still reads through.
+		// Background: the vanilla loot panel's own plate - pure black at half
+		// alpha, measured off the SWF placement (black art, alpha mult
+		// 128/256). The old navy 0x0A1420 @ 0.55 was the invented colour the
+		// whole chrome hunt existed to retire.
 		RE::Scaleform::GFx::Value gfx;
 		if (!g_panelClip.GetMember("graphics", &gfx)) {
 			giveUp("the list container has no 'graphics' member to draw into");
 			return;
 		}
-		V bgFill[]{ V{ static_cast<std::uint32_t>(0x0A1420) }, V{ 0.55 } };
+		V bgFill[]{ V{ static_cast<std::uint32_t>(0x000000) }, V{ 0.50 } };
 		gfx.Invoke("beginFill", nullptr, bgFill, 2);
 		V bg0[]{ V{ 0.0 }, V{ 0.0 } };
 		gfx.Invoke("moveTo", nullptr, bg0, 2);
@@ -5321,7 +5345,7 @@ namespace
 		if (bPanelRowSeparators.GetValue() && rows > 1) {
 			V sepFill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 0.10 } };
 			for (std::size_t i = 1; i < rows; ++i) {
-				const double y = 6.0 + rowHeight * static_cast<double>(i);
+				const double y = listTop + rowHeight * static_cast<double>(i);
 				gfx.Invoke("beginFill", nullptr, sepFill, 2);
 				V s0[]{ V{ 12.0 }, V{ y } };
 				gfx.Invoke("moveTo", nullptr, s0, 2);
@@ -5334,6 +5358,23 @@ namespace
 				gfx.Invoke("lineTo", nullptr, s0, 2);
 				gfx.Invoke("endFill", nullptr, nullptr, 0);
 			}
+		}
+
+		// The header's own hairline, mirroring the footer's; the title text is
+		// created further down with the same builder the hints use.
+		if (header) {
+			V ruleFill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 0.20 } };
+			gfx.Invoke("beginFill", nullptr, ruleFill, 2);
+			V t0[]{ V{ 10.0 }, V{ headerHeight } };
+			gfx.Invoke("moveTo", nullptr, t0, 2);
+			V t1[]{ V{ width - 10.0 }, V{ headerHeight } };
+			gfx.Invoke("lineTo", nullptr, t1, 2);
+			V t2[]{ V{ width - 10.0 }, V{ headerHeight + 1.0 } };
+			gfx.Invoke("lineTo", nullptr, t2, 2);
+			V t3[]{ V{ 10.0 }, V{ headerHeight + 1.0 } };
+			gfx.Invoke("lineTo", nullptr, t3, 2);
+			gfx.Invoke("lineTo", nullptr, t0, 2);
+			gfx.Invoke("endFill", nullptr, nullptr, 0);
 		}
 
 		// The control hint's symbols are DRAWN, not typed. The font here is
@@ -5455,7 +5496,7 @@ namespace
 
 		std::size_t made = 0;
 		for (std::size_t i = 0; i < rows; ++i) {
-			const double rowY = 6.0 + rowHeight * static_cast<double>(i);
+			const double rowY = listTop + rowHeight * static_cast<double>(i);
 
 			const auto makeField = [&](RE::Scaleform::GFx::Value& a_field, double a_x, double a_w,
 									   bool a_useDist) {
@@ -5515,64 +5556,71 @@ namespace
 		if (made < rows)
 			REX::WARN("[panel] only {} of {} rows could be created", made, rows);
 
-		// The hint is static text, so it is written once here rather than on
-		// every refresh.
+		// Hint and title text are static, written once here rather than on
+		// every refresh - one builder for all three fields.
+		const auto makeHint = [&](RE::Scaleform::GFx::Value& a_field, RE::Scaleform::GFx::Value& a_format,
+								   double a_x, double a_w, const char* a_align, const std::string& a_text,
+								   const char* a_tag, double a_y, std::uint32_t a_colour) {
+			root->CreateObject(&a_field, "flash.text.TextField");
+			if (!a_field.IsObject() && !a_field.IsDisplayObject()) {
+				REX::WARN("[panel] could not create the {} hint field", a_tag);
+				return;
+			}
+
+			a_field.SetMember("selectable", V{ false });
+			a_field.SetMember("mouseEnabled", V{ false });
+			a_field.SetMember("multiline", V{ false });
+			a_field.SetMember("width", V{ a_w });
+			a_field.SetMember("height", V{ hintHeight });
+			a_field.SetMember("x", V{ a_x });
+			a_field.SetMember("y", V{ a_y });
+
+			if (BorrowTextFormat(root, rootPath, a_format, "[panel-hint]")) {
+				a_format.SetMember("size", V{ 14.0 });
+				a_format.SetMember("bold", V{ false });
+				a_format.SetMember("color", V{ a_colour });
+				a_format.SetMember("align", V{ a_align });
+				a_field.SetMember("embedFonts", V{ true });
+				a_field.SetMember("defaultTextFormat", a_format);
+			} else {
+				a_field.SetMember("textColor", V{ a_colour });
+			}
+
+			a_field.SetMember("text", V{ a_text.c_str() });
+			if (a_format.IsObject())
+				a_field.Invoke("setTextFormat", nullptr, &a_format, 1);
+
+			RE::Scaleform::GFx::Value added;
+			if (!g_panelClip.Invoke("addChild", &added, &a_field, 1))
+				REX::WARN("[panel] {} hint addChild failed", a_tag);
+		};
+
 		if (hints) {
 			// Left hint sits right against the wheel symbol; the confirm hint is
 			// right-aligned to the panel edge, mirroring the name/distance
 			// columns above it.
-			const auto makeHint = [&](RE::Scaleform::GFx::Value& a_field, RE::Scaleform::GFx::Value& a_format,
-									   double a_x, double a_w, const char* a_align, const std::string& a_text,
-									   const char* a_tag) {
-				root->CreateObject(&a_field, "flash.text.TextField");
-				if (!a_field.IsObject() && !a_field.IsDisplayObject()) {
-					REX::WARN("[panel] could not create the {} hint field", a_tag);
-					return;
-				}
-
-				a_field.SetMember("selectable", V{ false });
-				a_field.SetMember("mouseEnabled", V{ false });
-				a_field.SetMember("multiline", V{ false });
-				a_field.SetMember("width", V{ a_w });
-				a_field.SetMember("height", V{ hintHeight });
-				a_field.SetMember("x", V{ a_x });
-				a_field.SetMember("y", V{ hintTop + 2.0 });
-
-				if (BorrowTextFormat(root, rootPath, a_format, "[panel-hint]")) {
-					a_format.SetMember("size", V{ 14.0 });
-					a_format.SetMember("bold", V{ false });
-					a_format.SetMember("color", V{ static_cast<std::uint32_t>(0x7FA8C4) });
-					a_format.SetMember("align", V{ a_align });
-					a_field.SetMember("embedFonts", V{ true });
-					a_field.SetMember("defaultTextFormat", a_format);
-				} else {
-					a_field.SetMember("textColor", V{ static_cast<std::uint32_t>(0x7FA8C4) });
-				}
-
-				a_field.SetMember("text", V{ a_text.c_str() });
-				if (a_format.IsObject())
-					a_field.Invoke("setTextFormat", nullptr, &a_format, 1);
-
-				RE::Scaleform::GFx::Value added;
-				if (!g_panelClip.Invoke("addChild", &added, &a_field, 1))
-					REX::WARN("[panel] {} hint addChild failed", a_tag);
-			};
-
 			// Sized from the right hint's needs rather than a percentage split:
 			// the 45/55 split in v0.3.2 left the browse hint too narrow and it
 			// truncated mid-word.
 			const double rightWidth = std::min(150.0, std::max(90.0, width * 0.36));
 			const double leftWidth = std::max(60.0, width - hintTextX - rightWidth - 14.0);
 			makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
-				std::string{ "wheel to browse" }, "left");
+				std::string{ "wheel to browse" }, "left", hintTop + 2.0, 0x7FA8C4);
 			makeHint(g_panelHintRight, g_panelHintRightFormat, width - rightWidth - 10.0, rightWidth, "right",
-				std::format("{}  lock / clear", sConfirmKeyLabel.GetValue()), "right");
+				std::format("{}  lock / clear", sConfirmKeyLabel.GetValue()), "right", hintTop + 2.0,
+				0x7FA8C4);
 		}
+
+		// The title, a notch brighter than the hints so it reads as one.
+		if (header)
+			makeHint(g_panelTitle, g_panelTitleFormat, 12.0, width - 24.0, "left",
+				sPanelTitle.GetValue(), "title", 3.0, 0x99D6FF);
 
 		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
 		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
 		g_panelClip.SetMember("visible", V{ false });
 
+		g_panelListTop.store(listTop, std::memory_order_release);
 		g_panelRowCount.store(static_cast<std::uint32_t>(made), std::memory_order_release);
 		g_panelReady.store(true, std::memory_order_release);
 		REX::INFO("[panel] ready - {} rows at ({}, {})", made,
@@ -6207,7 +6255,9 @@ namespace
 		if (g_panelHighlight.IsObject() || g_panelHighlight.IsDisplayObject()) {
 			g_panelHighlight.SetMember("visible", V{ haveHighlightRow });
 			if (haveHighlightRow)
-				g_panelHighlight.SetMember("y", V{ 6.0 + rowHeight * static_cast<double>(highlightRow) });
+				g_panelHighlight.SetMember("y",
+				V{ g_panelListTop.load(std::memory_order_acquire) +
+					rowHeight * static_cast<double>(highlightRow) });
 		}
 	}
 
