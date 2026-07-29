@@ -173,9 +173,10 @@ namespace
 	REX::TIniSetting<float> fPanelVanillaIconScale{ "Panel", "fPanelVanillaIconScale", 0.28f };
 	// The giants' icon (v0.11.1, the tester's design): the in-POV marker's
 	// own circle with a ring-line drawn across it - one icon for every giant
-	// class. The circle is ~15 px at natural scale, so it takes a slightly
-	// larger factor than the 70 px badges to sit at the same size.
-	REX::TIniSetting<float> fPanelGiantIconScale{ "Panel", "fPanelGiantIconScale", 1.25f };
+	// class. The circle is ~15 px at natural scale; 1.25 matched the badges
+	// but read too big in game (the ring-line tips widen it), so v0.12.0
+	// sits a third smaller on the tester's call.
+	REX::TIniSetting<float> fPanelGiantIconScale{ "Panel", "fPanelGiantIconScale", 0.85f };
 
 	// List every body in the system, not just the ones the HUD happens to be
 	// offering. Bodies the game is not tracking have no distance and cannot be
@@ -230,7 +231,9 @@ namespace
 
 	REX::TIniSetting<float>         fPanelOffsetX{ "Panel", "fPanelOffsetX", -540.0f };
 	REX::TIniSetting<float>         fPanelOffsetY{ "Panel", "fPanelOffsetY", -160.0f };
-	REX::TIniSetting<float>         fPanelWidth{ "Panel", "fPanelWidth", 340.0f };
+	// 425 = the original 340 plus the tester's quarter (v0.12.0), close to
+	// the vanilla loot panel's own 423.
+	REX::TIniSetting<float>         fPanelWidth{ "Panel", "fPanelWidth", 425.0f };
 	REX::TIniSetting<float>         fPanelRowHeight{ "Panel", "fPanelRowHeight", 26.0f };
 	REX::TIniSetting<std::uint32_t> uPanelMaxRows{ "Panel", "uPanelMaxRows", 10 };
 
@@ -1823,6 +1826,15 @@ namespace
 	// only visibility changes per refresh.
 	RE::Scaleform::GFx::Value g_panelGiantIcons[kPanelMaxRowsHard];
 	std::atomic<bool>         g_panelGiantIconsFailed{ false };
+	// The scrollbar (v0.12.0): a drawn track and thumb down the left edge,
+	// shown only while the list outgrows the panel. The thumb is 1 px art
+	// scaled to length, so tracking it costs two property writes. And the
+	// resolved Shared.GlobalFunc class object, cached per movie for the
+	// vanilla-style name truncation (TruncateSingleLineText).
+	RE::Scaleform::GFx::Value g_panelScrollTrack;
+	RE::Scaleform::GFx::Value g_panelScrollThumb;
+	RE::Scaleform::GFx::Value g_panelGlobalFunc;
+	std::atomic<double>       g_panelNameWidth{ 0.0 };
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -2819,6 +2831,10 @@ namespace
 			g_panelHintRightFormat = RE::Scaleform::GFx::Value{};
 			g_panelTitle = RE::Scaleform::GFx::Value{};
 			g_panelTitleFormat = RE::Scaleform::GFx::Value{};
+			g_panelScrollTrack = RE::Scaleform::GFx::Value{};
+			g_panelScrollThumb = RE::Scaleform::GFx::Value{};
+			g_panelGlobalFunc = RE::Scaleform::GFx::Value{};
+			g_panelNameWidth.store(0.0, std::memory_order_release);
 			g_panelListTop.store(6.0, std::memory_order_release);
 			for (auto& dist : g_panelDists)
 				dist = RE::Scaleform::GFx::Value{};
@@ -5550,6 +5566,48 @@ namespace
 			REX::WARN("[panel] no highlight clip - the list will run without one");
 		}
 
+		// The scrollbar (v0.12.0, drawn - the tester's call): a hairline
+		// track down the left edge, a brighter thumb whose 1 px art is
+		// scaled to length per refresh. Both hidden until the list actually
+		// outgrows the panel.
+		if (g_panelClip.CreateEmptyMovieClip(&g_panelScrollTrack, "ScrollTrack", 3)) {
+			RE::Scaleform::GFx::Value trackGfx;
+			if (g_panelScrollTrack.GetMember("graphics", &trackGfx)) {
+				V trackFill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 0.15 } };
+				trackGfx.Invoke("beginFill", nullptr, trackFill, 2);
+				V t0[]{ V{ 4.0 }, V{ listTop + 2.0 } };
+				trackGfx.Invoke("moveTo", nullptr, t0, 2);
+				V t1[]{ V{ 6.0 }, V{ listTop + 2.0 } };
+				trackGfx.Invoke("lineTo", nullptr, t1, 2);
+				V t2[]{ V{ 6.0 }, V{ listBottom - 2.0 } };
+				trackGfx.Invoke("lineTo", nullptr, t2, 2);
+				V t3[]{ V{ 4.0 }, V{ listBottom - 2.0 } };
+				trackGfx.Invoke("lineTo", nullptr, t3, 2);
+				trackGfx.Invoke("lineTo", nullptr, t0, 2);
+				trackGfx.Invoke("endFill", nullptr, nullptr, 0);
+			}
+			g_panelScrollTrack.SetMember("visible", V{ false });
+		}
+		if (g_panelClip.CreateEmptyMovieClip(&g_panelScrollThumb, "ScrollThumb", 4)) {
+			RE::Scaleform::GFx::Value thumbGfx;
+			if (g_panelScrollThumb.GetMember("graphics", &thumbGfx)) {
+				// 1 px tall at origin: scaleY becomes the thumb's length.
+				V thumbFill[]{ V{ static_cast<std::uint32_t>(0x99D6FF) }, V{ 0.70 } };
+				thumbGfx.Invoke("beginFill", nullptr, thumbFill, 2);
+				V h0[]{ V{ 3.5 }, V{ 0.0 } };
+				thumbGfx.Invoke("moveTo", nullptr, h0, 2);
+				V h1[]{ V{ 6.5 }, V{ 0.0 } };
+				thumbGfx.Invoke("lineTo", nullptr, h1, 2);
+				V h2[]{ V{ 6.5 }, V{ 1.0 } };
+				thumbGfx.Invoke("lineTo", nullptr, h2, 2);
+				V h3[]{ V{ 3.5 }, V{ 1.0 } };
+				thumbGfx.Invoke("lineTo", nullptr, h3, 2);
+				thumbGfx.Invoke("lineTo", nullptr, h0, 2);
+				thumbGfx.Invoke("endFill", nullptr, nullptr, 0);
+			}
+			g_panelScrollThumb.SetMember("visible", V{ false });
+		}
+
 		const bool haveFormat = BorrowTextFormat(root, rootPath, g_panelFormat, "[panel]");
 		if (haveFormat) {
 			g_panelFormat.SetMember("size", V{ 17.0 });
@@ -5578,6 +5636,9 @@ namespace
 		const double     iconColumn = bPanelIcons.GetValue() ? 20.0 : 0.0;
 		const double     nameWidth =
 			std::max(40.0, width - kNamePad * 2.0 - kDistWidth - 6.0 - iconColumn);
+		// The refresh adjusts moon rows' field width alongside their indent,
+		// so the vanilla truncation measures against the real edge.
+		g_panelNameWidth.store(nameWidth, std::memory_order_release);
 
 		std::size_t made = 0;
 		for (std::size_t i = 0; i < rows; ++i) {
@@ -5786,6 +5847,15 @@ namespace
 		if (header)
 			makeHint(g_panelTitle, g_panelTitleFormat, 12.0, width - 24.0, "left",
 				title, "title", 5.0, 0xCCE6FF, 16.0);
+
+		// Vanilla's own single-line truncation runs after every name write;
+		// the class object resolves once per movie.
+		if (!root->GetVariable(&g_panelGlobalFunc, "Shared.GlobalFunc") ||
+			!(g_panelGlobalFunc.IsObject() || g_panelGlobalFunc.IsDisplayObject())) {
+			g_panelGlobalFunc = RE::Scaleform::GFx::Value{};
+			REX::WARN("[panel] Shared.GlobalFunc did not resolve - long names clip "
+					  "instead of truncating");
+		}
 
 		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
 		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
@@ -6254,10 +6324,13 @@ namespace
 		std::vector<Candidate> visibleRows;
 		std::size_t            highlightPos = 0;
 		bool                   haveHighlightPos = false;
+		std::size_t            scrollFirst = 0;
+		std::size_t            scrollTotal = 0;
 		{
 			std::lock_guard          lock{ g_candidateMutex };
 			std::vector<std::size_t> local;
 			CollectLocalRows(local);
+			scrollTotal = local.size();
 
 			// Scroll so the highlight stays on screen once the system has more
 			// bodies than the panel has rows.
@@ -6271,6 +6344,7 @@ namespace
 					break;
 				}
 			}
+			scrollFirst = first;
 
 			visibleRows.reserve(rowCount);
 			for (std::size_t r = 0; r < rowCount; ++r) {
@@ -6278,6 +6352,26 @@ namespace
 				if (n >= local.size())
 					break;
 				visibleRows.push_back(g_candidates[local[n]]);
+			}
+		}
+
+		// The scrollbar tracks the window over the local list, and only
+		// exists on screen while there is somewhere to scroll to.
+		if (g_panelScrollThumb.IsObject() || g_panelScrollThumb.IsDisplayObject()) {
+			const bool overflow = scrollTotal > rowCount && rowCount > 0;
+			g_panelScrollTrack.SetMember("visible", V{ overflow });
+			g_panelScrollThumb.SetMember("visible", V{ overflow });
+			if (overflow) {
+				const double trackTop = g_panelListTop.load(std::memory_order_acquire) + 2.0;
+				const double trackH = rowHeight * static_cast<double>(rowCount) - 4.0;
+				const double thumbH = std::max(8.0,
+					trackH * static_cast<double>(rowCount) / static_cast<double>(scrollTotal));
+				const auto   denom = scrollTotal - rowCount;
+				const double t = denom > 0 ?
+				                     static_cast<double>(scrollFirst) / static_cast<double>(denom) :
+				                     0.0;
+				g_panelScrollThumb.SetMember("y", V{ trackTop + (trackH - thumbH) * t });
+				g_panelScrollThumb.SetMember("scaleY", V{ thumbH });
 			}
 		}
 
@@ -6350,9 +6444,16 @@ namespace
 					// Moons sit indented under their planet. Done by moving the
 					// field rather than padding the string, so it does not
 					// depend on the width of a space in a borrowed font.
+					const double indent =
+						row.isMoon ? static_cast<double>(fPanelMoonIndent.GetValue()) : 0.0;
 					nameField.SetMember("x",
-						V{ 10.0 + (bPanelIcons.GetValue() ? 20.0 : 0.0) +
-							(row.isMoon ? static_cast<double>(fPanelMoonIndent.GetValue()) : 0.0) });
+						V{ 10.0 + (bPanelIcons.GetValue() ? 20.0 : 0.0) + indent });
+					// The field's right edge stays put when the left one
+					// indents, so the truncation below measures honestly and
+					// moon names cannot run under the distance column.
+					if (const double baseWidth = g_panelNameWidth.load(std::memory_order_acquire);
+						baseWidth > 0.0)
+						nameField.SetMember("width", V{ std::max(40.0, baseWidth - indent) });
 
 					// The locked body is marked in the list itself, so the panel
 					// says what the HUD is showing without having to be closed.
@@ -6386,6 +6487,13 @@ namespace
 					// fall back to no font.
 					if (g_panelFormat.IsObject())
 						nameField.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
+					// Vanilla's own ellipsis (v0.12.0): measures the styled
+					// text against the field and swaps the tail for the same
+					// single-glyph "…" every vanilla list uses - a glyph the
+					// v0.9.0 probe already proved the embedded font carries.
+					// No-op while the name fits.
+					if (g_panelGlobalFunc.IsObject() || g_panelGlobalFunc.IsDisplayObject())
+						g_panelGlobalFunc.Invoke("TruncateSingleLineText", nullptr, &nameField, 1);
 
 					// Light-seconds once kilometres stop being readable. A dash
 					// marks a body the game is not currently tracking: it is
