@@ -174,15 +174,20 @@ namespace
 	// pill's centre - 75 puts the default label's right edge at the plate's
 	// (v0.16.0; was 130, which the tester read as name-column alignment).
 	REX::TIniSetting<float> fPanelConfirmPillRightPad{ "Panel", "fPanelConfirmPillRightPad", 75.0f };
-	// The wheel hint is a pill too (v0.16.0, the tester's ask): driven by
-	// ZoomIn, so the cap wears whatever the game renders for the wheel
-	// binding. The drawn mouse glyph returns only as its fallback. The
-	// browse pill's centre sits this far from the panel's LEFT edge.
-	REX::TIniSetting<float> fPanelBrowsePillX{ "Panel", "fPanelBrowsePillX", 100.0f };
 	// Every text in the panel except the header wears the pills' own label
 	// colour (v0.16.0, measured off the SWF: the filled button's Label_tf
-	// is 0xB7B7B7). The header keeps its cyan.
+	// is 0xB7B7B7). The header keeps its cyan. The wheel hint went back to
+	// the drawn glyph in this same colour (v0.16.1): a ZoomIn-driven pill
+	// renders its cap as the binding NAME - "MOUSEWHEELUP", same as the
+	// bindings menu - because the component has no wheel art.
 	REX::TIniSetting<std::uint32_t> uPanelTextColor{ "Panel", "uPanelTextColor", 0xB7B7B7 };
+
+	// The highlight bar, defaulting to vanilla's own selection colour: the
+	// loot rows' Selected state is a colorTransform to flat 0xEFF3DC at
+	// ~40% (measured off the SWF). The drawn panel's old invented pair was
+	// 0x66CCFF at 0.28, one ini edit away if the pale bar reads worse.
+	REX::TIniSetting<std::uint32_t> uPanelHighlightColor{ "Panel", "uPanelHighlightColor", 0xEFF3DC };
+	REX::TIniSetting<float>         fPanelHighlightAlpha{ "Panel", "fPanelHighlightAlpha", 0.40f };
 
 	REX::TIniSetting<bool>        bPanelSounds{ "Panel", "bPanelSounds", true };
 	REX::TIniSetting<std::string> sPanelOpenSound{ "Panel", "sPanelOpenSound", "UICockpitHUDMonocleOpen" };
@@ -1909,10 +1914,9 @@ namespace
 	// cruise while the panel is fully closed. Failure latches per movie.
 	RE::Scaleform::GFx::Value g_scannerHint;
 	std::atomic<bool>         g_scannerHintFailed{ false };
-	// And its siblings inside the panel footer: the confirm-key pill and
-	// the wheel/browse pill.
+	// And its sibling inside the panel footer: the confirm-key pill. (The
+	// browse side went back to the drawn glyph - see uPanelTextColor.)
 	RE::Scaleform::GFx::Value g_panelConfirmPill;
-	RE::Scaleform::GFx::Value g_panelBrowsePill;
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -2923,7 +2927,6 @@ namespace
 			g_scannerHint = RE::Scaleform::GFx::Value{};
 			g_scannerHintFailed.store(false, std::memory_order_release);
 			g_panelConfirmPill = RE::Scaleform::GFx::Value{};
-			g_panelBrowsePill = RE::Scaleform::GFx::Value{};
 			for (auto& dist : g_panelDists)
 				dist = RE::Scaleform::GFx::Value{};
 			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
@@ -5634,20 +5637,15 @@ namespace
 			return true;
 		};
 
-		// The wheel hint as a pill (the tester's ask): driven by ZoomIn, so
-		// the key cap wears whatever the game renders for the wheel binding.
-		// The drawn mouse glyph below survives as its fallback.
+		// The wheel hint stays DRAWN (v0.16.1): a ZoomIn-driven pill was
+		// tried and its cap rendered the binding NAME - "MOUSEWHEELUP",
+		// exactly as the bindings menu shows it - because the component has
+		// no wheel art. The glyph now wears the panel's text colour, and
+		// the words beside it stay the game's own.
 		std::string browse = sPanelBrowseLabel.GetValue();
 		if (!browse.empty() && browse.front() == '$') {
 			const std::string translated = TranslateToken(browse.c_str());
 			browse = translated.empty() ? std::string{ "wheel to browse" } : translated;
-		}
-		bool browsePillOk = false;
-		if (hints) {
-			browsePillOk = makePill(g_panelBrowsePill, browse, "ZoomIn",
-				static_cast<double>(fPanelBrowsePillX.GetValue()), hintTop + hintHeight * 0.5);
-			if (!browsePillOk)
-				REX::WARN("[panel] browse pill could not be built - the drawn wheel glyph stays");
 		}
 
 		// The control hint's symbols are DRAWN, not typed. The font here is
@@ -5670,7 +5668,7 @@ namespace
 			gfx.Invoke("lineTo", nullptr, r0, 2);
 			gfx.Invoke("endFill", nullptr, nullptr, 0);
 		}
-		if (hints && !browsePillOk) {
+		if (hints) {
 			const double midY = hintTop + hintHeight * 0.5;
 
 			const auto rect = [&](double a_x0, double a_y0, double a_x1, double a_y1,
@@ -5689,15 +5687,16 @@ namespace
 				gfx.Invoke("endFill", nullptr, nullptr, 0);
 			};
 
-			// A mouse body with a wheel in it. The triangles alone were read as
-			// generic up/down rather than as a wheel, so the glyph now says
-			// which device it means and the triangles say which way it turns.
-			rect(12.0, midY - 8.0, 23.0, midY + 8.0, 0x99D6FF, 0.30);
-			rect(16.5, midY - 5.5, 18.5, midY - 0.5, 0xCCE6FF, 0.95);
+			// A mouse body with a wheel in it, in the panel's text colour
+			// (v0.16.1). The triangles alone were read as generic up/down
+			// rather than as a wheel, so the glyph says which device it
+			// means and the triangles say which way it turns.
+			rect(12.0, midY - 8.0, 23.0, midY + 8.0, uPanelTextColor.GetValue(), 0.30);
+			rect(16.5, midY - 5.5, 18.5, midY - 0.5, uPanelTextColor.GetValue(), 0.95);
 
 			// Stacked beside the mouse, so the pair reads as one symbol.
 			const auto triangle = [&](double a_cx, double a_cy, bool a_up) {
-				V fill[]{ V{ static_cast<std::uint32_t>(0x99D6FF) }, V{ 0.85 } };
+				V fill[]{ V{ uPanelTextColor.GetValue() }, V{ 0.85 } };
 				gfx.Invoke("beginFill", nullptr, fill, 2);
 				const double tip = a_up ? a_cy - 3.5 : a_cy + 3.5;
 				const double base = a_up ? a_cy + 1.5 : a_cy - 1.5;
@@ -5721,7 +5720,10 @@ namespace
 		if (g_panelClip.CreateEmptyMovieClip(&g_panelHighlight, "Highlight", 1)) {
 			RE::Scaleform::GFx::Value hlGfx;
 			if (g_panelHighlight.GetMember("graphics", &hlGfx)) {
-				V hlFill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 0.28 } };
+				// Vanilla's own selection colour by default (v0.16.1): the
+				// loot rows' Selected cxform, flat 0xEFF3DC at ~40%.
+				V hlFill[]{ V{ uPanelHighlightColor.GetValue() },
+					V{ std::clamp(static_cast<double>(fPanelHighlightAlpha.GetValue()), 0.0, 1.0) } };
 				hlGfx.Invoke("beginFill", nullptr, hlFill, 2);
 				V h0[]{ V{ 4.0 }, V{ 0.0 } };
 				hlGfx.Invoke("moveTo", nullptr, h0, 2);
@@ -6005,11 +6007,8 @@ namespace
 			const double rightWidth = std::min(150.0, std::max(90.0, width * 0.36));
 			const double leftWidth = std::max(60.0, width - hintTextX - rightWidth - 14.0);
 
-			// Drawn text on the left only when the browse pill above did not
-			// build; the words were resolved alongside it.
-			if (!browsePillOk)
-				makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
-					browse, "left", hintTop + 2.0, uPanelTextColor.GetValue(), 14.0);
+			makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
+				browse, "left", hintTop + 2.0, uPanelTextColor.GetValue(), 14.0);
 
 			// The confirm hint: the same pill, driven by the first NAMED
 			// entry of sConfirmEvent - the key cap shows the player's real
@@ -6639,13 +6638,11 @@ namespace
 				setVis(g_panelHint, true);
 				setVis(g_panelHintRight, true);
 				setVis(g_panelConfirmPill, true);
-				setVis(g_panelBrowsePill, true);
 			} else if (anim == PanelAnim::kOpening || anim == PanelAnim::kClosing) {
 				setVis(g_panelTitle, false);
 				setVis(g_panelHint, false);
 				setVis(g_panelHintRight, false);
 				setVis(g_panelConfirmPill, false);
-				setVis(g_panelBrowsePill, false);
 				setVis(g_panelHighlight, false);
 				setVis(g_panelScrollTrack, false);
 				setVis(g_panelScrollThumb, false);
