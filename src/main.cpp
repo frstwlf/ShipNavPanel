@@ -171,6 +171,18 @@ namespace
 	// eight times the clips, created up front.
 	REX::TIniSetting<bool>          bTestGraphicsClear{ "Recon", "bTestGraphicsClear", false };
 
+	// Phase 4 chrome probe (PHASE4-CHROME-HUNT.md): instantiate the ship HUD's
+	// own loot panel - ShipHudQuickContainer, the chosen chrome donor - beside
+	// the drawn panel, with four hardcoded rows, and mirror the wheel highlight
+	// into its selection. Answers in game: does the whole-panel ctor survive
+	// CreateObject, does the art come with it, does the highlight drive. The
+	// probe rides the panel: it shows while the panel is open and hides with
+	// it. ON by default in this build - it is the build's whole point - and
+	// isolated: any failure logs, gives up, and leaves the drawn panel alone.
+	REX::TIniSetting<bool>  bProbeVanillaChrome{ "Recon", "bProbeVanillaChrome", true };
+	REX::TIniSetting<float> fProbeChromeOffsetX{ "Recon", "fProbeChromeOffsetX", 220.0f };
+	REX::TIniSetting<float> fProbeChromeOffsetY{ "Recon", "fProbeChromeOffsetY", -160.0f };
+
 	REX::TIniSetting<bool>          bDumpPlanetRecords{ "Recon", "bDumpPlanetRecords", false };
 	REX::TIniSetting<std::uint32_t> uDumpPlanetBytes{ "Recon", "uDumpPlanetBytes", 0x400 };
 
@@ -335,6 +347,7 @@ namespace
 	std::atomic<bool> g_subscribeInFlight{ false };
 	std::atomic<bool> g_panelBuildInFlight{ false };
 	std::atomic<bool> g_arrowBuildInFlight{ false };
+	std::atomic<bool> g_chromeProbeBuildInFlight{ false };
 
 	constexpr const char* kShipHudMenu = "SpaceshipHudMenu";
 
@@ -1773,10 +1786,22 @@ namespace
 	std::atomic<bool>          g_panelFailed{ false };
 	std::atomic<std::uint32_t> g_panelRowCount{ 0 };
 
+	// The Phase 4 chrome probe: a real ShipHudQuickContainer the mod owns.
+	// The list handle is kept separately because every wheel move drives its
+	// selectedIndex. Rows are hardcoded - this instance tests the CHROME, the
+	// candidate feed stays with the drawn panel until the donor graduates.
+	constexpr std::size_t       kChromeProbeRows = 4;
+	RE::Scaleform::GFx::Value   g_chromeProbe;
+	RE::Scaleform::GFx::Value   g_chromeProbeList;
+	std::atomic<bool>           g_chromeProbeReady{ false };
+	std::atomic<bool>           g_chromeProbeFailed{ false };
+	std::atomic<std::int32_t>   g_chromeProbeLastSel{ -1 };
+
 	// Defined further down, but called from the data-feed callbacks above them.
 	bool WorldSettled();
 	void TryCreateArrow();
 	void TryCreatePanel();
+	void TryCreateChromeProbe();
 	void RefreshPanel();
 	void RefreshCruiseState();
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
@@ -2698,6 +2723,13 @@ namespace
 			g_translatorReady.store(false, std::memory_order_release);
 			g_translatorFailed.store(false, std::memory_order_release);
 
+			// The chrome probe was a child of the old movie's reticle.
+			g_chromeProbeReady.store(false, std::memory_order_release);
+			g_chromeProbeFailed.store(false, std::memory_order_release);
+			g_chromeProbe = RE::Scaleform::GFx::Value{};
+			g_chromeProbeList = RE::Scaleform::GFx::Value{};
+			g_chromeProbeLastSel.store(-1, std::memory_order_release);
+
 			// The list belonged to the old movie too.
 			g_panelReady.store(false, std::memory_order_release);
 			g_panelFailed.store(false, std::memory_order_release);
@@ -3445,6 +3477,7 @@ namespace
 			if (WorldSettled()) {
 				TryCreateArrow();
 				TryCreatePanel();
+				TryCreateChromeProbe();
 				RefreshCruiseState();
 			}
 
@@ -5528,6 +5561,209 @@ namespace
 			fPanelOffsetX.GetValue(), fPanelOffsetY.GetValue());
 	}
 
+	// Phase 4 chrome probe (PHASE4-CHROME-HUNT.md): construct the chosen donor -
+	// the ship HUD's own loot panel - and drive it with hardcoded rows, so one
+	// cruise answers whether the whole-panel route works. Every step logs before
+	// entering the VM, so a log that ends mid-probe names the frozen call, and
+	// every failure gives up cleanly without touching the drawn panel.
+	//
+	// The class also exists art-less in spaceshiphudmenu.swf's own ABC; the
+	// art-bound copy lives in the IMPORTED ShipHudQuickContainer.swf. That
+	// ambiguity is already resolved in the mod's favour by precedent:
+	// OffScreenIcon has the same split (art in imported shipreticle.swf) and
+	// CreateObject built the art-bound one, confirmed in game (v0.8.2).
+	void TryCreateChromeProbe()
+	{
+		if (!bProbeVanillaChrome.GetValue() ||
+			g_chromeProbeReady.load(std::memory_order_acquire) ||
+			g_chromeProbeFailed.load(std::memory_order_acquire))
+			return;
+
+		// Constructs through the AS3 VM - serialised like every other builder.
+		const SingleWinner winner{ g_chromeProbeBuildInFlight };
+		if (!winner.Won())
+			return;
+		if (g_chromeProbeReady.load(std::memory_order_acquire))
+			return;
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud))
+			return;
+		const auto menu = ui->GetMenu(s_shipHud);
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return;
+
+		auto*             root = menu->uiMovie->asMovieRoot.get();
+		const char*       rootPath = menu->GetRootPath();
+		const std::string reticlePath = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc";
+
+		RE::Scaleform::GFx::Value reticle;
+		if (!root->GetVariable(&reticle, reticlePath.c_str()))
+			return;
+
+		using V = RE::Scaleform::GFx::Value;
+
+		const auto giveUp = [&](const char* a_why) {
+			REX::WARN("[chrome] probe not created ({}) - the drawn panel is unaffected", a_why);
+			g_chromeProbe = RE::Scaleform::GFx::Value{};
+			g_chromeProbeList = RE::Scaleform::GFx::Value{};
+			g_chromeProbeFailed.store(true, std::memory_order_release);
+		};
+
+		// Step 1 of the checklist: does the whole-panel ctor survive? A log that
+		// ENDS here names the frozen call.
+		REX::INFO("[chrome] constructing ShipHudQuickContainer - entering the VM");
+		root->CreateObject(&g_chromeProbe, "ShipHudQuickContainer");
+		if (!g_chromeProbe.IsDisplayObject() && !g_chromeProbe.IsObject()) {
+			giveUp("class did not construct");
+			return;
+		}
+		REX::INFO("[chrome] constructed - censusing children");
+
+		// The census answers "did the art come with it" child by child, and is
+		// worth having in the log even if a later step fails.
+		const auto child = [&](const char* a_name, V& a_out) {
+			const bool have = g_chromeProbe.GetMember(a_name, &a_out) &&
+			                  (a_out.IsObject() || a_out.IsDisplayObject());
+			REX::INFO("[chrome]   {} {}", a_name, have ? "present" : "MISSING");
+			return have;
+		};
+		V header, invData, buttonBar, titleField;
+		const bool haveList = child("List_mc", g_chromeProbeList);
+		child("Header_mc", header);
+		const bool haveTitle = child("TargetName_tf", titleField);
+		const bool haveInv = child("PlayerInvData_mc", invData);
+		const bool haveBar = child("ButtonBar_mc", buttonBar);
+		if (!haveList) {
+			giveUp("no List_mc - nothing to drive");
+			return;
+		}
+
+		// On the reticle like the drawn panel, so the offsets mean the same
+		// thing. Named so no holder loop can ever mistake it for a vanilla blip;
+		// invisible before anything else can render a half-configured panel.
+		RE::Scaleform::GFx::Value added;
+		if (!reticle.Invoke("addChild", &added, &g_chromeProbe, 1)) {
+			giveUp("addChild rejected it");
+			return;
+		}
+		g_chromeProbe.SetMember("visible", V{ false });
+		g_chromeProbe.SetMember("name", V{ "ShipNavPanelChromeProbe" });
+		g_chromeProbe.SetMember("x", V{ static_cast<double>(fProbeChromeOffsetX.GetValue()) });
+		g_chromeProbe.SetMember("y", V{ static_cast<double>(fProbeChromeOffsetY.GetValue()) });
+
+		// The safety pin: disableInput gates every mouse and keyboard path in
+		// BSScrollingContainer while leaving MoveSelection/selectedIndex free,
+		// so the mod stays the only driver. Configure() already ran in the ctor
+		// and is once-only; this public setter is the supported post-hoc path.
+		if (!g_chromeProbeList.SetMember("disableInput", V{ true }))
+			REX::WARN("[chrome] disableInput did not set - mouse hover may fight the wheel");
+
+		// Loot-specific chrome off for the probe: capacity meter and the
+		// TAKE/TRANSFER button bar. (The bar could carry the mod's own key hints
+		// one day - not this build.)
+		if (haveInv)
+			invData.SetMember("visible", V{ false });
+		if (haveBar)
+			buttonBar.SetMember("visible", V{ false });
+
+		// The header title, through vanilla's own SetText path (it also resolves
+		// $-tokens, which a plain text write would not).
+		if (haveTitle) {
+			RE::Scaleform::GFx::Value globalFunc;
+			if (root->GetVariable(&globalFunc, "Shared.GlobalFunc") &&
+				(globalFunc.IsObject() || globalFunc.IsDisplayObject())) {
+				V args[2];
+				args[0] = titleField;
+				root->CreateString(&args[1], "NAV PROBE");
+				if (!globalFunc.Invoke("SetText", nullptr, args, 2))
+					titleField.SetMember("text", V{ "NAV PROBE" });
+			} else {
+				titleField.SetMember("text", V{ "NAV PROBE" });
+			}
+		}
+
+		// Four rows, hardcoded: the probe tests chrome, not data. The last name
+		// is longer than the entry's 39-character budget on purpose, to see the
+		// vanilla truncation do its job. Every field SetEntryText reads is
+		// stated explicitly; fWeight/uCount also feed the selection-change
+		// listener the ctor registered (capacity maths on a hidden meter).
+		static constexpr const char* kProbeNames[kChromeProbeRows] = {
+			"Jemison",
+			"Kurtz",
+			"Akila",
+			"Undiscovered Deep Space Manufacturing Platform",
+		};
+		V items;
+		root->CreateArray(&items);
+		for (const char* name : kProbeNames) {
+			V row;
+			root->CreateObject(&row);
+			if (!row.IsObject()) {
+				giveUp("row object did not construct");
+				return;
+			}
+			V nameVal;
+			root->CreateString(&nameVal, name);
+			row.SetMember("sName", nameVal);
+			row.SetMember("uCount", V{ static_cast<std::uint32_t>(1) });
+			row.SetMember("uRarity", V{ static_cast<std::uint32_t>(0) });
+			row.SetMember("bContraband", V{ false });
+			row.SetMember("bStolen", V{ false });
+			row.SetMember("bIsTagged", V{ false });
+			row.SetMember("fWeight", V{ 0.0 });
+			row.SetMember("uHandleID", V{ static_cast<std::uint32_t>(0) });
+			items.PushBack(row);
+		}
+		V payload;
+		root->CreateObject(&payload);
+		payload.SetMember("aItems", items);
+
+		REX::INFO("[chrome] OnItemsChanged with {} rows - entering the VM", kChromeProbeRows);
+		if (!g_chromeProbe.Invoke("OnItemsChanged", nullptr, &payload, 1)) {
+			giveUp("OnItemsChanged failed - likely the art-less class copy won the domain");
+			return;
+		}
+
+		// Read back what the list built. Row clips are lazily created by the
+		// container's own Update, so their existence IS the verdict on the
+		// entry class binding; currentLabel says which frame art each row wears
+		// (row 0 should sit on its Selected label).
+		V count;
+		const auto clips = g_chromeProbeList.GetMember("totalEntryClips", &count) ?
+		                       static_cast<int>(AsNumber(count)) :
+		                       -1;
+		V selVal;
+		const auto sel = g_chromeProbeList.GetMember("selectedIndex", &selVal) ?
+		                     static_cast<int>(AsNumber(selVal)) :
+		                     -99;
+		REX::INFO("[chrome] list built: {} entry clips, selectedIndex {}", clips, sel);
+		for (int i = 0; i < clips && i < static_cast<int>(kChromeProbeRows); ++i) {
+			V idx{ static_cast<double>(i) };
+			V clip;
+			if (!g_chromeProbeList.Invoke("GetClipByIndex", &clip, &idx, 1) ||
+				!(clip.IsObject() || clip.IsDisplayObject())) {
+				REX::INFO("[chrome]   clip {}: not returned", i);
+				continue;
+			}
+			V nameV, labelV;
+			const std::string clipName =
+				clip.GetMember("name", &nameV) && nameV.IsString() ? nameV.GetString() : "?";
+			const std::string label =
+				clip.GetMember("currentLabel", &labelV) && labelV.IsString() ? labelV.GetString() : "?";
+			REX::INFO("[chrome]   clip {}: name='{}' label='{}'", i, clipName, label);
+		}
+
+		g_chromeProbeLastSel.store(sel, std::memory_order_release);
+		g_chromeProbeReady.store(true, std::memory_order_release);
+		REX::INFO("[chrome] probe ready at ({}, {}) - opens and closes with the panel, "
+				  "wheel mirrors into its highlight",
+			fProbeChromeOffsetX.GetValue(), fProbeChromeOffsetY.GetValue());
+	}
+
 	// Called from the high-frequency feed, on the UI thread, with distances
 	// already refreshed. Row text is rebuilt at a few hertz rather than every
 	// tick - distances crawl, and ten TextField writes per frame is a cost with
@@ -5625,6 +5861,11 @@ namespace
 		const bool open = g_panelOpen.load(std::memory_order_acquire) &&
 		                  g_inCruise.load(std::memory_order_acquire);
 		g_panelClip.SetMember("visible", V{ open });
+		// The chrome probe rides the panel - and its visibility is written on
+		// the same tick, BEFORE the closed-panel return below.
+		const bool probeReady = g_chromeProbeReady.load(std::memory_order_acquire);
+		if (probeReady)
+			g_chromeProbe.SetMember("visible", V{ open });
 		if (!open)
 			return;
 
@@ -5653,6 +5894,8 @@ namespace
 		// wrong regardless. Copying up to sixteen rows is nothing next to one
 		// SetMember.
 		std::vector<Candidate> visibleRows;
+		std::size_t            highlightPos = 0;
+		bool                   haveHighlightPos = false;
 		{
 			std::lock_guard          lock{ g_candidateMutex };
 			std::vector<std::size_t> local;
@@ -5665,6 +5908,8 @@ namespace
 				if (g_candidates[local[n]].id == highlight) {
 					if (n >= rowCount)
 						first = n - rowCount + 1;
+					highlightPos = n;
+					haveHighlightPos = true;
 					break;
 				}
 			}
@@ -5676,6 +5921,18 @@ namespace
 					break;
 				visibleRows.push_back(g_candidates[local[n]]);
 			}
+		}
+
+		// Checklist step 3: the wheel drives the donor's own highlight. The
+		// real highlight's position among the local rows maps onto the probe's
+		// four hardcoded rows; the selectedIndex setter is vanilla's own path
+		// (scroll adjust + Selected/unselected frames on the row clips), called
+		// only when the value actually changes. VM write outside the mutex,
+		// like everything else here.
+		if (probeReady && haveHighlightPos) {
+			const auto sel = static_cast<std::int32_t>(highlightPos % kChromeProbeRows);
+			if (g_chromeProbeLastSel.exchange(sel, std::memory_order_acq_rel) != sel)
+				g_chromeProbeList.SetMember("selectedIndex", V{ static_cast<double>(sel) });
 		}
 
 		{
