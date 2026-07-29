@@ -410,8 +410,11 @@ namespace
 		GalaxyData galaxy;
 		bool       haveGalaxy{ false };
 		// POI icon identity, straight from the feed entry - what MapIcons'
-		// SetLocation draws. Present on POI/ship/station entries; havePoi
-		// records whether the fields were actually there, since 0 is a value.
+		// SetLocation draws. havePoi records whether the fields were actually
+		// there, since 0 is a value - and PRESENT does not mean MEANINGFUL:
+		// the feed pools its entry objects, so a planet's slot can carry a
+		// station's leftover fields (caught in v0.11.1: Venus wore a badge).
+		// Anything consuming these must gate on uTargetType, the authority.
 		std::uint32_t poiType{ 0 };
 		std::uint32_t poiCategory{ 0 };
 		std::uint32_t locMarkerState{ 0 };
@@ -6424,12 +6427,25 @@ namespace
 					// way), and for the settled bodies; undiscovered entries
 					// get the generic kind badge through vanilla's own
 					// masking state, matching the row's masked label.
+					//
+					// uPoiType/uPoiCategory LINGER on the feed's pooled entry
+					// objects: a planet's slot can carry a station's leftover
+					// fields (v0.11.1's session: Venus wore a badge and the
+					// giants' circles never showed - each stale type stole
+					// the badge path). havePoi means "the fields were
+					// present", never "this is a POI" - the entry's own
+					// uTargetType is the authority, exactly as it is inside
+					// vanilla's OffScreenIcon, which is why the faux marker
+					// never had this bug.
 					std::uint32_t poiType = 0;
 					std::uint32_t poiCat = 0;
 					std::uint32_t poiState = 0;
 					bool          wantVanilla = false;
+					const bool    poiKind = row.type == kTargetTypePOI ||
+					                     row.type == kTargetTypeShip ||
+					                     row.type == kTargetTypeStation;
 					if (havePoiIcon) {
-						if (row.havePoi && row.poiType < kMarkerTypeCount) {
+						if (row.havePoi && poiKind && row.poiType < kMarkerTypeCount) {
 							poiType = row.poiType;
 							poiCat = row.poiCategory;
 							poiState = row.discovered ? kLmsFullReveal : kLmsOnlyTypeKnown;
