@@ -404,40 +404,33 @@ These three come before release.
       `uPoiType`/`uPoiCategory` sampled from known locations — Jemison came back
       83/10, The Eye 43/7.
 
-- [ ] **2. THE HUNT: a vanilla UI donor for the panel itself.** The blip half
-      of the old "UI pass" item is DONE — every marker on the HUD is now a
-      real vanilla clip (the v0.8.x arc) — which is exactly why the panel now
-      reads as the odd one out (the tester's call, 2026-07-29): its box,
-      rows, separators and highlight bar are still invented
-      (`0x0A1420` background, `0xCCE6FF` rows; the `0x66CCFF` cyan survives
-      only in the rare drawn-diamond fallback). The hunt is for something of
-      the game's own to wear, in preference order:
+- [ ] **2. THE HUNT: a vanilla UI donor for the panel itself — SURVEY DONE,
+      donor chosen, awaiting the in-game probe.** Full findings, method,
+      import graph, rejects and probe checklist in
+      [PHASE4-CHROME-HUNT.md](PHASE4-CHROME-HUNT.md). The short version:
 
-      1. **Instantiate a vanilla list/panel symbol outright** — the faux blip
-         proved the route (`CreateObject` on a symbol-bound class gives the
-         full symbol, timeline children and all; default-package classes go
-         by bare name; drive it via its own public methods). Candidate
-         donors to census in the SWFs: the ship HUD's own **target-subsystem
-         panel** (`TargetPanelComponentManager` + `ComponentsArray` — a
-         selectable-row list living in the SAME movie, same art language,
-         already keyboard-driven), the ScanClip target-info box, whatever
-         `spaceshipinfomenu.swf` builds its systems list from, and the
-         monocle/scanner overlays. Beware: sealed classes can't be
-         interposed, only driven — check each candidate's public surface
-         first (the Phase-1 pattern).
-      2. **Failing a whole component: borrow the parts.** Colours/alphas read
-         at runtime off live objects where possible (the `getTextFormat`
-         borrow generalises: TextFormats carry colour), or measured once
-         from the extracted SWFs at `M:\Starfield\Extracted\interface\`
-         (CWS = zlib from byte 8) — shapes for the background frame,
-         divider treatment, and the hover-vs-locked highlight distinction.
-      3. Whatever wins, the panel's DATA machinery stays as is — this is a
-         skin hunt, not a rebuild; the rows, wheel, confirm and lock logic
-         are all confirmed working.
+      - **Winner: `ShipHudQuickContainer` (symbol 70,
+        shiphudquickcontainer.swf)** — the ship HUD's own loot panel: teal
+        header + title textfield, dark body, rows with the pale highlight
+        bar, scrollbar. Reachable because the HUD movie ImportAssets2's that
+        SWF, and the working `OffScreenIcon` blip already PROVES imported
+        symbols are `CreateObject`-able (it lives in shipreticle.swf, also
+        imported). Ctor takes no feeds; vanilla drives only its own timeline
+        instance by direct member — a second instance cannot be fought over.
+        Drive: `OnItemsChanged({aItems})`, `List_mc.MoveSelection(±1)` /
+        `selectedIndex`, title via `TargetName_tf`;
+        **`List_mc.disableInput = true` is the safety pin** (kills all
+        mouse/key paths, leaves programmatic drive ungated); hide
+        `PlayerInvData_mc` + `ButtonBar_mc`.
+      - Fallback: bare `BSScrollingContainer` (61) + `QuickContainerListEntry`
+        (52) self-`Configure`d; floor: colour-borrow repaint of the drawn
+        panel.
+      - **The old prime suspect `TargetPanel` is REJECTED** — its render is
+        the amber hazard-striped enemy-subsystem meter box, wrong shape and
+        palette. Do not re-hunt; renders under `M:\Starfield\Extracted\art\`.
 
       The font is already the HUD's own (`$MAIN_Font_Bold` borrow), so type
-      matches once the chrome does. Do this after the remaining behaviour
-      checks above, before release — it is the last invented pixel.
+      matches once the chrome does. Skin only — data machinery stays.
 
 - [ ] **3. Reposition the panel to sit with the HUD.** Currently 540 left and
       160 up from screen centre, guessed against one resolution and never
