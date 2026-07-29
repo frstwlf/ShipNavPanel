@@ -137,6 +137,14 @@ namespace
 	// because a hint naming the wrong key is worse than no hint.
 	REX::TIniSetting<std::string> sConfirmKeyLabel{ "Panel", "sConfirmKeyLabel", "Q" };
 
+	// Panel open/close sounds (v0.12.2) - the ship scanner's own pair, per
+	// the tester, played through vanilla's PlayMenuSound dispatcher (the
+	// same GlobalFunc static the menus themselves use). Any sound
+	// descriptor editor id works; an empty string silences that side.
+	REX::TIniSetting<bool>        bPanelSounds{ "Panel", "bPanelSounds", true };
+	REX::TIniSetting<std::string> sPanelOpenSound{ "Panel", "sPanelOpenSound", "UICockpitHUDMonocleOpen" };
+	REX::TIniSetting<std::string> sPanelCloseSound{ "Panel", "sPanelCloseSound", "UICockpitHUDMonocleClose" };
+
 	// The title strip across the top, mirroring the hint bar along the bottom
 	// (v0.10.0, the tester's call after the donor comparison: the drawn panel
 	// stays, wearing vanilla's plate colour and a proper header). An empty
@@ -1834,6 +1842,10 @@ namespace
 	RE::Scaleform::GFx::Value g_panelScrollTrack;
 	RE::Scaleform::GFx::Value g_panelScrollThumb;
 	std::atomic<double>       g_panelNameWidth{ 0.0 };
+	// The toggle marks which sound to play; the UI thread consumes it. The
+	// input thread must never enter the VM itself (the v0.1.3 lesson).
+	// 0 = none, 1 = open, 2 = close.
+	std::atomic<std::uint32_t> g_pendingPanelSound{ 0 };
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -2323,6 +2335,8 @@ namespace
 			MoveHighlight(0);
 			g_suppressedCount.store(0, std::memory_order_release);
 			g_cameraRemovedCount.store(0, std::memory_order_release);
+			if (bPanelSounds.GetValue())
+				g_pendingPanelSound.store(1, std::memory_order_release);
 			REX::INFO("[panel] opened - wheel moves the highlight, '{}' locks or clears it",
 				sConfirmEvent.GetValue());
 			if (bSuppressThrottleTest.GetValue())
@@ -2330,6 +2344,8 @@ namespace
 		} else {
 			// Nothing is committed on close - that is the whole point of the
 			// confirm key.
+			if (bPanelSounds.GetValue())
+				g_pendingPanelSound.store(2, std::memory_order_release);
 			REX::INFO("[panel] closed (locked stays {:08X}, {} input events hidden from the camera)",
 				g_lockedID.load(std::memory_order_acquire),
 				g_cameraRemovedCount.load(std::memory_order_acquire));
@@ -6283,6 +6299,32 @@ namespace
 		const bool probeReady = g_chromeProbeReady.load(std::memory_order_acquire);
 		if (probeReady)
 			g_chromeProbe.SetMember("visible", V{ open });
+
+		// The toggle sound, borrowed from the scanner (v0.12.2): marked on
+		// the input thread, played here through vanilla's own PlayMenuSound
+		// dispatcher - the same GlobalFunc static the menus themselves use.
+		// BEFORE the closed-panel return, or the close sound never fires.
+		if (const auto pending = g_pendingPanelSound.exchange(0, std::memory_order_acq_rel);
+			pending != 0) {
+			const std::string id = pending == 1 ? sPanelOpenSound.GetValue() :
+			                                      sPanelCloseSound.GetValue();
+			if (!id.empty()) {
+				const auto                     ui = RE::UI::GetSingleton();
+				static const RE::BSFixedString s_hud{ kShipHudMenu };
+				const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
+				if (menu && menu->uiMovie && menu->uiMovie->asMovieRoot) {
+					auto*                     sndRoot = menu->uiMovie->asMovieRoot.get();
+					RE::Scaleform::GFx::Value gf;
+					if (sndRoot->GetVariable(&gf, "Shared.GlobalFunc") &&
+						(gf.IsObject() || gf.IsDisplayObject())) {
+						V arg;
+						sndRoot->CreateString(&arg, id.c_str());
+						gf.Invoke("PlayMenuSound", nullptr, &arg, 1);
+					}
+				}
+			}
+		}
+
 		if (!open)
 			return;
 
