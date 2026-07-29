@@ -428,24 +428,31 @@ These three come before release.
       (`bPanelHeader`/`sPanelTitle`), and the probe machinery stays behind
       `bProbeVanillaChrome` (default off) for future part auditions.
 
-      **Remaining piece — vanilla icons for settlement and POI rows,
-      pre-scouted, all in the HUD movie's domain:**
-      - `Components.Icons.DynamicPoiIcon` → symbol 162 in shipreticle.swf
-        (ONE import hop, the proven distance) — vanilla's own
-        pick-glyph-by-`uPoiType`/`uPoiCategory` component; likeliest single
-        donor for POI rows, drive it like the faux blip.
-      - `markers.swf` (two hops, via shipreticle) binds `SettlementMarker`,
-        `CityMarker`, `OutpostMarker`, `Components.Icons.BodyViewMarker`…
-      - `markers.swf` imports **`MapIcons.swf`** (three hops): the whole
-        per-kind library as bare default-package classes —
-        `Station_StarStation`, `Station_StarYard`, `Structure_Outpost`,
-        `Unique_SurfaceSettlement`, `City_NewAtlantis`, `Ship_*`,
-        `SpaceLandmark_*`… One `CreateObject("Station_StarStation")` probe
-        settles whether three-hop transitive imports resolve (one and two
-        hops are proven).
-      - Row glyphs are ~20 px; these symbols are marker-sized — expect a
-        `scaleX/scaleY` fit against the row height, and mind glyph colour
-        vs the panel palette.
+      **Vanilla row icons: BUILT in v0.11.0, awaiting the in-game look.**
+      The route turned out cleaner than the import-graph gymnastics: the
+      HUD does NOT static-import MapIcons.swf — `MapIconsLibrary` runtime-
+      Loads it into the movie's own application domain, and
+      `Components.Icons.DynamicPoiIcon` (bound in shipreticle.swf, one
+      hop) wraps the whole thing: construct one, `SetLocation(type,
+      category, state)`, `SetMarkerScale(s)`, and it picks the symbol via
+      `MapMarkerUtils`, self-completing off the load event if the library
+      is not up yet. One icon per row, driven from the feed's own
+      `uPoiType`/`uPoiCategory`:
+      - Discovered POI/station/ship → `LMS_FULL_REVEAL` (2) → its marker's
+        own art; undiscovered → `LMS_ONLY_TYPE_KNOWN` (1) → the generic
+        kind badge, vanilla's own masking, matching the masked row label.
+      - Settled bodies → `MARKER_UNIQUE_SURFACE_SETTLEMENT` (48), full
+        reveal — the game's surface-settlement badge replaces the skyline.
+      - **The uPoiType enum is MapMarkerUtils' MARKER_* list, sequential
+        from 0, count sentinel 83; categories count 10. Jemison's old
+        landing-site sample (83, 10) is (count, count) = "no marker" —
+        mystery closed; the gate is `poiType < 83`.** The Eye's (43, 7)
+        confirms the numbering exactly.
+      - Symbols are 70×70, centred on origin (measured), 2 frames
+        (undiscovered outline / "Discovered"); `fPanelVanillaIconScale`
+        0.28 fits the 20 px column. Drawn ring keeps the giants; every
+        drawn glyph stays as automatic fallback (`bPanelVanillaIcons` off,
+        class construction failure, or sentinel types like landing sites).
 
       The wheel regression note, for the record: v0.9.1's per-notch stamp
       walk broke wheel scrolling somehow (never root-caused); deleting the

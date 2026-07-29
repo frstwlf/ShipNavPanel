@@ -161,6 +161,17 @@ namespace
 	// A small drawn glyph per body, showing what kind of world it is.
 	REX::TIniSetting<bool> bPanelIcons{ "Panel", "bPanelIcons", true };
 
+	// Vanilla art in that column (v0.11.0): each row hosts one of the game's
+	// own map icons - a DynamicPoiIcon, the exact component the HUD's markers
+	// use - driven by the entry's own uPoiType/uPoiCategory for POIs,
+	// stations and ships, and by the surface-settlement marker for the
+	// seventeen settled bodies. Undiscovered entries show the GENERIC kind
+	// badge through vanilla's own masking states, matching the panel's
+	// masked labels. The drawn glyphs keep the gas/ice giants (no vanilla
+	// equivalent at row size) and remain the fallback everywhere else.
+	REX::TIniSetting<bool>  bPanelVanillaIcons{ "Panel", "bPanelVanillaIcons", true };
+	REX::TIniSetting<float> fPanelVanillaIconScale{ "Panel", "fPanelVanillaIconScale", 0.28f };
+
 	// List every body in the system, not just the ones the HUD happens to be
 	// offering. Bodies the game is not tracking have no distance and cannot be
 	// pointed at, but they show the system's actual shape.
@@ -1792,6 +1803,13 @@ namespace
 	PlanetClass               g_panelIconClass[kPanelMaxRowsHard]{};
 	bool                      g_panelIconSettled[kPanelMaxRowsHard]{};
 	bool                      g_panelIconDrawn[kPanelMaxRowsHard]{};
+	// And one VANILLA map icon per row (v0.11.0) - a real DynamicPoiIcon.
+	// The key caches the (type, category, state) last driven into the slot,
+	// so a refresh tick showing the same thing costs no VM call. A failed
+	// class construction latches per movie and the drawn glyphs carry on.
+	RE::Scaleform::GFx::Value g_panelPoiIcons[kPanelMaxRowsHard];
+	std::uint64_t             g_panelPoiIconKey[kPanelMaxRowsHard]{};
+	std::atomic<bool>         g_panelPoiIconsFailed{ false };
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -1839,6 +1857,18 @@ namespace
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
 	constexpr double kMetersPerLightSecond = 299792458.0;
+
+	// MapMarkerUtils' MARKER_* enum (= the feed's uPoiType) is sequential
+	// from 0 and ends in a count sentinel: MARKER_SHIP_COUNT = 83. The
+	// category enum's count is 10. Jemison's landing site sampled (83, 10) -
+	// both sentinels at once, the engine's "no marker" - which is the gate:
+	// only types BELOW the count carry real art. The Eye's sampled (43, 7)
+	// lands exactly on MARKER_UNIQUE_THE_EYE / MARKER_TYPE_STATION, which is
+	// what confirms the numbering.
+	constexpr std::uint32_t kMarkerTypeCount = 83;
+	constexpr std::uint32_t kMarkerSurfaceSettlement = 48;  // MARKER_UNIQUE_SURFACE_SETTLEMENT
+	constexpr std::uint32_t kLmsOnlyTypeKnown = 1;          // MapMarkerUtils.LMS_*: generic kind badge
+	constexpr std::uint32_t kLmsFullReveal = 2;             // the specific marker's own art
 
 	constexpr std::uint32_t kTargetTypeStar = 1;
 	constexpr std::uint32_t kTargetTypePOI = 4;
@@ -2782,7 +2812,10 @@ namespace
 			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
 				g_panelIcons[i] = RE::Scaleform::GFx::Value{};
 				g_panelIconDrawn[i] = false;
+				g_panelPoiIcons[i] = RE::Scaleform::GFx::Value{};
+				g_panelPoiIconKey[i] = 0;
 			}
+			g_panelPoiIconsFailed.store(false, std::memory_order_release);
 			for (auto& row : g_panelRows)
 				row = RE::Scaleform::GFx::Value{};
 			g_panelRowCount.store(0, std::memory_order_release);
@@ -5583,6 +5616,37 @@ namespace
 			g_panelIconSettled[i] = false;
 			g_panelIconDrawn[i] = false;
 
+			// The vanilla icon shares the column and they swap per row:
+			// whichever fits the body shows, the other hides. The class name
+			// is package-qualified (like BSUIDataManager); its first
+			// construction also brings up vanilla's own shared MapIcons
+			// loader - normally long since loaded by the HUD's own markers,
+			// and the icon self-completes off the load event if not. The
+			// symbols are authored centred on their origin (measured from
+			// the SWF), so the drawn glyphs' anchor is the right one as is.
+			if (iconColumn > 0.0 && bPanelVanillaIcons.GetValue() &&
+				!g_panelPoiIconsFailed.load(std::memory_order_acquire)) {
+				root->CreateObject(&g_panelPoiIcons[i], "Components.Icons.DynamicPoiIcon");
+				if (g_panelPoiIcons[i].IsObject() || g_panelPoiIcons[i].IsDisplayObject()) {
+					RE::Scaleform::GFx::Value poiAdded;
+					if (g_panelClip.Invoke("addChild", &poiAdded, &g_panelPoiIcons[i], 1)) {
+						g_panelPoiIcons[i].SetMember("x", V{ kNamePad + iconColumn * 0.5 });
+						g_panelPoiIcons[i].SetMember("y", V{ rowY + rowHeight * 0.5 });
+						g_panelPoiIcons[i].SetMember("visible", V{ false });
+						V scale{ static_cast<double>(fPanelVanillaIconScale.GetValue()) };
+						g_panelPoiIcons[i].Invoke("SetMarkerScale", nullptr, &scale, 1);
+					} else {
+						g_panelPoiIcons[i] = RE::Scaleform::GFx::Value{};
+					}
+				} else {
+					g_panelPoiIcons[i] = RE::Scaleform::GFx::Value{};
+					if (!g_panelPoiIconsFailed.exchange(true, std::memory_order_acq_rel))
+						REX::WARN("[icons] Components.Icons.DynamicPoiIcon did not construct - "
+								  "the drawn glyphs stay for everything");
+				}
+			}
+			g_panelPoiIconKey[i] = 0;
+
 			++made;
 		}
 
@@ -6189,13 +6253,17 @@ namespace
 				auto& nameField = g_panelRows[r];
 				auto& distField = g_panelDists[r];
 				auto& iconClip = g_panelIcons[r];
+				auto& poiIcon = g_panelPoiIcons[r];
 				const bool haveIcon = iconClip.IsObject() || iconClip.IsDisplayObject();
+				const bool havePoiIcon = poiIcon.IsObject() || poiIcon.IsDisplayObject();
 
 				if (r >= visibleRows.size()) {
 					nameField.SetMember("visible", V{ false });
 					distField.SetMember("visible", V{ false });
 					if (haveIcon)
 						iconClip.SetMember("visible", V{ false });
+					if (havePoiIcon)
+						poiIcon.SetMember("visible", V{ false });
 					continue;
 				}
 
@@ -6269,7 +6337,7 @@ namespace
 				}
 				// Redrawn only when this row's class actually changes, which is
 				// rare - scrolling a list, not every frame.
-				if (haveIcon) {
+				if (haveIcon || havePoiIcon) {
 					PlanetClass rowClass = PlanetClass::kUnknown;
 					bool        rowSettled = false;
 					{
@@ -6280,18 +6348,69 @@ namespace
 						}
 					}
 
-					if (!g_panelIconDrawn[r] || g_panelIconClass[r] != rowClass ||
-						g_panelIconSettled[r] != rowSettled) {
-						RE::Scaleform::GFx::Value gfx;
-						if (iconClip.GetMember("graphics", &gfx)) {
-							gfx.Invoke("clear", nullptr, nullptr, 0);
-							DrawRowIcon(gfx, rowClass, rowSettled);
-							g_panelIconClass[r] = rowClass;
-							g_panelIconSettled[r] = rowSettled;
-							g_panelIconDrawn[r] = true;
+					// Which art fits the row: the game's own badge for a POI,
+					// station or ship carrying a REAL marker type (the count
+					// sentinel means "no marker" - landing sites arrive that
+					// way), and for the settled bodies; undiscovered entries
+					// get the generic kind badge through vanilla's own
+					// masking state, matching the row's masked label.
+					std::uint32_t poiType = 0;
+					std::uint32_t poiCat = 0;
+					std::uint32_t poiState = 0;
+					bool          wantVanilla = false;
+					if (havePoiIcon) {
+						if (row.havePoi && row.poiType < kMarkerTypeCount) {
+							poiType = row.poiType;
+							poiCat = row.poiCategory;
+							poiState = row.discovered ? kLmsFullReveal : kLmsOnlyTypeKnown;
+							wantVanilla = true;
+						} else if (rowSettled) {
+							poiType = kMarkerSurfaceSettlement;
+							poiCat = 0;
+							poiState = kLmsFullReveal;
+							wantVanilla = true;
 						}
 					}
-					iconClip.SetMember("visible", V{ HasRowIcon(rowClass, rowSettled) });
+
+					bool vanillaShown = false;
+					if (wantVanilla) {
+						const std::uint64_t key = (std::uint64_t{ 1 } << 63) |
+						                          (std::uint64_t{ poiType } << 32) |
+						                          (std::uint64_t{ poiCat } << 8) |
+						                          std::uint64_t{ poiState };
+						if (g_panelPoiIconKey[r] != key) {
+							V args[3]{ V{ poiType }, V{ poiCat }, V{ poiState } };
+							if (poiIcon.Invoke("SetLocation", nullptr, args, 3)) {
+								// SetLocation does not scale a fresh child on
+								// its own (only the load-event path does), so
+								// the scale is re-asserted after every swap.
+								V scale{ static_cast<double>(fPanelVanillaIconScale.GetValue()) };
+								poiIcon.Invoke("SetMarkerScale", nullptr, &scale, 1);
+								g_panelPoiIconKey[r] = key;
+							}
+						}
+						vanillaShown = g_panelPoiIconKey[r] == key;
+					}
+					if (havePoiIcon)
+						poiIcon.SetMember("visible", V{ vanillaShown });
+
+					// The drawn glyphs keep the giants - no vanilla equivalent
+					// at row size - and remain the fallback everywhere else.
+					if (haveIcon) {
+						if (!g_panelIconDrawn[r] || g_panelIconClass[r] != rowClass ||
+							g_panelIconSettled[r] != rowSettled) {
+							RE::Scaleform::GFx::Value gfx;
+							if (iconClip.GetMember("graphics", &gfx)) {
+								gfx.Invoke("clear", nullptr, nullptr, 0);
+								DrawRowIcon(gfx, rowClass, rowSettled);
+								g_panelIconClass[r] = rowClass;
+								g_panelIconSettled[r] = rowSettled;
+								g_panelIconDrawn[r] = true;
+							}
+						}
+						iconClip.SetMember("visible",
+							V{ !vanillaShown && HasRowIcon(rowClass, rowSettled) });
+					}
 				}
 
 				nameField.SetMember("visible", V{ true });
