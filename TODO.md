@@ -244,6 +244,20 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
+- [ ] **Re-test the Venus/Mercury overlap trap on v0.10.2.** Two slightly
+      overlapping in-FOV markers: hovering one faded the other (correct),
+      but wheeling ONTO the faded one left it invisible - the fade pass's
+      level-based restore skipped the selection's own icon, so its stale
+      alpha 0 survived, `selVisible` (which reads `visible`, not alpha)
+      called it "marked" and stood the faux marker down, and the neighbour
+      faded as a blocker: BOTH invisible until a third body was selected.
+      Screenshot: `M:\Starfield\Other\panel_bug.png`. v0.10.2 heals the
+      selection's own icon in the crowd loop instead of skipping it; the
+      restore-on-separation claim was also wrong for the ex-crowder case
+      and is covered by the same heal. Wheel Venus↔Mercury both directions:
+      the selected one should always show, the other fade, no third body
+      needed.
+
 - [ ] **★ Remaining in-game checks** — checklist in
       [PHASE3-BLIP-PLAN.md §7–10](PHASE3-BLIP-PLAN.md). New to eyeball —
       **v0.8.8**: with the Staryard locked, E-target Earth over it — no mod

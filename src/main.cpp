@@ -4957,8 +4957,23 @@ namespace
 						if (childName.rfind(kOnScreenPrefix, 0) != 0)
 							continue;
 						const std::string bodyName = childName.substr(std::strlen(kOnScreenPrefix));
-						if (bodyName == a_selectedName)
+						if (bodyName == a_selectedName) {
+							// The selection's own icon is HEALED here, not
+							// skipped: it can carry alpha 0 from a tick when it
+							// was the CROWDER (hover Venus and overlapping
+							// Mercury fades; now wheel to Mercury). The old
+							// plain `continue` left that alpha in place - the
+							// level-based restore below never reaches the
+							// selection - so the selection showed nothing,
+							// selVisible (which reads `visible`, not alpha)
+							// still said "marked" and stood the faux marker
+							// down, and the neighbour faded as a blocker: both
+							// bodies invisible until a third was selected (the
+							// tester's Venus/Mercury trap, 2026-07-29).
+							if (iconIs(child, bodyName))
+								child.SetMember("alpha", V{ 1.0 });
 							continue;
+						}
 
 						// Identity-checked like the selection lookup: the
 						// displayed name when shown, the instance name when
