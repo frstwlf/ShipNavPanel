@@ -1833,7 +1833,6 @@ namespace
 	// vanilla-style name truncation (TruncateSingleLineText).
 	RE::Scaleform::GFx::Value g_panelScrollTrack;
 	RE::Scaleform::GFx::Value g_panelScrollThumb;
-	RE::Scaleform::GFx::Value g_panelGlobalFunc;
 	std::atomic<double>       g_panelNameWidth{ 0.0 };
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
@@ -2833,7 +2832,6 @@ namespace
 			g_panelTitleFormat = RE::Scaleform::GFx::Value{};
 			g_panelScrollTrack = RE::Scaleform::GFx::Value{};
 			g_panelScrollThumb = RE::Scaleform::GFx::Value{};
-			g_panelGlobalFunc = RE::Scaleform::GFx::Value{};
 			g_panelNameWidth.store(0.0, std::memory_order_release);
 			g_panelListTop.store(6.0, std::memory_order_release);
 			for (auto& dist : g_panelDists)
@@ -5848,15 +5846,6 @@ namespace
 			makeHint(g_panelTitle, g_panelTitleFormat, 12.0, width - 24.0, "left",
 				title, "title", 5.0, 0xCCE6FF, 16.0);
 
-		// Vanilla's own single-line truncation runs after every name write;
-		// the class object resolves once per movie.
-		if (!root->GetVariable(&g_panelGlobalFunc, "Shared.GlobalFunc") ||
-			!(g_panelGlobalFunc.IsObject() || g_panelGlobalFunc.IsDisplayObject())) {
-			g_panelGlobalFunc = RE::Scaleform::GFx::Value{};
-			REX::WARN("[panel] Shared.GlobalFunc did not resolve - long names clip "
-					  "instead of truncating");
-		}
-
 		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
 		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
 		g_panelClip.SetMember("visible", V{ false });
@@ -6451,9 +6440,11 @@ namespace
 					// The field's right edge stays put when the left one
 					// indents, so the truncation below measures honestly and
 					// moon names cannot run under the distance column.
-					if (const double baseWidth = g_panelNameWidth.load(std::memory_order_acquire);
-						baseWidth > 0.0)
-						nameField.SetMember("width", V{ std::max(40.0, baseWidth - indent) });
+					const double baseWidth = g_panelNameWidth.load(std::memory_order_acquire);
+					const double fieldWidth =
+						baseWidth > 0.0 ? std::max(40.0, baseWidth - indent) : 0.0;
+					if (fieldWidth > 0.0)
+						nameField.SetMember("width", V{ fieldWidth });
 
 					// The locked body is marked in the list itself, so the panel
 					// says what the HUD is showing without having to be closed.
@@ -6487,13 +6478,43 @@ namespace
 					// fall back to no font.
 					if (g_panelFormat.IsObject())
 						nameField.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
-					// Vanilla's own ellipsis (v0.12.0): measures the styled
-					// text against the field and swaps the tail for the same
-					// single-glyph "…" every vanilla list uses - a glyph the
-					// v0.9.0 probe already proved the embedded font carries.
-					// No-op while the name fits.
-					if (g_panelGlobalFunc.IsObject() || g_panelGlobalFunc.IsDisplayObject())
-						g_panelGlobalFunc.Invoke("TruncateSingleLineText", nullptr, &nameField, 1);
+					// The ellipsis (v0.12.1). Vanilla's TruncateSingleLineText
+					// looked right but no-ops here: it leans on
+					// getCharIndexAtPoint, and its only vanilla caller sits
+					// behind a truncateToFit flag no shipping menu sets - the
+					// truncation the game actually ships is SetText's CHARACTER
+					// budget. This does the same job but measured: read the
+					// styled text's real pixel width (textWidth - a primitive
+					// vanilla's own row code reads in paths that provably run),
+					// cut proportionally at a UTF-8 boundary so localised
+					// names cannot split mid-glyph, and append the same
+					// single-glyph ellipsis - which the v0.9.0 probe proved
+					// the embedded font carries.
+					if (fieldWidth > 0.0 && name.size() > 3) {
+						RE::Scaleform::GFx::Value twVal;
+						if (nameField.GetMember("textWidth", &twVal)) {
+							const double tw = AsNumber(twVal);
+							const double target = fieldWidth - 6.0;  // the field's gutters
+							if (tw > target) {
+								// Reserve ~12 px for the ellipsis glyph, cut
+								// proportionally, then walk back onto a UTF-8
+								// boundary.
+								std::size_t cut = static_cast<std::size_t>(
+									static_cast<double>(name.size()) *
+									std::max(0.1, (target - 12.0) / tw));
+								if (cut >= name.size())
+									cut = name.size() - 1;
+								while (cut > 0 &&
+									   (static_cast<unsigned char>(name[cut]) & 0xC0) == 0x80)
+									--cut;
+								const std::string trimmed =
+									name.substr(0, cut) + "\xE2\x80\xA6";
+								nameField.SetMember("text", V{ trimmed.c_str() });
+								if (g_panelFormat.IsObject())
+									nameField.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
+							}
+						}
+					}
 
 					// Light-seconds once kilometres stop being readable. A dash
 					// marks a body the game is not currently tracking: it is
