@@ -145,6 +145,19 @@ namespace
 	// scanner sound; 0 disables it and the panel snaps as it always did.
 	REX::TIniSetting<float> fPanelAnimSeconds{ "Panel", "fPanelAnimSeconds", 0.30f };
 
+	// The scanner-key hint on the cruise HUD (v0.14.0): a real vanilla
+	// button pill - the same component family the game's own cruise hint
+	// uses - showing the player's ACTUAL bound scanner key (the component
+	// resolves it itself, so it follows rebinds and keyboard/controller
+	// swaps). Shown only in cruise while the panel is fully closed. The
+	// label takes a localisation token or plain text; $SCAN is the
+	// scanner's own word in every language.
+	REX::TIniSetting<bool>        bScannerHint{ "Panel", "bScannerHint", true };
+	REX::TIniSetting<std::string> sScannerHintLabel{ "Panel", "sScannerHintLabel", "$SCAN" };
+	REX::TIniSetting<float>       fScannerHintOffsetX{ "Panel", "fScannerHintOffsetX", 0.0f };
+	REX::TIniSetting<float>       fScannerHintOffsetY{ "Panel", "fScannerHintOffsetY", 210.0f };
+	REX::TIniSetting<float>       fScannerHintScale{ "Panel", "fScannerHintScale", 1.0f };
+
 	REX::TIniSetting<bool>        bPanelSounds{ "Panel", "bPanelSounds", true };
 	REX::TIniSetting<std::string> sPanelOpenSound{ "Panel", "sPanelOpenSound", "UICockpitHUDMonocleOpen" };
 	REX::TIniSetting<std::string> sPanelCloseSound{ "Panel", "sPanelCloseSound", "UICockpitHUDMonocleClose" };
@@ -1864,6 +1877,11 @@ namespace
 	};
 	std::atomic<PanelAnim> g_panelAnimState{ PanelAnim::kClosed };
 	std::atomic<double>    g_panelHeight{ 0.0 };
+
+	// The scanner-key hint: a vanilla button pill the mod owns, visible in
+	// cruise while the panel is fully closed. Failure latches per movie.
+	RE::Scaleform::GFx::Value g_scannerHint;
+	std::atomic<bool>         g_scannerHintFailed{ false };
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -2871,6 +2889,8 @@ namespace
 			g_panelHeight.store(0.0, std::memory_order_release);
 			g_panelAnimState.store(PanelAnim::kClosed, std::memory_order_release);
 			g_pendingPanelSound.store(0, std::memory_order_release);
+			g_scannerHint = RE::Scaleform::GFx::Value{};
+			g_scannerHintFailed.store(false, std::memory_order_release);
 			for (auto& dist : g_panelDists)
 				dist = RE::Scaleform::GFx::Value{};
 			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
@@ -5883,6 +5903,63 @@ namespace
 			makeHint(g_panelTitle, g_panelTitleFormat, 12.0, width - 24.0, "left",
 				title, "title", 5.0, 0xCCE6FF, 16.0);
 
+		// The scanner-key hint (v0.14.0): vanilla's own button component,
+		// driven with the scanner's user event so the key cap shows the
+		// player's real binding and follows rebinds and input-device swaps
+		// by itself (its KeyHelper is built in its own ctor). Data classes
+		// are package-qualified; the button symbol is default-package in
+		// the reticle's SWF - the OffScreenIcon distance. SetButtonData
+		// stashes data until the instance is ON STAGE, so the order is
+		// addChild first, data second. Display-only: no callback in the
+		// event data, and the mouse is switched off outright.
+		if (bScannerHint.GetValue() && !g_scannerHintFailed.load(std::memory_order_acquire)) {
+			bool                      hintOk = false;
+			RE::Scaleform::GFx::Value ued;
+			{
+				V eventName;
+				root->CreateString(&eventName, "SHMonocle");
+				root->CreateObject(&ued,
+					"Shared.Components.ButtonControls.ButtonData.UserEventData", &eventName, 1);
+			}
+			RE::Scaleform::GFx::Value data;
+			if (ued.IsObject()) {
+				V dataArgs[2];
+				root->CreateString(&dataArgs[0], sScannerHintLabel.GetValue().c_str());
+				dataArgs[1] = ued;
+				root->CreateObject(&data,
+					"Shared.Components.ButtonControls.ButtonData.ButtonBaseData", dataArgs, 2);
+			}
+			if (data.IsObject()) {
+				root->CreateObject(&g_scannerHint, "BasicButton_Filled");
+				if (g_scannerHint.IsObject() || g_scannerHint.IsDisplayObject()) {
+					RE::Scaleform::GFx::Value hintAdded;
+					if (reticle.Invoke("addChild", &hintAdded, &g_scannerHint, 1)) {
+						g_scannerHint.SetMember("name", V{ "ShipNavPanelScannerHint" });
+						g_scannerHint.SetMember("x",
+							V{ static_cast<double>(fScannerHintOffsetX.GetValue()) });
+						g_scannerHint.SetMember("y",
+							V{ static_cast<double>(fScannerHintOffsetY.GetValue()) });
+						const double hs = static_cast<double>(fScannerHintScale.GetValue());
+						g_scannerHint.SetMember("scaleX", V{ hs });
+						g_scannerHint.SetMember("scaleY", V{ hs });
+						g_scannerHint.SetMember("mouseEnabled", V{ false });
+						g_scannerHint.SetMember("mouseChildren", V{ false });
+						g_scannerHint.SetMember("visible", V{ false });
+						hintOk = g_scannerHint.Invoke("SetButtonData", nullptr, &data, 1);
+					}
+				}
+			}
+			if (!hintOk) {
+				g_scannerHint = RE::Scaleform::GFx::Value{};
+				if (!g_scannerHintFailed.exchange(true, std::memory_order_acq_rel))
+					REX::WARN("[panel] scanner hint could not be built - the HUD shows none");
+			} else {
+				REX::INFO("[panel] scanner hint ready - vanilla pill at ({}, {}), label '{}'",
+					fScannerHintOffsetX.GetValue(), fScannerHintOffsetY.GetValue(),
+					sScannerHintLabel.GetValue());
+			}
+		}
+
 		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
 		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
 		g_panelClip.SetMember("visible", V{ false });
@@ -6426,6 +6503,14 @@ namespace
 		const bool probeReady = g_chromeProbeReady.load(std::memory_order_acquire);
 		if (probeReady)
 			g_chromeProbe.SetMember("visible", V{ open });
+
+		// The scanner-key hint is the panel's inverse: it shows in cruise
+		// while the plate is fully closed - the pill that says which key
+		// would open it - and leaves the moment the plate starts growing.
+		if (g_scannerHint.IsObject() || g_scannerHint.IsDisplayObject())
+			g_scannerHint.SetMember("visible",
+				V{ anim == PanelAnim::kClosed &&
+					g_inCruise.load(std::memory_order_acquire) });
 
 		// The toggle sound, borrowed from the scanner (v0.12.2): marked on
 		// the input thread, played here through vanilla's own PlayMenuSound
