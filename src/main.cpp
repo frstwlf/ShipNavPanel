@@ -6366,10 +6366,19 @@ namespace
 			const double openness = anim == PanelAnim::kOpening ?
 			                            std::clamp(elapsed() / std::max(dur, 1e-6), 0.0, 1.0) :
 			                            std::clamp(1.0 - elapsed() / std::max(dur, 1e-6), 0.0, 1.0);
-			// Never fully zero - it starts life as a small rectangle.
-			const double scale = 0.12 + 0.88 * openness;
+			// The timeline splits (v0.13.1, the tester's tweak): the quarter
+			// nearest closed is a from-zero FADE of the small rectangle, the
+			// rest is the grow - so opening fades in then grows, and closing
+			// shrinks then fades out, with no pop at either end. Reversals
+			// keep working on the one openness value.
+			constexpr double kFadeFrac = 0.25;
+			const double     fade = std::clamp(openness / kFadeFrac, 0.0, 1.0);
+			const double     grow =
+				std::clamp((openness - kFadeFrac) / (1.0 - kFadeFrac), 0.0, 1.0);
+			const double scale = 0.12 + 0.88 * grow;
 			const double w = static_cast<double>(fPanelWidth.GetValue());
 			const double h = g_panelHeight.load(std::memory_order_acquire);
+			g_panelClip.SetMember("alpha", V{ fade });
 			g_panelClip.SetMember("scaleX", V{ scale });
 			g_panelClip.SetMember("scaleY", V{ scale });
 			g_panelClip.SetMember("x",
@@ -6377,6 +6386,7 @@ namespace
 			g_panelClip.SetMember("y",
 				V{ static_cast<double>(fPanelOffsetY.GetValue()) + (1.0 - scale) * h * 0.5 });
 		} else if (animEntered && anim == PanelAnim::kOpen) {
+			g_panelClip.SetMember("alpha", V{ 1.0 });
 			g_panelClip.SetMember("scaleX", V{ 1.0 });
 			g_panelClip.SetMember("scaleY", V{ 1.0 });
 			g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
