@@ -183,6 +183,14 @@ namespace
 	// on it - the same trick vanilla's Selected frame plays (v0.16.2).
 	REX::TIniSetting<std::uint32_t> uPanelTextColorHighlight{ "Panel", "uPanelTextColorHighlight",
 		0xFFFFFF };
+
+	// The header wears the vanilla loot panel's own dress (v0.16.3, the
+	// tester's ask): a SOLID strip in its measured teal with the title in
+	// its measured light-teal - the strip itself is the separator, so the
+	// old hairline is gone.
+	REX::TIniSetting<std::uint32_t> uPanelHeaderColor{ "Panel", "uPanelHeaderColor", 0x218286 };
+	REX::TIniSetting<float>         fPanelHeaderAlpha{ "Panel", "fPanelHeaderAlpha", 1.0f };
+	REX::TIniSetting<std::uint32_t> uPanelTitleColor{ "Panel", "uPanelTitleColor", 0x76C0C4 };
 	// Every text in the panel except the header wears the pills' own label
 	// colour (v0.16.0, measured off the SWF: the filled button's Label_tf
 	// is 0xB7B7B7). The header keeps its cyan. The wheel hint went back to
@@ -5590,18 +5598,22 @@ namespace
 			}
 		}
 
-		// The header's own hairline, mirroring the footer's; the title text is
-		// created further down with the same builder the hints use.
+		// The header strip, solid in vanilla's own teal (v0.16.3): the loot
+		// panel's header is flat 0x218286 with its title in 0x76C0C4, both
+		// measured off the SWF. The strip is the separator, so the old
+		// hairline went with it; the title text is created further down
+		// with the same builder the hints use.
 		if (header) {
-			V ruleFill[]{ V{ static_cast<std::uint32_t>(0x66CCFF) }, V{ 0.20 } };
-			gfx.Invoke("beginFill", nullptr, ruleFill, 2);
-			V t0[]{ V{ 10.0 }, V{ headerHeight } };
+			V headFill[]{ V{ uPanelHeaderColor.GetValue() },
+				V{ std::clamp(static_cast<double>(fPanelHeaderAlpha.GetValue()), 0.0, 1.0) } };
+			gfx.Invoke("beginFill", nullptr, headFill, 2);
+			V t0[]{ V{ 0.0 }, V{ 0.0 } };
 			gfx.Invoke("moveTo", nullptr, t0, 2);
-			V t1[]{ V{ width - 10.0 }, V{ headerHeight } };
+			V t1[]{ V{ width }, V{ 0.0 } };
 			gfx.Invoke("lineTo", nullptr, t1, 2);
-			V t2[]{ V{ width - 10.0 }, V{ headerHeight + 1.0 } };
+			V t2[]{ V{ width }, V{ headerHeight } };
 			gfx.Invoke("lineTo", nullptr, t2, 2);
-			V t3[]{ V{ 10.0 }, V{ headerHeight + 1.0 } };
+			V t3[]{ V{ 0.0 }, V{ headerHeight } };
 			gfx.Invoke("lineTo", nullptr, t3, 2);
 			gfx.Invoke("lineTo", nullptr, t0, 2);
 			gfx.Invoke("endFill", nullptr, nullptr, 0);
@@ -6078,11 +6090,12 @@ namespace
 					hintTop + 2.0, uPanelTextColor.GetValue(), 14.0);
 		}
 
-		// The title: row-bright and larger than the hints, so the strip reads
-		// as a title rather than another hint.
+		// The title, in vanilla's own header text colour and near-vanilla
+		// metrics (their strip is 31 px with 18 px text at (13, 7); ours is
+		// 30 px).
 		if (header)
-			makeHint(g_panelTitle, g_panelTitleFormat, 12.0, width - 24.0, "left",
-				title, "title", 5.0, 0xCCE6FF, 16.0);
+			makeHint(g_panelTitle, g_panelTitleFormat, 13.0, width - 26.0, "left",
+				title, "title", 5.0, uPanelTitleColor.GetValue(), 17.0);
 
 		// The scanner-key hint (v0.14.0): vanilla's own button component,
 		// driven with the scanner's user event so the key cap shows the
