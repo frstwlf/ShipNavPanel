@@ -291,11 +291,13 @@ and subscription whenever the movie-created callback fires, and drop stale
       startup timing, and timing is the whole of it. Worth remembering the shape
       of that: a config that reliably reproduces a race is still only evidence
       about timing.
-- [ ] **Verify `sConfirmKeyLabel` against VANILLA bindings.** It ships as `Q`,
-      which is the POV toggle on the tester's setup — not necessarily on a fresh
-      install. The mod knows the event name and cannot derive the key, so a
-      wrong default here means the hint row confidently names the wrong key,
-      which is worse than no hint.
+- [x] ~~**Verify `sConfirmKeyLabel` against VANILLA bindings.**~~ DISSOLVED
+      by v0.15.0: the confirm hint is now a real vanilla hotkey pill driven
+      by the first named entry of `sConfirmEvent`, so the key cap resolves
+      the player's ACTUAL binding and follows rebinds — the mod no longer
+      guesses a key it cannot know. `sConfirmKeyLabel` survives only as the
+      drawn-text fallback (pill construction failure, or an all-`#id`
+      config that has no binding to resolve).
 - [x] ~~**Eyeball the v0.7.1 skyline glyph and the C rebind.**~~ Both confirmed
       in game on v0.7.2. v0.7.0 drew only
       the ground slab: `poly` closes each shape with `endFill`, and
