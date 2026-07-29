@@ -131,6 +131,78 @@ highlight, more assembly.
 | **spaceshipinfomenu / docacceptmenu / map menus** | Separate movies — out of `CreateObject` reach from the HUD domain. Disqualified regardless of looks. |
 | Colour-borrow repaint (old option 2) | Still the floor if both instantiation routes fail: measure the teal/greys from the extracted shapes and repaint the drawn panel. Least vanilla-ness, zero instantiation risk. |
 
+## v0.9.0 probe: PASSED in game (2026-07-29)
+
+"Every part behaves as expected" — the whole-panel route is GO. The
+duplicate-class worry (art-less copy in the HUD's own ABC) is dead: the
+art-bound imported copy wins, same as OffScreenIcon.
+
+## The manipulation surface (read off `Extracted\quickcontainer.xml`)
+
+Timeline census of the donor, scale-adjusted to panel coordinates:
+
+| element | what it is | geometry |
+|---|---|---|
+| unnamed plate, child index 0 | black body shape (char 65) | ~423×296 at (0,0) |
+| `Header_mc` | flat TEAL shape **#218286** (char 67) | ~423×31 at (0,0) |
+| `TargetName_tf` | title EditText, **#76C0C4**, 18 px | 400×24 at (13,7) |
+| `List_mc` | BSScrollingContainer | at (28.9,43) |
+| `List_mc.Border_mc` | white rect, geometry driver | ~373×247 at (−3.9,0) |
+| `List_mc.ScrollBar` | LEFT side | at (−13,145) |
+| row `Border_mc` | **white** 306×43 shape scaled to ~372×31 | tinted per state |
+| row `Text_mc.Text_tf` | white, 18 px, left | 309×24, Text_mc at (9,4) |
+| row trailing badges | Contraband/Stolen/Tagged | runtime-positioned after text |
+
+**The highlight IS a colorTransform**: the `NormalSelected` frame MOVEs the
+same `Border_mc` instance with mulRGB=0, addRGB=(239,243,220), alpha ~40% —
+flat pale cream at 40%, no re-placement. Tinting flat art with a cxform is
+vanilla's own theming idiom, so recolouring anything here is native practice,
+not a hack: mul-only darkens, mul=0 + add=target sets an exact colour.
+
+**Persistence rules, mapped per depth from the timeline:**
+
+- Script-ADDED children (our icon clips, a distance TextField) are never
+  touched by timeline navigation — frames manage only their own placed
+  instances. Safe everywhere, forever.
+- Script-SET properties persist unless a frame MOVEs that depth. In sprite 70
+  and 61 nothing is ever MOVEd — header, plate, title, list border, scrollbar
+  are fully ours (colour, x/y, width/height, alpha). In the row, depth 1
+  (`Border_mc`) is MOVEd on every state frame (cxform only, no matrix) and
+  `Text_mc` (depth 58) only on RARITY frames — which the mod never enters
+  (uRarity stays 0). So `Text_mc.x` shifts survive selection changes; row
+  `Border_mc` size probably survives too (the MOVEs carry no matrix), with
+  one empirical unknown: a backward goto (deselect) re-applying frame 1's
+  authored matrix. Self-healing either way: the mod drives every selection
+  change, so re-stamping sizes after each write costs two SetMembers.
+
+**What that yields, concretely:**
+
+- **Header colour/alpha/size**: cxform or width/height on `Header_mc`;
+  title via `textColor` on `TargetName_tf`. Single-frame, persists.
+- **Row height / density**: the container lays rows out by each clip's
+  `clipHeight` (= its `Border_mc.height`) + spacing. Stamp `Border_mc.height`
+  per clip after `OnItemsChanged`, then `UpdateContainerRect()` (public,
+  triggers relayout). Container viewport via the public `borderHeight`
+  setter. Spacing itself (4 px) is `protected` — the one knob out of reach.
+- **Icon column**: shift `Text_mc.x` right by ~20 (rarity-frames-only MOVE
+  depth → survives), park our drawn glyph clip at the vacated left edge.
+- **Distance column**: our own TextField at the right edge (~x 270, width
+  96, align right), format CLONED from the row's own `Text_tf` via
+  `getTextFormat` — authentic face, no borrowed-format mismatch. Cap name
+  length by pre-truncating `sName` (the entry recomputes its own
+  `maxCharactersToDisplay` per SetEntryText, so feed short strings rather
+  than fight it).
+- **Decoration refresh rule**: row clips are POOLED (`clipIndex` fixed,
+  `itemIndex` remapped on scroll). Every change is mod-driven, so after
+  every drive call walk `GetClipByIndex(0..totalEntryClips-1)` and restamp
+  decorations from `itemIndex`. Same shape as the drawn panel's refresh.
+- **Scrollbar**: sits LEFT (authentic); movable (`ScrollBar.x`), height via
+  public `scrollBarHeight`.
+- **Whole-panel narrowing**: header + plate + list border resize cleanly;
+  row art resize is the fiddly part (Border + gradient overlay per clip,
+  restamped). Vanilla width ~423 is close to the drawn panel's 340 — using
+  it as-is is the cheap default.
+
 ## Probe checklist for the next session (log-gated, Phase-3 style)
 
 1. `CreateObject("ShipHudQuickContainer")` from the held movie — log
