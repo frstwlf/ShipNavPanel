@@ -155,8 +155,21 @@ namespace
 	REX::TIniSetting<bool>        bScannerHint{ "Panel", "bScannerHint", true };
 	REX::TIniSetting<std::string> sScannerHintLabel{ "Panel", "sScannerHintLabel", "$SCAN" };
 	REX::TIniSetting<float>       fScannerHintOffsetX{ "Panel", "fScannerHintOffsetX", 0.0f };
-	REX::TIniSetting<float>       fScannerHintOffsetY{ "Panel", "fScannerHintOffsetY", 210.0f };
+	// 440 sits the pill just above the game's own EXIT CRUISE hint at ~478
+	// (measured off the tester's screenshot; v0.15.0).
+	REX::TIniSetting<float>       fScannerHintOffsetY{ "Panel", "fScannerHintOffsetY", 440.0f };
 	REX::TIniSetting<float>       fScannerHintScale{ "Panel", "fScannerHintScale", 1.0f };
+
+	// The footer, tokenised (v0.15.0, the tester's composition): the browse
+	// label sits by the wheel glyph, and the confirm hint became the same
+	// vanilla pill as the HUD's scanner hint, driven by the first NAMED
+	// entry of sConfirmEvent - the key cap shows the player's REAL binding,
+	// so sConfirmKeyLabel stops being able to lie and demotes to the drawn
+	// fallback (a names-free, all-#id config cannot resolve a cap).
+	REX::TIniSetting<std::string> sPanelBrowseLabel{ "Panel", "sPanelBrowseLabel", "$CycleTarget" };
+	REX::TIniSetting<std::string> sPanelConfirmLabel{ "Panel", "sPanelConfirmLabel", "$ShipHUD_SelectTarget" };
+	REX::TIniSetting<float>       fPanelHintPillScale{ "Panel", "fPanelHintPillScale", 0.8f };
+	REX::TIniSetting<float>       fPanelConfirmPillRightPad{ "Panel", "fPanelConfirmPillRightPad", 130.0f };
 
 	REX::TIniSetting<bool>        bPanelSounds{ "Panel", "bPanelSounds", true };
 	REX::TIniSetting<std::string> sPanelOpenSound{ "Panel", "sPanelOpenSound", "UICockpitHUDMonocleOpen" };
@@ -170,7 +183,8 @@ namespace
 	// translation at panel build - the default is the word the HUD's cruise
 	// hint itself uses, so the title arrives in the player's language.
 	REX::TIniSetting<bool>        bPanelHeader{ "Panel", "bPanelHeader", true };
-	REX::TIniSetting<std::string> sPanelTitle{ "Panel", "sPanelTitle", "$CRUISE" };
+	REX::TIniSetting<std::string> sPanelTitle{ "Panel", "sPanelTitle",
+		"$CRUISE| - |$Outpost_AvailableTargets" };
 
 	// Stations and landing sites in the list, below the bodies. Ships are off by
 	// default: in traffic that would be a list of everything flying past rather
@@ -1882,6 +1896,8 @@ namespace
 	// cruise while the panel is fully closed. Failure latches per movie.
 	RE::Scaleform::GFx::Value g_scannerHint;
 	std::atomic<bool>         g_scannerHintFailed{ false };
+	// And its sibling inside the panel footer: the confirm-key pill.
+	RE::Scaleform::GFx::Value g_panelConfirmPill;
 	RE::Scaleform::GFx::Value g_panelFormat;
 	RE::Scaleform::GFx::Value g_panelDistFormat;
 	RE::Scaleform::GFx::Value g_panelHint;
@@ -2891,6 +2907,7 @@ namespace
 			g_pendingPanelSound.store(0, std::memory_order_release);
 			g_scannerHint = RE::Scaleform::GFx::Value{};
 			g_scannerHintFailed.store(false, std::memory_order_release);
+			g_panelConfirmPill = RE::Scaleform::GFx::Value{};
 			for (auto& dist : g_panelDists)
 				dist = RE::Scaleform::GFx::Value{};
 			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
@@ -5444,20 +5461,41 @@ namespace
 		const double width = static_cast<double>(fPanelWidth.GetValue());
 
 		const bool hints = bPanelHints.GetValue();
-		// The title may be a localisation token ("$CRUISE" by default - the
-		// word the HUD's own cruise hint uses): resolved through the same
-		// scratch-TextField route as the undiscovered labels, so it arrives
-		// in the player's language. A token that fails to translate falls
-		// back to English words rather than showing a bare "$CRUISE".
-		std::string title = sPanelTitle.GetValue();
-		if (!title.empty() && title.front() == '$') {
-			const std::string translated = TranslateToken(title.c_str());
-			if (translated.empty()) {
-				REX::WARN("[panel] title token '{}' did not translate - using the fallback words", title);
+		// The title, composed of segments split on '|': every '$' segment
+		// translates through the game's own tables, everything else is
+		// literal - so the default "$CRUISE| - |$Outpost_AvailableTargets"
+		// renders as the two words in the player's language around a plain
+		// dash (v0.15.0, the tester's composition). Any segment failing to
+		// translate fails the whole title to the English fallback rather
+		// than showing a bare token.
+		std::string title;
+		{
+			const std::string raw = sPanelTitle.GetValue();
+			bool              failed = false;
+			std::size_t       start = 0;
+			while (start <= raw.size()) {
+				const auto        sep = raw.find('|', start);
+				const std::string seg =
+					raw.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
+				if (!seg.empty() && seg.front() == '$') {
+					const std::string translated = TranslateToken(seg.c_str());
+					if (translated.empty()) {
+						failed = true;
+						break;
+					}
+					title += translated;
+				} else {
+					title += seg;
+				}
+				if (sep == std::string::npos)
+					break;
+				start = sep + 1;
+			}
+			if (failed) {
+				REX::WARN("[panel] title '{}' did not fully translate - using the fallback words", raw);
 				title = "NAVIGATION TARGETS";
-			} else {
-				REX::INFO("[panel] title '{}' from token '{}'", translated, title);
-				title = translated;
+			} else if (title != raw && !raw.empty()) {
+				REX::INFO("[panel] title '{}' from '{}'", title, raw);
 			}
 		}
 		// The header mirrors the footer: a title where the hints have their
@@ -5882,19 +5920,89 @@ namespace
 		};
 
 		if (hints) {
-			// Left hint sits right against the wheel symbol; the confirm hint is
-			// right-aligned to the panel edge, mirroring the name/distance
-			// columns above it.
-			// Sized from the right hint's needs rather than a percentage split:
-			// the 45/55 split in v0.3.2 left the browse hint too narrow and it
-			// truncated mid-word.
+			// Left hint sits right against the wheel symbol, in the game's
+			// own words when the label is a token ($CycleTarget by default).
 			const double rightWidth = std::min(150.0, std::max(90.0, width * 0.36));
 			const double leftWidth = std::max(60.0, width - hintTextX - rightWidth - 14.0);
+			std::string  browse = sPanelBrowseLabel.GetValue();
+			if (!browse.empty() && browse.front() == '$') {
+				const std::string translated = TranslateToken(browse.c_str());
+				browse = translated.empty() ? std::string{ "wheel to browse" } : translated;
+			}
 			makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
-				std::string{ "wheel to browse" }, "left", hintTop + 2.0, 0x7FA8C4, 14.0);
-			makeHint(g_panelHintRight, g_panelHintRightFormat, width - rightWidth - 10.0, rightWidth, "right",
-				std::format("{}  lock / clear", sConfirmKeyLabel.GetValue()), "right", hintTop + 2.0,
-				0x7FA8C4, 14.0);
+				browse, "left", hintTop + 2.0, 0x7FA8C4, 14.0);
+
+			// The confirm hint is the same vanilla pill as the HUD's scanner
+			// hint, driven by the first NAMED entry of sConfirmEvent - the
+			// key cap shows the player's real binding, which the old drawn
+			// "Q lock / clear" could never promise. An all-#id config has
+			// no name for the cap to resolve, so the drawn text (with
+			// sConfirmKeyLabel, now fallback-only) returns for it.
+			bool        pillOk = false;
+			std::string confirmEventName;
+			{
+				const std::string list = sConfirmEvent.GetValue();
+				std::size_t       p = 0;
+				while (p <= list.size()) {
+					const auto  c = list.find(',', p);
+					std::string entry =
+						list.substr(p, c == std::string::npos ? std::string::npos : c - p);
+					while (!entry.empty() && entry.front() == ' ')
+						entry.erase(0, 1);
+					while (!entry.empty() && entry.back() == ' ')
+						entry.pop_back();
+					if (!entry.empty() && entry.front() != '#') {
+						confirmEventName = entry;
+						break;
+					}
+					if (c == std::string::npos)
+						break;
+					p = c + 1;
+				}
+			}
+			if (!confirmEventName.empty()) {
+				RE::Scaleform::GFx::Value ued;
+				{
+					V eventName;
+					root->CreateString(&eventName, confirmEventName.c_str());
+					root->CreateObject(&ued,
+						"Shared.Components.ButtonControls.ButtonData.UserEventData", &eventName, 1);
+				}
+				RE::Scaleform::GFx::Value data;
+				if (ued.IsObject()) {
+					V dataArgs[2];
+					root->CreateString(&dataArgs[0], sPanelConfirmLabel.GetValue().c_str());
+					dataArgs[1] = ued;
+					root->CreateObject(&data,
+						"Shared.Components.ButtonControls.ButtonData.ButtonBaseData", dataArgs, 2);
+				}
+				if (data.IsObject()) {
+					root->CreateObject(&g_panelConfirmPill, "BasicButton_Filled");
+					if (g_panelConfirmPill.IsObject() || g_panelConfirmPill.IsDisplayObject()) {
+						RE::Scaleform::GFx::Value pillAdded;
+						if (g_panelClip.Invoke("addChild", &pillAdded, &g_panelConfirmPill, 1)) {
+							const double ps = static_cast<double>(fPanelHintPillScale.GetValue());
+							g_panelConfirmPill.SetMember("x",
+								V{ width - static_cast<double>(fPanelConfirmPillRightPad.GetValue()) });
+							g_panelConfirmPill.SetMember("y", V{ hintTop + hintHeight * 0.5 });
+							g_panelConfirmPill.SetMember("scaleX", V{ ps });
+							g_panelConfirmPill.SetMember("scaleY", V{ ps });
+							g_panelConfirmPill.SetMember("mouseEnabled", V{ false });
+							g_panelConfirmPill.SetMember("mouseChildren", V{ false });
+							pillOk = g_panelConfirmPill.Invoke("SetButtonData", nullptr, &data, 1);
+						}
+					}
+				}
+				if (!pillOk) {
+					g_panelConfirmPill = RE::Scaleform::GFx::Value{};
+					REX::WARN("[panel] confirm pill could not be built - the drawn hint text stays");
+				}
+			}
+			if (!pillOk)
+				makeHint(g_panelHintRight, g_panelHintRightFormat, width - rightWidth - 10.0,
+					rightWidth, "right",
+					std::format("{}  lock / clear", sConfirmKeyLabel.GetValue()), "right",
+					hintTop + 2.0, 0x7FA8C4, 14.0);
 		}
 
 		// The title: row-bright and larger than the hints, so the strip reads
@@ -6481,10 +6589,12 @@ namespace
 				setVis(g_panelTitle, true);
 				setVis(g_panelHint, true);
 				setVis(g_panelHintRight, true);
+				setVis(g_panelConfirmPill, true);
 			} else if (anim == PanelAnim::kOpening || anim == PanelAnim::kClosing) {
 				setVis(g_panelTitle, false);
 				setVis(g_panelHint, false);
 				setVis(g_panelHintRight, false);
+				setVis(g_panelConfirmPill, false);
 				setVis(g_panelHighlight, false);
 				setVis(g_panelScrollTrack, false);
 				setVis(g_panelScrollThumb, false);
