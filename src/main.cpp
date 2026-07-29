@@ -140,9 +140,12 @@ namespace
 	// The title strip across the top, mirroring the hint bar along the bottom
 	// (v0.10.0, the tester's call after the donor comparison: the drawn panel
 	// stays, wearing vanilla's plate colour and a proper header). An empty
-	// title disables the strip as surely as the flag does.
+	// title disables the strip as surely as the flag does. A value starting
+	// with '$' is a localisation token resolved through the game's own
+	// translation at panel build - the default is the word the HUD's cruise
+	// hint itself uses, so the title arrives in the player's language.
 	REX::TIniSetting<bool>        bPanelHeader{ "Panel", "bPanelHeader", true };
-	REX::TIniSetting<std::string> sPanelTitle{ "Panel", "sPanelTitle", "NAVIGATION TARGETS" };
+	REX::TIniSetting<std::string> sPanelTitle{ "Panel", "sPanelTitle", "$CRUISE" };
 
 	// Stations and landing sites in the list, below the bodies. Ships are off by
 	// default: in traffic that would be a list of everything flying past rather
@@ -1827,6 +1830,7 @@ namespace
 	void TryCreatePanel();
 	void TryCreateChromeProbe();
 	void RefreshPanel();
+	std::string TranslateToken(const char* a_token);
 	void RefreshCruiseState();
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
@@ -5306,12 +5310,30 @@ namespace
 		const double width = static_cast<double>(fPanelWidth.GetValue());
 
 		const bool hints = bPanelHints.GetValue();
+		// The title may be a localisation token ("$CRUISE" by default - the
+		// word the HUD's own cruise hint uses): resolved through the same
+		// scratch-TextField route as the undiscovered labels, so it arrives
+		// in the player's language. A token that fails to translate falls
+		// back to English words rather than showing a bare "$CRUISE".
+		std::string title = sPanelTitle.GetValue();
+		if (!title.empty() && title.front() == '$') {
+			const std::string translated = TranslateToken(title.c_str());
+			if (translated.empty()) {
+				REX::WARN("[panel] title token '{}' did not translate - using the fallback words", title);
+				title = "NAVIGATION TARGETS";
+			} else {
+				REX::INFO("[panel] title '{}' from token '{}'", translated, title);
+				title = translated;
+			}
+		}
 		// The header mirrors the footer: a title where the hints have their
 		// text, a hairline between it and the rows, and the rows' 6.0 pad
 		// below its rule matching the pad above the footer's. An empty title
-		// disables it as surely as the flag does.
-		const bool   header = bPanelHeader.GetValue() && !sPanelTitle.GetValue().empty();
-		const double headerHeight = header ? 24.0 : 0.0;
+		// disables it as surely as the flag does. Taller than the footer and
+		// in brighter, larger type - v0.10.0's 24 px strip of hint-coloured
+		// 14 px text did not read as a title (the tester's call).
+		const bool   header = bPanelHeader.GetValue() && !title.empty();
+		const double headerHeight = header ? 30.0 : 0.0;
 		const double listTop = 6.0 + headerHeight;
 		const double listBottom = listTop + rowHeight * static_cast<double>(rows);
 		const double hintHeight = 22.0;
@@ -5560,7 +5582,7 @@ namespace
 		// every refresh - one builder for all three fields.
 		const auto makeHint = [&](RE::Scaleform::GFx::Value& a_field, RE::Scaleform::GFx::Value& a_format,
 								   double a_x, double a_w, const char* a_align, const std::string& a_text,
-								   const char* a_tag, double a_y, std::uint32_t a_colour) {
+								   const char* a_tag, double a_y, std::uint32_t a_colour, double a_size) {
 			root->CreateObject(&a_field, "flash.text.TextField");
 			if (!a_field.IsObject() && !a_field.IsDisplayObject()) {
 				REX::WARN("[panel] could not create the {} hint field", a_tag);
@@ -5576,7 +5598,7 @@ namespace
 			a_field.SetMember("y", V{ a_y });
 
 			if (BorrowTextFormat(root, rootPath, a_format, "[panel-hint]")) {
-				a_format.SetMember("size", V{ 14.0 });
+				a_format.SetMember("size", V{ a_size });
 				a_format.SetMember("bold", V{ false });
 				a_format.SetMember("color", V{ a_colour });
 				a_format.SetMember("align", V{ a_align });
@@ -5605,16 +5627,17 @@ namespace
 			const double rightWidth = std::min(150.0, std::max(90.0, width * 0.36));
 			const double leftWidth = std::max(60.0, width - hintTextX - rightWidth - 14.0);
 			makeHint(g_panelHint, g_panelHintFormat, hintTextX, leftWidth, "left",
-				std::string{ "wheel to browse" }, "left", hintTop + 2.0, 0x7FA8C4);
+				std::string{ "wheel to browse" }, "left", hintTop + 2.0, 0x7FA8C4, 14.0);
 			makeHint(g_panelHintRight, g_panelHintRightFormat, width - rightWidth - 10.0, rightWidth, "right",
 				std::format("{}  lock / clear", sConfirmKeyLabel.GetValue()), "right", hintTop + 2.0,
-				0x7FA8C4);
+				0x7FA8C4, 14.0);
 		}
 
-		// The title, a notch brighter than the hints so it reads as one.
+		// The title: row-bright and larger than the hints, so the strip reads
+		// as a title rather than another hint.
 		if (header)
 			makeHint(g_panelTitle, g_panelTitleFormat, 12.0, width - 24.0, "left",
-				sPanelTitle.GetValue(), "title", 3.0, 0x99D6FF);
+				title, "title", 5.0, 0xCCE6FF, 16.0);
 
 		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
 		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
@@ -5947,23 +5970,14 @@ namespace
 	// tick - distances crawl, and ten TextField writes per frame is a cost with
 	// nothing to show for it. The highlight moves immediately, because that is
 	// the part the player is waiting on.
-	// Fetch the game's own word for an undiscovered marker category through
-	// the game's own localisation: set the category's translation token on a
+	// Resolve ANY "$token" through the game's own localisation: set it on the
 	// scratch TextField with GlobalFunc.SetText - the call vanilla itself uses
 	// for its "$ENGINES"-style labels - and read the translated text back.
-	// Cached per category for the session; the scratch field dies with the
-	// movie and rebuilds on demand. Returns empty when the category has no
-	// token or the translation fails, and caches the failure so a broken
-	// translator costs one attempt, not one per refresh.
-	std::string TranslateGenericLabel(std::uint32_t a_category)
+	// Returns empty when the token does not translate (the readback still
+	// starts with '$') or the machinery is unavailable. Callers cache.
+	std::string TranslateToken(const char* a_token)
 	{
-		{
-			std::lock_guard labels{ g_genericLabelMutex };
-			if (const auto hit = g_genericLabels.find(a_category); hit != g_genericLabels.end())
-				return hit->second;
-		}
-		const char* token = GenericLabelToken(a_category);
-		if (!token)
+		if (!a_token || !*a_token)
 			return {};
 		if (g_translatorFailed.load(std::memory_order_acquire))
 			return {};
@@ -6005,7 +6019,7 @@ namespace
 
 		V args[2];
 		args[0] = g_translatorField;
-		root->CreateString(&args[1], token);
+		root->CreateString(&args[1], a_token);
 		if (!globalFunc.Invoke("SetText", nullptr, args, 2))
 			return {};
 
@@ -6015,7 +6029,25 @@ namespace
 			word = text.GetString();
 		if (!word.empty() && word.front() == '$')
 			word.clear();  // came back untranslated - not a display string
+		return word;
+	}
 
+	// The undiscovered-marker wrapper: category -> token -> word, cached per
+	// category for the session - failures too, so a broken translator costs
+	// one attempt, not one per refresh. The scratch field dies with the movie
+	// and rebuilds on demand.
+	std::string TranslateGenericLabel(std::uint32_t a_category)
+	{
+		{
+			std::lock_guard labels{ g_genericLabelMutex };
+			if (const auto hit = g_genericLabels.find(a_category); hit != g_genericLabels.end())
+				return hit->second;
+		}
+		const char* token = GenericLabelToken(a_category);
+		if (!token)
+			return {};
+
+		const std::string word = TranslateToken(token);
 		{
 			// Cache even the failure: one attempt per category per session.
 			std::lock_guard labels{ g_genericLabelMutex };

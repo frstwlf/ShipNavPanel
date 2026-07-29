@@ -448,6 +448,26 @@ These three come before release.
 
 Later, and not blocking release:
 
+- [ ] **Scanner mode dropped during NORMAL flight when an NPC ship spooled
+      its grav drive (tester, 2026-07-29) — mod involvement UNVERIFIED,
+      needs a repro.** Code audit of the outside-cruise surface, for the
+      record: the scanner key handler returns before `TogglePanel()` unless
+      `g_inCruise`; the camera splice and the (default-off) throttle test
+      are both additionally gated on the panel being open, which requires
+      cruise; the blip/fade/cull passes are cruise-gated; and nothing in
+      the mod dispatches menu events or writes any scanner/monocle state —
+      its engine writes are the two vtable hooks, the panel-open splice,
+      and HUD clip properties. So a direct cause looks unlikely, BUT the
+      stale-`CruiseModeHUDActive` hazard (the item below) means the cruise
+      gates can read true for a while after a cruise ends — if the session
+      had cruised earlier, the passes may have been live in normal flight.
+      Discriminators for the repro: does it happen with the DLL removed;
+      does it happen in a session that never entered cruise; and if it
+      recurs with the mod in, note whether blips/icons looked managed
+      (hidden/faded) at that moment — that is the stale-flag tell. A
+      vanilla explanation is also plausible (alert events can pull the
+      player out of scanner mode, as combat does).
+
 - [ ] **The panel can outlive a forced exit from cruise.** Seen when a random
       combat event dropped the ship out: the panel stayed up until the scanner
       key closed it. Cruise is detected only from `Reticle_mc.CruiseModeHUDActive`,
