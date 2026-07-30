@@ -505,11 +505,20 @@ namespace
 		// Anything consuming these must gate on uTargetType, the authority.
 		std::uint32_t poiType{ 0 };
 		std::uint32_t poiCategory{ 0 };
+		// Captured independently of the uPoiType pair: the HUD's own name
+		// recipe (GetLocationPOIName) runs off THIS field, and it can be
+		// present when the POI pair is not. haveLocState records presence,
+		// since LMS_UNKNOWN is 0 and therefore a value.
 		std::uint32_t locMarkerState{ 0 };
+		bool          haveLocState{ false };
 		bool          havePoi{ false };
 		// The feed's name field carries the REAL name even for markers the
 		// player has not discovered (the HUD's own icons show a masked
-		// generic). The panel masks on this flag; absent means discovered.
+		// generic). ⚠ This flag and uLocationMarkerState can DISAGREE: a
+		// runtime-spawned encounter arrives FULL_REVEAL (the HUD names it
+		// from the first frame) while bMarkerDiscovered stays false. The
+		// label follows the STATE, exactly as vanilla's POIIcon does; this
+		// flag is only the fallback reading when the state field is absent.
 		bool discovered{ true };
 		// False for bodies added from the master file rather than offered by the
 		// HUD: they have a name and a place in the tree, but no bearing and no
@@ -3378,8 +3387,14 @@ namespace
 				row.havePoi = true;
 				if (entry.GetMember("uPoiCategory", &member))
 					row.poiCategory = static_cast<std::uint32_t>(AsNumber(member));
-				if (entry.GetMember("uLocationMarkerState", &member))
-					row.locMarkerState = static_cast<std::uint32_t>(AsNumber(member));
+			}
+			// Independent of the pair above: the marker STATE is what names
+			// the HUD's own icon (GetLocationPOIName), so the label logic
+			// needs it even when the type/category pair is absent (v0.18.0).
+			if (entry.GetMember("uLocationMarkerState", &member) &&
+				(member.IsNumber() || member.IsInt() || member.IsUInt())) {
+				row.locMarkerState = static_cast<std::uint32_t>(AsNumber(member));
+				row.haveLocState = true;
 			}
 			if (entry.GetMember("bMarkerDiscovered", &member) && member.IsBoolean())
 				row.discovered = member.GetBoolean();
@@ -6495,6 +6510,29 @@ namespace
 		return word;
 	}
 
+	// "$Unknown Location" - the word vanilla prints for LMS_UNKNOWN markers
+	// (DynamicPoiIcon.GetLocationPOIName's default arm). Same translator, same
+	// cache-even-the-failure rule, parked under a key no real category uses.
+	std::string TranslateUnknownLocation()
+	{
+		constexpr std::uint32_t kCacheKey = 0xFFFFFFFFu;
+		{
+			std::lock_guard labels{ g_genericLabelMutex };
+			if (const auto hit = g_genericLabels.find(kCacheKey); hit != g_genericLabels.end())
+				return hit->second;
+		}
+		const std::string word = TranslateToken("$Unknown Location");
+		{
+			std::lock_guard labels{ g_genericLabelMutex };
+			g_genericLabels[kCacheKey] = word;
+		}
+		if (word.empty())
+			REX::WARN("[panel] '$Unknown Location' did not translate - LMS_UNKNOWN rows use the ini word");
+		else
+			REX::INFO("[panel] LMS_UNKNOWN label: '{}'", word);
+		return word;
+	}
+
 	void RefreshPanel()
 	{
 		if (!g_panelReady.load(std::memory_order_acquire))
@@ -6822,28 +6860,57 @@ namespace
 
 					// The locked body is marked in the list itself, so the panel
 					// says what the HUD is showing without having to be closed.
-					// Undiscovered stations and POIs wear their generic label,
-					// exactly as the HUD's own icons do - the feed name leaks
-					// the real one early. Discovery flips the feed flag, the
-					// feed republishes, and the row unmasks by itself.
+					// Station/POI labels follow the SAME recipe as the icon the
+					// player sees (POIIcon.TryUpdateName ->
+					// DynamicPoiIcon.GetLocationPOIName), driven by
+					// uLocationMarkerState - NOT bMarkerDiscovered. The two can
+					// disagree: a runtime-spawned encounter ("Ecliptic
+					// Satellite") arrives FULL_REVEAL, named on the HUD from
+					// the first frame, while the discovered flag stays false -
+					// masking on the flag printed "Unknown" beside a named
+					// marker (tester, v0.18.0). FULL_REVEAL -> the real name;
+					// ONLY_TYPE_KNOWN -> the category's generic word, or the
+					// REAL NAME when no generic exists (vanilla's own
+					// fallback); LMS_UNKNOWN -> the game's "$Unknown Location".
+					// The ini words remain the failed-translation fallback and
+					// the whole story under bUseCustomUndiscoveredLabels; an
+					// entry without the state field keeps the old
+					// discovered-based reading.
 					const bool  isLocked = locked != 0 && row.id == locked;
 					const char* mark = isLocked ? "> " : "  ";
-					const bool  masked = !row.discovered &&
-					                    (row.type == kTargetTypeStation ||
-					                        row.type == kTargetTypePOI);
+					const bool  poiLike = row.type == kTargetTypeStation ||
+					                     row.type == kTargetTypePOI;
 					std::string display = row.name;
-					if (masked) {
-						// The game's own generic for this category, through
-						// its own localisation; the ini words are the
-						// fallback, or the whole story if the player prefers
-						// their own.
-						display.clear();
-						if (!bUseCustomUndiscoveredLabels.GetValue() && row.havePoi)
-							display = TranslateGenericLabel(row.poiCategory);
-						if (display.empty())
-							display = row.type == kTargetTypeStation ?
-							              sUndiscoveredStationLabel.GetValue() :
-							              sUndiscoveredPoiLabel.GetValue();
+					if (poiLike) {
+						const std::uint32_t state =
+							row.haveLocState ? row.locMarkerState :
+							                   (row.discovered ? kLmsFullReveal : kLmsOnlyTypeKnown);
+						const bool custom = bUseCustomUndiscoveredLabels.GetValue();
+						if (state == kLmsOnlyTypeKnown) {
+							display.clear();
+							if (!custom) {
+								if (GenericLabelToken(row.havePoi ? row.poiCategory : 0) == nullptr)
+									// No generic word exists for this kind
+									// (NONE, SIMPLE, absent fields): vanilla
+									// shows the name, not a placeholder.
+									display = row.name;
+								else
+									display = TranslateGenericLabel(row.poiCategory);
+							}
+							if (display.empty())
+								display = row.type == kTargetTypeStation ?
+								              sUndiscoveredStationLabel.GetValue() :
+								              sUndiscoveredPoiLabel.GetValue();
+						} else if (state != kLmsFullReveal) {
+							// LMS_UNKNOWN and anything newer.
+							display.clear();
+							if (!custom)
+								display = TranslateUnknownLocation();
+							if (display.empty())
+								display = row.type == kTargetTypeStation ?
+								              sUndiscoveredStationLabel.GetValue() :
+								              sUndiscoveredPoiLabel.GetValue();
+						}
 					}
 					const auto name = std::format("{}{}", mark, display);
 					nameField.SetMember("text", V{ name.c_str() });
@@ -6951,7 +7018,13 @@ namespace
 						if (row.havePoi && poiKind && row.poiType < kMarkerTypeCount) {
 							poiType = row.poiType;
 							poiCat = row.poiCategory;
-							poiState = row.discovered ? kLmsFullReveal : kLmsOnlyTypeKnown;
+							// The entry's own state, exactly what vanilla
+							// hands SetLocation (POIIcon.as:28); synthesized
+							// from `discovered` only when the feed omitted
+							// the field (the pre-v0.18.0 reading).
+							poiState = row.haveLocState ?
+							               row.locMarkerState :
+							               (row.discovered ? kLmsFullReveal : kLmsOnlyTypeKnown);
 							wantVanilla = true;
 						} else if (rowSettled) {
 							poiType = kMarkerSurfaceSettlement;

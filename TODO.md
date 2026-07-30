@@ -11,7 +11,9 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v0.17.0. Everything below is confirmed in game unless marked otherwise.**
+**v0.18.0. Everything below is confirmed in game unless marked otherwise
+(open: v0.18.0's reveal-state labels await an in-game pass — spawn or find
+an encounter POI and compare row vs marker).**
 
 - **The panel**: in cruise the scanner key opens/closes it, the wheel moves
   the highlight (spliced away from the camera), `TogglePOV` — or anything in
@@ -38,8 +40,10 @@ version-by-version story this section used to accumulate.
   fully vanilla. The selection wins overlaps both directions (quest and
   E-target icons deliberately still outrank it), stations get planets'
   blip-to-icon handover, the fallback marker is a real `OffScreenIcon` with
-  the entry's own POI art, and undiscovered rows wear the game's masked
-  generic labels via localisation tokens, unmasking on discovery.
+  the entry's own POI art, and masked rows follow the marker's REVEAL
+  STATE (`uLocationMarkerState`, v0.18.0 — the same field the HUD icon
+  reads) wearing the game's generic labels via localisation tokens,
+  unmasking the moment the marker does.
 - **The data** (v0.17.0): the planet/moon hierarchy — PNDT GNAM, LCTN
   settlement join, Localization.ba2 names — is parsed from the whole load
   order into memory on a background thread each launch. **423 ms measured**;
@@ -597,3 +601,19 @@ Each of these cost real time; the reasoning is in the findings docs.
 - **Per-notch VM work on a live list broke wheel scrolling once** (v0.9.1,
   never root-caused; deleting the machinery in v0.9.2 fixed it). If a feature
   ever adds per-notch Scaleform work again, watch the wheel first.
+- **`bMarkerDiscovered` and `uLocationMarkerState` can DISAGREE, and the
+  STATE is the naming authority.** A runtime-spawned encounter ("Ecliptic
+  Satellite", tester 2026-07-30) arrives `LMS_FULL_REVEAL` — the HUD names
+  it from the first frame — while `bMarkerDiscovered` stays false; masking
+  on the flag printed "Unknown" beside a named marker. Vanilla's recipe
+  (`POIIcon.TryUpdateName` → `DynamicPoiIcon.GetLocationPOIName(name,
+  uLocationMarkerState, uPoiCategory)`): FULL_REVEAL → name;
+  ONLY_TYPE_KNOWN → the category's generic word, **falling back to the
+  REAL NAME when no generic exists** (categories NONE=0 and SIMPLE=9 have
+  none — not to a placeholder); LMS_UNKNOWN → "$Unknown Location".
+  v0.18.0 adopts it verbatim for row labels AND feeds the real state to
+  the row badge and faux marker (`SetLocation`), instead of synthesizing
+  from the flag. The flag remains only the fallback reading for entries
+  without the state field. (The starmap's nameplates use the flag —
+  `GetSpacePOIName` — so the two vanilla surfaces genuinely differ; the
+  panel mirrors the HUD, its own surface.)
