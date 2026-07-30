@@ -129,26 +129,28 @@ and subscription whenever the movie-created callback fires, and drop stale
       (The 2026-07-29 scanner-drop observation is NOT this — it reproduces with
       the DLL removed; see Settled.)
 
-- [ ] **Duplicate feed names break blip identity — tester observation
-      2026-07-30, diagnosis from code, fix unbuilt.** A "Ship" and an
-      "Anomaly" marker (two DISTINCT POIs, likely a spawned encounter pair)
-      both showed as blips + in-FOV markers whichever one was selected. The
-      keep/cull passes and icon lookup match clips purely by NAME
-      (`kOffScreenIconPrefix + name` / `getChildByName("OnScreenIcon: " +
-      name)`) because vanilla names its clips with the feed `name` — so two
-      entries sharing a feed name are indistinguishable, and selecting
-      either keeps BOTH. The differing PANEL labels don't disprove shared
-      feed names: masking can render one as "Ship" (generic) while the
-      other shows its real name. Plan, two steps: (1) a one-line recon
-      detector — log when the candidate set contains duplicate names, so
-      the next spawn proves the hypothesis in passing; (2) the fix —
-      when (and only when) the selection's name is duplicated among
-      candidates, disambiguate the clip by position (icons: rect centre vs
-      the high feed's `screenPositionX/Y`; ring blips: clip bearing vs
-      `angleToCrosshair`), strictly additive so the unique-name path stays
-      byte-identical. The keep pass is the most lesson-laden code in the
-      mod — do not restructure it for this; gate the extra check on the
-      duplicate case.
+- [ ] **Duplicate feed names break blip identity — CONFIRMED from the
+      tester's own log (2026-07-30), fix unbuilt.** Two distinct spawned
+      POIs (FF01C601, FF0167F0; markers displayed "Ship" and "Anomaly",
+      different locations) both showed whichever one was selected. The
+      log's proof, 17:34:56.565 — the same clip kept TWICE in one tick:
+      `[blip] kept 'OffScreenIcon: Sensor Contact' (panel highlight)` ×2.
+      Both entries' FEED name is "Sensor Contact" — vanilla's name for
+      unresolved distant contacts — while the displayed labels differ
+      (masked generic vs marker label). The keep/cull passes and the icon
+      lookup match clips purely by NAME (`kOffScreenIconPrefix + name` /
+      `getChildByName("OnScreenIcon: " + name)`), so same-named entries
+      are indistinguishable and BOTH get kept. Not a freak pairing: ANY
+      two unresolved contacts in a system share "Sensor Contact", so this
+      recurs in ordinary play. The fix — only when the selection's name
+      is duplicated among candidates, disambiguate by geometry (on-screen
+      icons: rect centre vs the high feed's `screenPositionX/Y`; ring
+      blips: clip bearing vs `angleToCrosshair`), covering the keep pass,
+      the coverage check (`findIcon` takes the FIRST name match, so the
+      mod can stand its marker down against the WRONG contact's icon) and
+      the fade pass. Strictly additive: the unique-name path stays
+      byte-identical, and the keep pass — the most lesson-laden code in
+      the mod — is not restructured.
 
 Later, nice-to-have:
 
