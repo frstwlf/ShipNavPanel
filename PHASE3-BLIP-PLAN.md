@@ -1,5 +1,11 @@
 # Phase 3 — vanilla blips instead of a drawn arrow (2026-07-28)
 
+> **Outcome (2026-07-30): shipped and user-verified end to end** across the
+> v0.8.x arc (hiding model, selection-wins-overlap both directions,
+> blip-to-icon handover, faux `OffScreenIcon` marker with POI art, masked
+> generic labels from localisation tokens). This document is the assessment
+> and mechanism record; `TODO.md` is the current state.
+
 The design shift under assessment: **in cruise, hide the ship HUD's own
 off-screen blips** (the circle-and-arrow markers on the reticle ring that point
 at things outside the view), **keep the named in-view markers**, and when a body

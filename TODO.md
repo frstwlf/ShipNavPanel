@@ -1,212 +1,54 @@
 # ShipNavPanel — state and next steps
 
-Rewritten 2026-07-27. The previous version had accreted every superseded plan
-in order, with completed and abandoned items still unticked — misleading to
-anyone picking this up cold. Full narrative lives in
-[PHASE0-FINDINGS.md](PHASE0-FINDINGS.md), [PHASE1-SWF-FINDINGS.md](PHASE1-SWF-FINDINGS.md)
-and [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md).
+Rewritten 2026-07-27; state refreshed 2026-07-30 — same reason both times: a
+handoff doc that accretes its own history stops being one. The dated
+investigation records are
+[PHASE0-FINDINGS.md](PHASE0-FINDINGS.md), [PHASE1-SWF-FINDINGS.md](PHASE1-SWF-FINDINGS.md),
+[PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md), [PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md),
+[PHASE4-CHROME-HUNT.md](PHASE4-CHROME-HUNT.md) and
+[PHASE5-STARMAP-DATA.md](PHASE5-STARMAP-DATA.md); git history holds the
+version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v0.8.8 — two refinements from the v0.8.7 session; built, not yet run.**
-First: when the icon crowding the panel selection is an EXEMPT one — the
-E-target's or a quest marker's, which the fade pass deliberately never
-touches — that now counts as coverage, and the mod draws nothing. The
-tester's case: Staryard locked, Earth E-targeted — Earth's marker
-(rightfully) stayed on top of the blocked station icon, and the mod added a
-redundant diamond next to it. Now it stays quiet: vanilla is deliberately
-showing that marker over where the selection is. Second: **a locked moon
-that leaves tracking range clears its own lock** (row shows "..." until
-then, log says why). v0.8.9, on the tester's question, made it
-**edge-triggered**: only a moon confirmed present in a live payload since
-the last movie teardown can be cleared by absence — a load can never eat a
-lock by construction — and the remaining debounce dropped to ~3 s, covering
-only the unverified engine-hiccup case. Planets keep lock-and-wait. The
-always-list-the-locked-moon exception stays for the debounce window.
-**v0.8.9 confirmed in game; v0.8.10 fixes what its session caught:** the
-cleared moon's row lingered in the panel, because candidates only rebuild
-when the LOW feed publishes — and it publishes on target-set changes, which
-a mod-side clear is not. The clear now evicts the appended row directly and
-settles the highlight if it was parked on it. **v0.8.10 confirmed in game;
-v0.8.11 fixes ITS session's catch:** an undiscovered station's in-view
-marker never counted as coverage — `TryUpdateName` only writes `Name_tf`
-while `Name_mc` is VISIBLE, and undiscovered markers hide it, so the
-identity check compared against stale text and rejected the icon vanilla
-was genuinely showing. `selFound` then failed, which killed the fade pass
-too (planet marker stayed) and put the diamond over the undiscovered
-marker. The identity check now trusts the instance name whenever the name
-display is off; a SHOWN name must still match, which keeps the
-edge-indicator spoof case guarded (it always shows its name).
+**v0.17.0. Everything below is confirmed in game unless marked otherwise.**
 
-**v0.8.11 did NOT fix it — same symptoms — and the code shows why the whole
-theory was one layer short: `RefreshOnScreenIcon` is gated on
-`bAllowedOnScreen`,** a per-entry feed flag parallel to `bAllowedOffScreen`.
-If the undiscovered station carries it false, vanilla NEVER MAKES an
-in-view icon — nothing to find, verify, or let through, and in cruise the
-off-screen blip retires the moment the body is on screen, so vanilla shows
-NOTHING for it in view. v0.8.12 responds on two fronts: the faux marker now
-supports **POI/ship/station types with the entry's own
-`uPoiType`/`uPoiCategory`/`uLocationMarkerState`** (the feed carries them;
-captured with the candidates), so the ring blip continues in authentic
-station art instead of the diamond when the body is in view — marker
-continuity, and incidentally the end of the diamond for all tracked bodies.
-And a **once-per-selection `[blip-dbg]` census** dumps every on-screen icon
-(name, visible, alpha, nameShown, text) whenever the selection has neither
-a kept blip nor an accepted icon, so the next session's log PROVES what
-vanilla was showing instead of feeding a third theory.
+- **The panel**: in cruise the scanner key opens/closes it, the wheel moves
+  the highlight (spliced away from the camera), `TogglePOV` — or anything in
+  the `sConfirmEvent` list — locks the highlighted body or clears an existing
+  lock. Closing without confirming changes nothing, which is how a target is
+  cleared without picking another. It lists the whole system, moons nested
+  under their planets, localised names, a dash for distance on bodies the HUD
+  is not tracking.
+- **The dress** (v0.10–0.16 arc, all tester-approved): loot-panel plate
+  colour, solid `0x218286` header strip with a token-composed title (default
+  `$CRUISE| - |$Outpost_AvailableTargets`), vanilla map icons per row
+  (`DynamicPoiIcon` badges, the settlement diamond, `PlanetIconCircle` + ring
+  line for giants), grey `0xB7B7B7` row text brightening to white under the
+  vanilla `0xEFF3DC` highlight bar, "…" truncation by C++ measure-and-cut,
+  drawn scrollbar, the monocle's own open/close sounds, a fade+grow animation
+  on an openness state machine, and the cockpit-glass Matrix3D tilt.
+- **Hint pills**, all resolving the player's real bindings: the scanner pill
+  on the HUD (panel closed), the confirm pill in the footer (first named
+  `sConfirmEvent` entry), and the wheel pill wearing the game's own
+  MOUSEWHEELUP cap — kept by the user's call, drawn glyph as automatic
+  fallback.
+- **Blip management** (v0.8 arc): ring blips hide only while the panel is
+  open (highlight+lock kept) or a lock exists (only it kept) — idle cruise is
+  fully vanilla. The selection wins overlaps both directions (quest and
+  E-target icons deliberately still outrank it), stations get planets'
+  blip-to-icon handover, the fallback marker is a real `OffScreenIcon` with
+  the entry's own POI art, and undiscovered rows wear the game's masked
+  generic labels via localisation tokens, unmasking on discovery.
+- **The data** (v0.17.0): the planet/moon hierarchy — PNDT GNAM, LCTN
+  settlement join, Localization.ba2 names — is parsed from the whole load
+  order into memory on a background thread each launch. **423 ms measured**;
+  no files written; a leftover pre-0.17 cache file is deleted on sight. Live
+  tracking rides the HUD's two target feeds (quick reference below).
 
-**The census delivered on its first flight (v0.8.12 session).** Two proven
-facts: (1) the undiscovered station DOES get an on-screen icon —
-`bAllowedOnScreen` was a wrong guess too — instance-named with the real
-feed name but displaying **`text='Starstation'`, the masked generic**, so
-text-vs-feed-name verification rejects genuine icons; (2) **vanilla itself
-never culls a station's ring blip in view** — the off-screen gate runs on
-combat-values `onScreen`, which stays false for stations, so blip and icon
-coexist in vanilla (the tester's doubled marker). v0.8.13 answers both:
-identity is now the **instance name** (rewritten per refresh for the icon's
-current target), with exactly one rejection — the info-target's paired
-edge indicator, the only never-renamed clip, whose text always names the
-info target; and the keep passes now **cull a body's ring blip while its
-on-screen icon is visible** (resolved before the passes), giving stations
-the same blip-to-icon handover planets get. **The cull passed its session;
-v0.8.14 closes the last leak the same census exposed:** the feed's `name`
-field carries the REAL name for undiscovered markers, so the panel was
-spoiling what the HUD masks. Undiscovered station/POI rows now wear a
-generic label off `bMarkerDiscovered`. Discovery republishes the feed and
-the row unmasks itself. All blip matching stays on the real name — vanilla
-names its clips with it, masked or not.
-
-**v0.8.14's session showed the labels need to come from the game** — the
-station arrived typed TT_POI (the old "stations arrive as POIs" note), so
-the type-split mislabeled it "Unknown", and the generics are per POI KIND
-("Starstation", "Asteroids"...), which no fixed pair can cover. v0.8.15
-**learns them at runtime**: when an undiscovered candidate of an unlearned
-kind exists, its on-screen icon's text — where vanilla writes the masked
-generic, the only place the string exists outside the engine — is read and
-cached per `(uPoiType, uPoiCategory)`, in whatever language the game runs.
-Learned within ~2 s of a kind's marker being in view; panel rows upgrade
-live; the ini labels demote to first-sight fallbacks. Guards: the text
-must differ from the feed name (else the entry is unmasked right now) and
-from the info target's name (the paired-indicator spoof).
-
-**v0.8.17 confirmed in game (2026-07-29): undiscovered labels correct from
-the first frame, via the game's own tokens.** The tester's verdict on the
-arc: the mod is shaping up — the one thing now reading as foreign is the
-panel's own chrome, hence open-work item 2 below (the vanilla-UI donor
-hunt).
-
-**v0.8.15 confirmed in game (both labels learned from icons). v0.8.16's
-transition learner FAILED its test** — no name change was ever observed in
-the feed while tracked, so that theory is dead and the machinery removed.
-**v0.8.17 replaces ALL the learning with the real source, found in
-`MapMarkerUtils`:** the SWF maps each `uPoiCategory`
-(`MARKER_TYPE_*`, sequential from 0 — The Eye's sampled category 7 =
-STATION confirms) to a **localisation token** via `GetGenericTypeLocString`
-— `$MapMarkerGenericTypeStation`, `$MapMarkerGenericTypeAsteroids`, and
-six more. The mod sets the token on a scratch TextField through
-`Shared.GlobalFunc.SetText` (vanilla's own `$ENGINES`-style path), reads
-the translated word back, and caches it per category — **the game's word,
-the player's language, available the moment the category field arrives
-with the feed entry, nothing on screen required.** Failures cache too (one
-attempt per category); ini words remain the fallback, and
-`bUseCustomUndiscoveredLabels=true` forces them outright (the tester's
-requested escape hatch).
-
-**v0.8.7 passed its session on 2026-07-28: all four states of the hiding
-model work as intended** (idle cruise vanilla, panel-open cull with
-highlight+lock kept, locked-only after closing, full restore on clearing). The tester's case: a locked station's marker
-vanished whenever Earth slid into view — vanilla sorts overlapping on-screen
-icons by priority (`UpdateBSV`: info target −2, cruise-autopilot −1, quest 0,
-then distance with PLANETS CAPPED AT ONE LIGHT-SECOND) and hides the losers.
-The sort key is private and recomputed per pass, but the blocker gate reads
-the icon's root **alpha**, which nothing in the SWF writes: fading a crowding
-planet icon to zero hides it AND disqualifies it as a blocker, so vanilla
-itself then shows the selection's named marker — the E-target visual, driven
-by the panel. Rect-tested per tick with vanilla's own
-`GetPositionAdjustedBounds`, planets/moons only, quest and info-target icons
-deliberately still outrank the panel, restores on deselect/separation/exit.
-`bSelectionWinsOverlap` in the ini; mechanism in
-[PHASE3-BLIP-PLAN.md §9](PHASE3-BLIP-PLAN.md).
-
-**v0.8.4 passed its session on 2026-07-28: label gone, HUD clean, all
-working as intended.** No name text anywhere on the HUD — the vanilla blip
-for the highlighted/locked body, or the mod's vanilla-art marker for bodies
-the game is not blipping. Text lives in the panel.
-
-**v0.8.3 passed its session on 2026-07-28: load works, no freeze recurrence,
-and the vanilla-look (faux `OffScreenIcon`) marker shows correctly.** The
-freeze hardening stays in place: settle-timer `WorldSettled` (2.5 s
-continuous menus-closed), `RefreshPanel` snapshots instead of holding the
-candidate mutex across VM calls, per-feed subscribe with retry, settle-gated
-blip pass, `g_inCruise` reset on rebuild, pre-VM bracket logs in every
-builder. Full account in `STARFIELD-NOTES.md` ("A load-time FREEZE"); the
-original freeze's cause remains formally unproven — if a freeze recurs, the
-log tail now names the frozen call.
-
-v0.8.0 (hide the off-screen blips, reappear the locked one), v0.8.1 (a
-showing blip fully replaces the mod's marker; highlight preview via blip
-too) and now the v0.8.2/0.8.3 vanilla-art fallback marker are **all
-confirmed in game**. Mechanism and remaining checklist in
-[PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md) (§8 for the v0.8.2 additions).
-
-Through v0.7.5, all confirmed in game: the panel, nesting, whole-system list,
-localised names, gas-giant and settlement icons, the skyline glyph, confirm on
-`TogglePOV` without the view swinging. In cruise the scanner key opens the
-list; the wheel moves the highlight and the arrow previews it; the confirm key
-locks the highlighted body or clears it again. Closing without confirming
-changes nothing. Outside cruise the mod is idle.
-
-> **"The game ignores this key in cruise" is not the same as "this key is
-> free".** `XButton` (R) was the confirm key from v0.3.1 to v0.7.0 and it passed
-> every test, because it does nothing while merely *flying*. It opens the planet
-> map once a target is **selected** — which is the state the panel exists to put
-> you in, so the collision was with the mod's own happy path and only showed up
-> in ordinary play. **Test a candidate key with a target locked, not in an empty
-> sky.**
->
-> The replacement, C, then turned up the deeper version of the same trap
-> twice over.
->
-> First: **one physical key carries several user events, and a press and its own
-> release can report different names.** Phase 0 logged exactly that — C pressed
-> as `ExitShip`, released as `StarbornPower` — and the panel acts on the press.
-> So `sConfirmEvent` became a comma-separated **list**, any entry of which
-> confirms.
->
-> Then, in game, C still did nothing — and **the log said nothing at all**, which
-> was the real finding. **While piloting, a key can carry NO user event.** C is
-> nameless in cruise: it reports `ExitShip`/`StarbornPower` elsewhere and an
-> empty string there. `BSFixedString::c_str()` returns **null** for that, and the
-> dispatch was gated `if (down && firstFrame && userEvent)` — so those presses
-> were dropped before anything could see them, logging included. The key was not
-> merely unmatched, it was invisible, and no amount of naming could ever have
-> reached it.
->
-> Hence `#<id>`: an entry may be a raw key id code, and the default carries
-> `#67` alongside the two names. Ids are virtual-key codes (67 = C, 84 = T,
-> 9 = Tab, 13 = Enter), which is how the Phase 0 table's numbers should be read.
->
-> **This does not retract "match on names, never ids."** That rule is about the
-> *mod* not baking one tester's bindings into its source, and it stands. The id
-> lives in the player's own ini, describing their own keyboard — and a name
-> still wins wherever the engine supplies one.
-
-> **v0.2.0 was inert and nobody had run it.** Packaging flipped the recon
-> defaults off, and two pieces of load-bearing machinery were sitting behind
-> those flags:
->
-> - `TryInstallInputTap()` was gated on `bLogInput`, so with logging off the tap
->   was never installed — nothing set the cycle request, no body was ever
->   selected, and the arrow never appeared at all.
-> - `menus->Register(&OnMenuMovieCreated)` sat inside `if (bLogMenus)`, so the
->   stale-handle teardown never ran and a rebuilt HUD movie left the plugin
->   writing rotation into a destroyed clip.
->
-> Both now install unconditionally and log only if asked. The lesson worth
-> keeping: **a debug flag must never gate anything the mod needs to work.** When
-> promoting recon code to infrastructure, move it out from behind its flag in
-> the same commit. Grep for `GetValue()` guarding a `Register`, an install or a
-> hook before packaging again.
+The star-map data pipeline was mapped end to end on 2026-07-30 and is a
+closed door — every provider is menu-scoped ([PHASE5-STARMAP-DATA.md](PHASE5-STARMAP-DATA.md)) —
+with one usable exception (`InfoTargetProvider`) listed under Open work.
 
 Build and deploy: `xmake -y` installs straight into the game
 (`XSE_SF_GAME_PATH` is set at User scope). `xmake package -y` only when handing
@@ -244,41 +86,16 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **Re-test the Venus/Mercury overlap trap on v0.10.2.** Two slightly
-      overlapping in-FOV markers: hovering one faded the other (correct),
-      but wheeling ONTO the faded one left it invisible - the fade pass's
-      level-based restore skipped the selection's own icon, so its stale
-      alpha 0 survived, `selVisible` (which reads `visible`, not alpha)
-      called it "marked" and stood the faux marker down, and the neighbour
-      faded as a blocker: BOTH invisible until a third body was selected.
-      Screenshot: `M:\Starfield\Other\panel_bug.png`. v0.10.2 heals the
-      selection's own icon in the crowd loop instead of skipping it; the
-      restore-on-separation claim was also wrong for the ex-crowder case
-      and is covered by the same heal. Wheel Venus↔Mercury both directions:
-      the selected one should always show, the other fade, no third body
-      needed.
-
-- [ ] **★ Remaining in-game checks** — checklist in
-      [PHASE3-BLIP-PLAN.md §7–10](PHASE3-BLIP-PLAN.md). New to eyeball —
-      **v0.8.8**: with the Staryard locked, E-target Earth over it — no mod
-      diamond beside Earth's marker (exempt-covers); and fly away from a
-      tracked locked moon — "..." for ~10 s, then the lock clears itself
-      (log line) and the blips restore. Still open from v0.8.6/0.8.7: the
-      REVERSE overlap (lock Earth with the Staryard near — the station's
-      marker should fade), the moon-behind-parent overlap (lock Luna with
-      Earth crowding it), and moon rows appearing/disappearing with
-      tracking. Still open from before: the plain **on-screen yield**,
-      **quest blips** surviving the cull, the **interdiction tripwire**, and
-      the `[blip]` census transforms being zeros and ones.
-
-- [ ] **Confirm the v0.4.2 pointer and whole-system list in game.** Nesting is
-      confirmed working. New: the pointer is a diamond moved around the reticle
-      circle rather than a rotated arrow, and the list now includes every body
-      in the system (dash for distance on ones the HUD is not tracking).
-- [x] **Settlement icons — confirmed in game on v0.7.0.** The seventeen bodies
-      are marked and the icons appear.
-- [x] ~~**Check the POV does not toggle when confirming (v0.7.4).**~~ Confirmed
-      in game: the view stays put, so the camera splice reaches the confirm key.
+- [ ] **Remaining blip-pass eyeballs** — cases the passes cover by design
+      (v0.8.6–0.8.13, checklist in
+      [PHASE3-BLIP-PLAN.md §7–10](PHASE3-BLIP-PLAN.md)) that were never
+      individually isolated on screen; nothing has ever been seen
+      misbehaving: the exempt-cover (Staryard locked, E-target Earth over
+      it — no redundant mod marker), the REVERSE overlap (lock Earth with
+      the Staryard near — the station's marker fades), the
+      moon-behind-parent overlap (lock Luna with Earth crowding it), the
+      plain **on-screen yield**, **quest blips** surviving the cull, and
+      the **interdiction tripwire**.
 - [ ] **Watch for the v0.7.5 startup race recurring.** Fixed rather than
       worked around, but it is a race, so absence of a crash is weak evidence.
       The tell in a crash log is `ShipNavPanel.dll` appearing below AS3 VM
@@ -291,205 +108,14 @@ and subscription whenever the movie-created callback fires, and drop stale
       startup timing, and timing is the whole of it. Worth remembering the shape
       of that: a config that reliably reproduces a race is still only evidence
       about timing.
-- [x] ~~**Verify `sConfirmKeyLabel` against VANILLA bindings.**~~ DISSOLVED
-      by v0.15.0: the confirm hint is now a real vanilla hotkey pill driven
-      by the first named entry of `sConfirmEvent`, so the key cap resolves
-      the player's ACTUAL binding and follows rebinds — the mod no longer
-      guesses a key it cannot know. `sConfirmKeyLabel` survives only as the
-      drawn-text fallback (pill construction failure, or an all-`#id`
-      config that has no binding to resolve).
-- [x] ~~**Eyeball the v0.7.1 skyline glyph and the C rebind.**~~ Both confirmed
-      in game on v0.7.2. v0.7.0 drew only
-      the ground slab: `poly` closes each shape with `endFill`, and
-      `settlement()` called `beginFill` once up front, so the three towers came
-      out unfilled. Every shape now opens its own fill — the same thing
-      `ringedGiant` was already doing, which is why only the new glyph was
-      wrong. **Any new drawn glyph must fill per shape.**
-
-      Deimos, Suvorov, Deepala and Dalvik are marked for orbital stations (the
-      staryard, The Key, The Clinic, Stroud-Eklund) rather than for anything on
-      the surface — Deimos is far too small to land on. That is the game's own
-      data and it is arguably the more useful reading: the mark means *there is
-      somewhere to go here*, not *there is a city down there*. Worth saying that
-      way on the mod page rather than calling it a settlement icon.
-These three come before release.
-
-- [ ] **1. Icons — body class DONE in v0.6.0, settlements DONE in v0.7.0; POI
-      kinds still open.**
-      Class comes from the record's `KWDA` resolved against `KYWD`, and each row
-      has one icon clip redrawn only when its body changes — `graphics.clear()`
-      was tested first and does work, which is what made one-clip-per-row viable
-      instead of one clip per class. Still to do: stations and landing sites
-      arriving as POIs need `uPoiType`/`uPoiCategory` sampled from known
-      locations (Jemison 83/10, The Eye 43/7) — that is a *feed* question, and
-      separate from the settled-body marking below, which is now done.
-
-      **Settlements: built and verified offline against `Starfield.esm`.** The
-      plugin parses the `LCTN` group alongside `PNDT`, climbs `PNAM` to the
-      ancestor carrying a planet id, and marks the matching body. Verified with
-      `tools/Check-Settlements.ps1`, which re-implements the join independently
-      and reads the file directly: **47 locations carry `LocTypeSettlement`, 45
-      reach a body, and 17 distinct bodies are marked.** The two that reach
-      nothing are `DebugLocRefTypesLocation` and `SettleECSShipInteriorLocation`
-      — the ECS Constant is a ship, not a place on a planet — and both should
-      resolve to nothing.
-
-      The seventeen: Jemison, Akila, Volii Alpha, Mars, Suvorov, Chthonia,
-      Polvo, Porrima II, Porrima III, Charybdis III, Ixyll II, Titan, Deepala,
-      Gagarin, Montara Luna, Dalvik, Deimos.
-
-      **★ Sol is system 0, so "climb until XNAM and YNAM are non-zero" is
-      WRONG.** This TODO said exactly that and it would have silently dropped
-      Mars (Cydonia), Titan (New Homestead) and Deimos (the staryard) — three of
-      the seventeen — because their locations carry `XNAM 0`. The stop condition
-      is **`YNAM != 0` alone**, with `XNAM` taken as read. Planet ids are
-      1-based, so that also correctly distinguishes a planet-level location from
-      the system-level one above it, which carries `XNAM` with no `YNAM`.
-
-      **The keyword membership is now counted, and needs no narrowing.** 47
-      locations sounds like a lot but collapses to 17 bodies — Neon alone
-      accounts for nine of them (Ryujin Tower, the trade towers, security HQ…).
-      At body granularity the set is exactly the major settlements.
-
-      Still true and still load-bearing:
-
-      ⚠ **Keywords can be dropped by an overriding master.** The tester sees
-      `LocTypeSettlement` on a base record but absent from overrides, which
-      xEdit flags yellow. An override replaces a record wholesale, so reading
-      only the winning version would lose the marking — settlement detection
-      takes the **union of the marking across every version** of a location,
-      not the winner alone. That is the opposite of the rule the body table
-      uses, and the difference is deliberate. The id fields take the last
-      version that states one, since blank there means "not said here" far more
-      often than it means "deliberately none".
-
-      **Precedence is stated, not left to the switch order:** settled beats
-      giant. The two should never meet — a gas giant cannot be landed on — and
-      if a record ever claims both, "there is something here" is worth more to
-      a pilot than "keep out".
-
-      How it was found, kept because each step cost time:
-
-      **`PNDT` does NOT reference a location — checked and ruled out.** Jemison's
-      43 subrecords were dumped and every 4-byte value cross-referenced against
-      all 6450 `LCTN` and `WRLD` editor ids; none resolved. The only unexplained
-      form reference on a planet is `FNAM = 0005FCD2`, which is neither. So the
-      link runs the other way, from the world down.
-
-      **`WRLD` does not reference a planet either — also ruled out.** The
-      `NewAtlantis` worldspace carries `XLCN` (its own location) and nothing
-      resolving to a `PNDT`.
-
-      **★ The location chain IS the hierarchy, and it is clean.** Climbing
-      `PNAM` from `CityNewAtlantisLocation`:
-
-          CityNewAtlantisLocation
-            -> SAlphaCentauri_PJemison_Surface
-              -> SAlphaCentauri_PJemison    <- planet-level location
-                -> SAlphaCentauri           <- system-level location
-                  -> Universe
-
-      **★★ Locations carry `XNAM` = Star ID and `YNAM` = Planet ID.**
-      Confirmed in xEdit, which names those fields exactly that.
-      `SAlphaCentauri_PJemison_Surface` holds **XNAM 71456, YNAM 3** — precisely
-      Jemison's GNAM (system 71456, planet 3). So a location joins to a body by
-      *id*, with no name matching anywhere. The settlement record itself leaves
-      both empty; the values appear once the chain reaches the surface/planet
-      level.
-
-- [ ] ~~**1. Icons pass — body class is SOLVED, only POI kinds are open.**~~
-      The old note said gas giants needed a body-class field "not in the feed"
-      and were therefore last. That is no longer true: the class is in the PNDT
-      record, in the `KWDA` keyword array the ESM parse already walks past.
-      Resolve those ids against the `KYWD` group (5930 records, `EDID` is plain
-      text) and the answer is literally spelled out — Jemison is
-      `PlanetType07Rock`, Kurtz `PlanetType02Barren`. The full enum:
-
-      | keyword | | keyword |
-      |---|---|---|
-      | `PlanetType00Asteroid` | | `PlanetType04HotGasGiant` |
-      | `PlanetType01AsteroidBelt` | | `PlanetType05Ice` |
-      | `PlanetType02Barren` | | `PlanetType06IceGiant` |
-      | `PlanetType03GasGiant` | | `PlanetType07Rock` |
-
-      So: extend the parse to keep the `PlanetTypeNN` keyword per body, cache it
-      in the body table beside the name, and draw per-class glyphs. **Draw them
-      with the graphics API, not as text** — the borrowed font's glyph coverage
-      is unknown, which is exactly why the wheel symbols are drawn.
-      Still genuinely open: POI kinds (settlements, stations) need
-      `uPoiType`/`uPoiCategory` sampled from known locations — Jemison came back
-      83/10, The Eye 43/7.
-
-- [ ] **2. THE HUNT — CONCLUDED for the panel chrome; icon reuse remains.**
-      Full story in [PHASE4-CHROME-HUNT.md](PHASE4-CHROME-HUNT.md). The
-      donor (`ShipHudQuickContainer`) instantiated, drove and decorated
-      perfectly (v0.9.0–0.9.2) — and then **lost the side-by-side on looks:
-      the tester kept the drawn panel** (v0.10.0). What the hunt paid for
-      anyway: the drawn panel now wears the loot panel's own plate colour
-      (black @ 0.50, measured from the SWF), a title strip
-      (`bPanelHeader`/`sPanelTitle`), and the probe machinery stays behind
-      `bProbeVanillaChrome` (default off) for future part auditions.
-
-      **Vanilla row icons: BUILT in v0.11.0, awaiting the in-game look.**
-      The route turned out cleaner than the import-graph gymnastics: the
-      HUD does NOT static-import MapIcons.swf — `MapIconsLibrary` runtime-
-      Loads it into the movie's own application domain, and
-      `Components.Icons.DynamicPoiIcon` (bound in shipreticle.swf, one
-      hop) wraps the whole thing: construct one, `SetLocation(type,
-      category, state)`, `SetMarkerScale(s)`, and it picks the symbol via
-      `MapMarkerUtils`, self-completing off the load event if the library
-      is not up yet. One icon per row, driven from the feed's own
-      `uPoiType`/`uPoiCategory`:
-      - Discovered POI/station/ship → `LMS_FULL_REVEAL` (2) → its marker's
-        own art; undiscovered → `LMS_ONLY_TYPE_KNOWN` (1) → the generic
-        kind badge, vanilla's own masking, matching the masked row label.
-      - Settled bodies → `MARKER_UNIQUE_SURFACE_SETTLEMENT` (48), full
-        reveal — the game's surface-settlement badge replaces the skyline.
-      - **The uPoiType enum is MapMarkerUtils' MARKER_* list, sequential
-        from 0, count sentinel 83; categories count 10. Jemison's old
-        landing-site sample (83, 10) is (count, count) = "no marker" —
-        mystery closed; the gate is `poiType < 83`.** The Eye's (43, 7)
-        confirms the numbering exactly.
-      - Symbols are 70×70, centred on origin (measured), 2 frames
-        (undiscovered outline / "Discovered"); `fPanelVanillaIconScale`
-        0.28 fits the 20 px column. Drawn ring keeps the giants; every
-        drawn glyph stays as automatic fallback (`bPanelVanillaIcons` off,
-        class construction failure, or sentinel types like landing sites).
-
-      The wheel regression note, for the record: v0.9.1's per-notch stamp
-      walk broke wheel scrolling somehow (never root-caused); deleting the
-      machinery in v0.9.2 fixed it. If a future feature adds per-notch VM
-      work on a live list, watch the wheel first.
-
-- [ ] **3. Reposition the panel to sit with the HUD.** Currently 540 left and
-      160 up from screen centre, guessed against one resolution and never
-      revisited. It hangs off `Reticle_mc`, whose origin is screen centre — a
-      space the pointer proved — so offsets are relative to centre rather than
-      to a stage size the mod never learns. `fPanelOffsetX` / `fPanelOffsetY` /
-      `fPanelWidth` / `fPanelRowHeight` / `uPanelMaxRows` cover this without a
-      rebuild; find the values in game first, then change the defaults.
-
-Later, and not blocking release:
-
-- [ ] **Scanner mode dropped during NORMAL flight when an NPC ship spooled
-      its grav drive (tester, 2026-07-29) — mod involvement UNVERIFIED,
-      needs a repro.** Code audit of the outside-cruise surface, for the
-      record: the scanner key handler returns before `TogglePanel()` unless
-      `g_inCruise`; the camera splice and the (default-off) throttle test
-      are both additionally gated on the panel being open, which requires
-      cruise; the blip/fade/cull passes are cruise-gated; and nothing in
-      the mod dispatches menu events or writes any scanner/monocle state —
-      its engine writes are the two vtable hooks, the panel-open splice,
-      and HUD clip properties. So a direct cause looks unlikely, BUT the
-      stale-`CruiseModeHUDActive` hazard (the item below) means the cruise
-      gates can read true for a while after a cruise ends — if the session
-      had cruised earlier, the passes may have been live in normal flight.
-      Discriminators for the repro: does it happen with the DLL removed;
-      does it happen in a session that never entered cruise; and if it
-      recurs with the mod in, note whether blips/icons looked managed
-      (hidden/faded) at that moment — that is the stale-flag tell. A
-      vanilla explanation is also plausible (alert events can pull the
-      player out of scanner mode, as combat does).
+- [ ] **Reposition the panel to sit with the HUD.** Offsets are still the
+      original guess (540 left, 160 up from screen centre) against one
+      resolution. It hangs off `Reticle_mc`, whose origin is screen centre,
+      so offsets are relative to centre rather than to a stage size the mod
+      never learns. `fPanelOffsetX` / `fPanelOffsetY` / `fPanelRowHeight` /
+      `uPanelMaxRows` cover it without a rebuild; find the values in game
+      first, then change the defaults. (Width is done — `fPanelWidth`
+      defaulted to the loot panel's own 425 in v0.12.1.)
 
 - [ ] **The panel can outlive a forced exit from cruise.** Seen when a random
       combat event dropped the ship out: the panel stayed up until the scanner
@@ -498,6 +124,22 @@ Later, and not blocking release:
       failed *read* closes the panel, so it cannot be the path resolution. Minor
       (one keypress clears it) but it means the panel can sit over the HUD just
       as combat starts. Wants a second, independent signal for "still cruising".
+      (The 2026-07-29 scanner-drop observation is NOT this — it reproduces with
+      the DLL removed; see Settled.)
+
+Later, nice-to-have:
+
+- [ ] **Per-body detail from `InfoTargetProvider`** — the Phase 5 find: the
+      ship HUD's own feed (our movie, subscribed by vanilla at
+      `SpaceshipHudMenu.as:416`) carries `TargetOnlyData.PlanetCardInfo`, the
+      full dossier for the CURRENT info target — `iType` incl. `BT_MOON`,
+      `sParentBodyName`, `sSystemName`, terrain, gravity, temperature,
+      atmosphere, magnetosphere, flora/fauna/water, `ResourcesA`, `TraitsA`,
+      scan level, survey % — live in cruise. Could power a detail readout for
+      the targeted row, or cross-check the parse's moon nesting at runtime.
+      Publish cadence UNVERIFIED; the probe is free:
+      `bProbeStarmapFeed=true` + `sStarmapFeed=InfoTargetProvider` in the
+      Custom ini dumps the payload to the log on each publish.
 
 - [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
       default confirm — it engages the cruise **autopilot**. Build a params
@@ -509,25 +151,31 @@ Later, and not blocking release:
 
 ## Release checklist
 
-- [ ] **Discard `build/packages/ShipNavPanel-0.2.0.zip`** — that archive is the
-      inert build described above. Never hand it to anyone; re-package from
-      0.2.1 or later, and only after the in-game test above has actually passed.
-- [ ] **Rewrite `README.md` — it is still the Phase 0 recon description** and
-      is now wrong in every particular that matters: it says the repo "changes
-      nothing in game", that the list is navigated "with W/S" and confirmed
-      "with the target key". W/S was ruled out in v0.2.1 and the target key
-      still cycles targets. It is the front door of the repo, so it cannot go
-      public like this.
+- [x] ~~Discard `build/packages/ShipNavPanel-0.2.0.zip`~~ — deleted
+      2026-07-30 (the inert v0.2.0 build; `build/` is gitignored, so nothing
+      to scrub from history on its account).
+- [x] ~~Rewrite `README.md`~~ — rewritten to the current mod 2026-07-30.
+      Before the flip it still wants screenshots and a fresh-eyes
+      read-through, but it no longer lies.
+- [ ] **Pre-package grep: `GetValue()` guarding a `Register`, an install or a
+      hook.** The v0.2.0 inert-build class — packaging flipped recon defaults
+      off and two pieces of load-bearing machinery sat behind them. Run the
+      grep on every packaging commit.
+- [ ] **Scan history for `C:\Users\...` paths and log excerpts** before going
+      public; deleting a file later does not remove it from history. Not
+      hypothetical: the pre-2026-07-30 README carried the full local log
+      path, and the phase docs carry `M:\...` paths throughout (harmless but
+      worth a conscious pass).
 - [ ] Flip `frstwlf/ShipNavPanel` public — **GPL obligation** once a DLL is
       distributed (CommonLibSF is GPL-3.0-or-later).
-- [ ] Scan history first for `C:\Users\<you>\...` paths and log excerpts; deleting
-      a file later does not remove it from history.
-- [ ] Decide on the PDB. It ships now deliberately so tester crash logs come back
-      symbolised; drop it for a stable release.
-- [ ] Mod page should say: cruise-mode only, planets and stars only, and it
-      **points rather than targets** — the game's UI layer has no by-id set
-      target. Mention `fArrowAngleOffset` / `bArrowInvertAngle` as the first
-      thing to try if anyone reports the arrow pointing wrongly.
+- [ ] Decide on the PDB. It ships now deliberately so tester crash logs come
+      back symbolised; drop it for a stable release.
+- [ ] Mod page copy: cruise-mode only; **points rather than targets** (the UI
+      layer has no by-id set target); the panel lists the whole system —
+      planets, moons, stations, POIs; the settlement mark means *there is
+      somewhere to go here*, not "a city is down there" (Deimos's mark is the
+      staryard); `fArrowAngleOffset` / `bArrowInvertAngle` are the first
+      thing to try if anyone reports the marker pointing wrongly.
 
 ## Save safety
 
@@ -738,13 +386,19 @@ Each of these cost real time; the reasoning is in the findings docs.
     thread — the game became a slideshow. Each attempt now snapshots each form
     once and scans plain memory; attempts are 3 s apart and capped at 8; and
     every form's GNAM is cached by form id, since it never changes.
-  - **The star map providers are a dead end from the ship HUD.**
-    `StarmapSystemBodyInfoProvider` subscribes fine but never fires with the map
-    closed — zero callbacks in a full cruise. Its `uBodyType`
-    (`BT_STAR`/`BT_PLANET`/`BT_MOON`/`BT_SATELLITE`/`BT_STATION`/
-    `BT_ASTEROID_BELT`) would have answered this, but only with the map open.
-    Extracted SWFs live in `M:\Starfield\Extracted\interface\` (CWS = zlib from
-    byte 8; PowerShell `DeflateStream` after skipping the 2-byte zlib header).
+  - **The star map providers are a dead end from the ship HUD — mechanism
+    proven 2026-07-30 ([PHASE5-STARMAP-DATA.md](PHASE5-STARMAP-DATA.md)).**
+    `StarmapSystemBodyInfoProvider` subscribes fine but never fires with the
+    map closed — zero callbacks in a full cruise — and Phase 5 showed why, for
+    ALL of them: every galaxy/system/POI provider is menu-scoped engine-push;
+    the native `_Watch` accepts any name from any movie, but the publishers
+    live and die with their menu, and `GetDataFromClient` only re-reads the
+    calling movie's own (never-filled) buffer. Do not re-probe. The one
+    exception worth having is `InfoTargetProvider` (Open work). The AS3
+    `BSGalaxyTypes` `BT_*` enum is NOT the feed's `TT_*` enum — never mix
+    them. Extracted pool: `M:\Starfield\Extracted\vanilla-interface\` (the
+    full Interface BA2, verified name-for-name), script exports under
+    `M:\Starfield\Extracted\scripts\`.
 - **An event name in a log tells you a name was reported, not what the key
   does.** `LShoulder` was seen once in a v0.7.1 log, matched to id 81 = Q, and
   written up as "the POV toggle" — it is not, and setting it does nothing. The
@@ -901,3 +555,39 @@ Each of these cost real time; the reasoning is in the findings docs.
   filter by type **and** distance.
 - **Do not enumerate the space cell** — `TESObjectCELL::ForEachReference` on
   cell `0x18343` crashed every attempt during the SeamlessGravJumps triage.
+- **The 2026-07-29 scanner-mode drop is NOT the mod.** Reproduced 2026-07-30
+  with the DLL removed: an NPC ship spooling its grav drive during normal
+  flight can drop scanner mode in vanilla (alert events pull the player out,
+  as combat does). The code audit that preceded the A/B is in git history;
+  the stale-`CruiseModeHUDActive` concern it raised lives on as its own open
+  item (the panel outliving a forced cruise exit).
+- **The ESM groups records by TYPE, not by system.** A "current system only"
+  parse still inflates all ~1765 PNDT records to read each one's GNAM, so the
+  parse is scoped in TIME — once per launch, background thread, **423 ms
+  measured** — never in space. v0.17.0 dropped the on-disk cache entirely on
+  this basis; a runtime-generated file is invisible to mod managers and
+  outlives an uninstall.
+- **Settlement keyword membership is the UNION across every version of a
+  location record.** Overrides replace records wholesale, and this layout
+  drops `LocTypeSettlement` from overriding masters (xEdit flags it yellow) —
+  reading only the winning version loses the marking. The id fields
+  (`XNAM`/`YNAM`) take the last version that STATES one instead: blank there
+  means "not said here". Stated precedence if both ever apply: settled beats
+  giant.
+- **Body class is the PNDT record's `KWDA` resolved against `KYWD`**
+  (`PlanetType00Asteroid` … `PlanetType07Rock`, exactly eight), not anything
+  in `BGSPlanet::PlanetData`.
+- **Test a candidate key WITH A TARGET LOCKED, not in an empty sky.**
+  `XButton` (R) was the confirm key for six versions and passed every test —
+  because it opens the planet map only once a target is *selected*, the exact
+  state the panel exists to produce. The collision was with the mod's own
+  happy path and only showed in ordinary play.
+- **A debug flag must never gate anything the mod needs to work.** v0.2.0
+  shipped inert: packaging flipped the recon defaults off, and both the input
+  tap and the movie-created callback sat behind them. When promoting recon
+  code to infrastructure, move it out from behind its flag in the same
+  commit — and run the release checklist's `GetValue()` grep before every
+  packaging.
+- **Per-notch VM work on a live list broke wheel scrolling once** (v0.9.1,
+  never root-caused; deleting the machinery in v0.9.2 fixed it). If a feature
+  ever adds per-notch Scaleform work again, watch the wheel first.

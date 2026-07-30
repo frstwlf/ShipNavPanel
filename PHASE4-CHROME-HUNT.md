@@ -1,5 +1,13 @@
 # Phase 4 — THE HUNT: a vanilla donor for the panel chrome
 
+> **Outcome (2026-07-30): probe ran and the donor WORKED (v0.9.0–0.9.2) — then
+> lost the side-by-side on looks; the tester kept the drawn panel (v0.10.0).**
+> What the hunt paid for anyway: the donor's measured plate colour, header
+> dress and Matrix3D cockpit tilt on the drawn panel, and the vanilla row
+> icons via `DynamicPoiIcon` (v0.11.x). Probe rig remains behind
+> `bProbeVanillaChrome`. This document is the survey record; `TODO.md` is the
+> current state.
+
 2026-07-29. Survey complete, offline. Nothing here is in-game-verified yet; the
 probe checklist at the end is what the next session runs first.
 

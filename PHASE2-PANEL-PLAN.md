@@ -1,5 +1,10 @@
 # Phase 2 — the navigation panel: recon and implementation plan
 
+> **Outcome (2026-07-30): executed and superseded.** The panel was built and
+> shipped (v0.3.1 onward) — with the wheel, not W/S, moving the highlight, and
+> `TogglePOV` confirming. This document is the plan as it stood beforehand;
+> `TODO.md` is the current state.
+
 Parked for later. Everything here is graded against what has actually been
 proven in game, not what looks plausible.
 
