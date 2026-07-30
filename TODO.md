@@ -11,9 +11,11 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v0.18.0. Everything below is confirmed in game unless marked otherwise
-(open: v0.18.0's reveal-state labels await an in-game pass — spawn or find
-an encounter POI and compare row vs marker).**
+**v0.18.2. Everything below is confirmed in game unless marked otherwise
+(open: v0.18.0's reveal-state labels await their specific case — a spawned
+encounter POI that vanilla names from the first frame; compare row vs
+marker. The duplicate-name work is fully confirmed on the tester's baked
+two-contact save, 2026-07-30).**
 
 - **The panel**: in cruise the scanner key opens/closes it, the wheel moves
   the highlight (spliced away from the camera), `TogglePOV` — or anything in
@@ -129,44 +131,14 @@ and subscription whenever the movie-created callback fires, and drop stale
       (The 2026-07-29 scanner-drop observation is NOT this — it reproduces with
       the DLL removed; see Settled.)
 
-- [ ] **Duplicate feed names break blip identity — CONFIRMED from the
-      tester's own log, FIXED in v0.18.1, awaiting an in-game pass.** Two
-      distinct spawned POIs (FF01C601, FF0167F0; markers displayed "Ship"
-      and "Anomaly", different locations) both showed whichever one was
-      selected. The log's proof, 17:34:56.565 — the same clip kept TWICE
-      in one tick: `[blip] kept 'OffScreenIcon: Sensor Contact' (panel
-      highlight)` ×2. Both entries' FEED name is "Sensor Contact" —
-      vanilla's name for unresolved distant contacts — while the displayed
-      labels differ (masked generic vs marker label); clip matching is
-      name-keyed, so both matched. Not a freak pairing: ANY two unresolved
-      contacts in a system collide. **The v0.18.1 fix**, gated strictly on
-      the selection's name being shared by 2+ feed entries (unique names
-      take the old path untouched): ring blips must also agree with the
-      candidate's own bearing — the clip's ROOT rotation is exactly
-      `angleToCrosshair + 180` (OffScreenIcon.as:163), 15° tolerance —
-      applied in BOTH keep passes, so a kept clip the pool re-keys to the
-      other contact drifts out of tolerance and returns on its own; the
-      icon coverage check walks ALL same-named `OnScreenIcon:` children
-      (getChildByName only ever returned the FIRST) and takes the one
-      nearest the entry's own screen position via vanilla's
-      `ConvertScreenPercentsToLocalPoint` (y percentage runs BOTTOM-UP —
-      the converter flips it). One `[blip] '<name>' names more than one
-      contact` line logs once per selection when the machinery engages.
-      **Round 2 (v0.18.2, tester's baked save): off-screen blips worked,
-      but selecting the OFF-screen contact while the other was in-FOV
-      produced NO marker at all** — v0.18.1's icon fallback took the
-      first-match path exactly when the selection's screen position was
-      the `-1` sentinel (the off-screen case), so the in-FOV contact's
-      icon "covered" the selection. ⚠ Lesson: **in an ambiguity, a
-      fallback must never take the OPTIMISTIC branch** — v0.18.2 makes
-      every no-confirmation road answer "no icon" (sentinel /
-      out-of-[0,1] percentages / no bearings row / dead converter /
-      nearest icon further than 60 px from the expected point), so the
-      worst failure is blip+icon both showing (vanilla's own stock look
-      for stations), never an unmarked selection. Unique names keep the
-      pre-v0.18.1 path byte for byte. Test on the baked save: select
-      each contact with the other in-FOV — the off-screen one must wear
-      its ring blip; on-screen selections still hand over to their icon.
+- [x] ~~Duplicate feed names break blip identity.~~ **CONFIRMED FIXED in
+      game (v0.18.2, 2026-07-30, the tester's baked two-contact save:
+      "everything behaves properly now").** Two spawned POIs both riding
+      the feed as "Sensor Contact" were one identity to the name-keyed
+      passes; v0.18.1 added bearing/position disambiguation (off-screen
+      blips confirmed), v0.18.2 fixed its own fallback hole (an in-FOV
+      contact's icon "covered" the off-screen selection). Durable facts
+      and the fallback lesson moved to Settled.
 
 Later, nice-to-have:
 
@@ -640,6 +612,28 @@ Each of these cost real time; the reasoning is in the findings docs.
 - **Per-notch VM work on a live list broke wheel scrolling once** (v0.9.1,
   never root-caused; deleting the machinery in v0.9.2 fixed it). If a feature
   ever adds per-notch Scaleform work again, watch the wheel first.
+- **Feed names are NOT unique, and clip identity must survive that.** Any
+  two unresolved contacts in a system ride the feed as "Sensor Contact"
+  (proven: the same clip name kept twice in one tick, two distinct FF
+  ids), while their DISPLAYED labels can differ (masking, marker text).
+  Name-keyed clip matching therefore needs geometry when — and only
+  when — the selection's name is shared by 2+ feed entries: a ring
+  blip's ROOT `rotation` is exactly `angleToCrosshair + 180`
+  (OffScreenIcon.as:163; 15° tolerance), and an on-screen icon sits AT
+  `ConvertScreenPercentsToLocalPoint(screenPositionX, screenPositionY,
+  container)` — y percentage runs BOTTOM-UP, the converter flips it, and
+  −1 is the "unprojectable" sentinel (= off-screen). Confirmed fixed in
+  v0.18.2 on a reproducible save.
+- **In an ambiguity, a fallback must never take the OPTIMISTIC branch.**
+  v0.18.1's icon lookup fell back to first-match exactly when the
+  selection's screen position was the −1 sentinel — which IS the
+  off-screen case — so the wrong contact's icon vouched for coverage and
+  the selection went unmarked entirely. Degrade toward the VISIBLE
+  failure (blip and icon both showing, vanilla's own stock station
+  look), never the silent one (an unmarked selection): every
+  no-confirmation road answers "no icon". Same family as the overlap
+  pass's skip-paths lesson: an exemption from a write is also an
+  exemption from the restore.
 - **`bMarkerDiscovered` and `uLocationMarkerState` can DISAGREE, and the
   STATE is the naming authority.** A runtime-spawned encounter ("Ecliptic
   Satellite", tester 2026-07-30) arrives `LMS_FULL_REVEAL` — the HUD names
