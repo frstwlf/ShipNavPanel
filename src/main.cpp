@@ -551,10 +551,15 @@ namespace
 	// the form id (0x54). Anything past 0x58 is the NEXT planet's record, which
 	// is why the scans kept turning up pointers and float bit patterns.
 	//
-	// So the hierarchy is loaded from a table generated out of the ESM instead,
-	// where GNAM plainly is. `tools/ExportBodies.pas` is the xEdit script that
-	// writes it. That also makes the mod independent of engine layout entirely,
-	// which four builds of memory archaeology argue is worth something.
+	// So the hierarchy is parsed out of the ESM instead, where GNAM plainly is.
+	// That also makes the mod independent of engine layout entirely, which four
+	// builds of memory archaeology argue is worth something.
+	//
+	// Versions up to 0.16.x cached the parse here between launches. The cache is
+	// gone - a runtime-generated file is invisible to mod managers and survives
+	// an uninstall as clutter, and the parse it saved measures in the hundreds
+	// of milliseconds on a background thread nothing waits for. The path remains
+	// only so a launch can delete what an older version left behind.
 	constexpr const char* kBodyTablePath = "Data/SFSE/Plugins/ShipNavPanelBodies.txt";
 
 	// From the record's PlanetType keyword. The full set is exactly these eight -
@@ -1554,178 +1559,39 @@ namespace
 		return !a_out.empty();
 	}
 
-	// Bumped whenever a column is added, so an older cache is discarded and
-	// rebuilt rather than half-parsed. It rides along in the fingerprint because
-	// that is already the one line every reader checks before trusting the file.
-	constexpr const char* kBodyTableFormat = "v2";
-
-	// The cache holds RUNTIME form ids, which depend on where each plugin sits
-	// in the load order - so the fingerprint covers the order and the file sizes
-	// together. Install a mod, move one, or update the game, and it rebuilds.
-	std::string LoadOrderFingerprint(const std::vector<PluginInfo>& a_plugins)
-	{
-		std::string print{ kBodyTableFormat };
-		print += '|';
-		for (const auto& plugin : a_plugins) {
-			std::error_code error;
-			const auto      size = std::filesystem::file_size(std::format("Data/{}", plugin.name), error);
-			print += std::format("{}:{}:{}|", plugin.name, plugin.index, error ? 0 : size);
-		}
-		return print;  // never empty: the format marker is always there
-	}
-
-	void WriteBodyTable(const std::unordered_map<std::uint32_t, BodyEntry>& a_table,
-		const std::string& a_fingerprint)
-	{
-		std::ofstream file{ kBodyTablePath, std::ios::trunc };
-		if (!file) {
-			REX::WARN("[bodies] could not write {} - it will be rebuilt next launch", kBodyTablePath);
-			return;
-		}
-		file << "# ShipNavPanel body table - generated from the load order\n";
-		file << "# Delete this to have it rebuilt.\n";
-		file << "# formID,systemID,parentPlanetID,planetID,authored,class,settled,name\n";
-		file << "# class: 0 unknown, 1 asteroid, 2 asteroid belt, 3 barren, 4 gas giant,\n";
-		file << "#        5 hot gas giant, 6 ice, 7 ice giant, 8 rock\n";
-		file << "# authored=0 means the game generates that body rather than authoring it - an orbital\n";
-		file << "# marker, a grav-jump arrival point, a station's anchor. Kept for its place in the\n";
-		file << "# hierarchy, since the HUD may offer it, but never listed as a body in its own right.\n";
-		file << "# settled=1 means a major settlement is on it - a location keyworded LocTypeSettlement\n";
-		file << "# climbs to this body through its parent locations.\n";
-		file << "# order " << a_fingerprint << "\n";
-		for (const auto& [formID, entry] : a_table)
-			file << std::format("{:08X},{},{},{},{},{},{},{}\n", formID, entry.galaxy.systemID,
-				entry.galaxy.parentPlanetID, entry.galaxy.planetID, entry.authored ? 1 : 0,
-				std::to_underlying(entry.planetClass), entry.settled ? 1 : 0, entry.name);
-		REX::INFO("[bodies] cached {} bodies to {}", a_table.size(), kBodyTablePath);
-	}
-
-	// `formID,systemID,parentPlanetID,planetID` per line, `#` for comments and
-	// blank lines ignored. Returns false when the cache is missing or was built
-	// against a different master file.
-	bool ReadBodyTable(std::unordered_map<std::uint32_t, BodyEntry>& a_out, const std::string& a_fingerprint)
-	{
-		std::ifstream file{ kBodyTablePath };
-		if (!file)
-			return false;
-
-		std::size_t loaded = 0;
-		std::size_t line = 0;
-		std::size_t rejected = 0;
-		bool        sawFingerprint = false;
-		std::string text;
-
-		while (std::getline(file, text)) {
-			++line;
-			if (const auto hash = text.find('#'); hash != std::string::npos) {
-				// The cache holds runtime form ids, so it is only valid for the
-				// load order that produced it. Anything installed, moved or
-				// updated rebuilds it rather than leaving it quietly wrong.
-				if (const auto marker = text.find("order "); marker != std::string::npos) {
-					if (text.substr(marker + 6) != a_fingerprint) {
-						// The fingerprint carries the format version too, so a
-						// cache written before a column was added lands here and
-						// is rebuilt whole - rather than being read a field short
-						// and rejected line by line.
-						REX::INFO("[bodies] {} was built by a different version or load order - rebuilding",
-							kBodyTablePath);
-						return false;
-					}
-					sawFingerprint = true;
-				}
-				text.erase(hash);
-			}
-			if (text.find_first_not_of(" \t\r\n") == std::string::npos)
-				continue;
-
-			// Split on the leading commas only: a real name can contain spaces
-			// ("New Atlantis") and tokenising on whitespace would cut it in half
-			// - which the editor-id names never would have shown.
-			constexpr std::size_t kColumns = 7;
-			std::string           fields[kColumns];
-			std::string           name;
-			{
-				std::size_t start = 0;
-				std::size_t which = 0;
-				for (; which < kColumns; ++which) {
-					const auto comma = text.find(',', start);
-					if (comma == std::string::npos)
-						break;
-					fields[which] = text.substr(start, comma - start);
-					start = comma + 1;
-				}
-				if (which == kColumns)
-					name = text.substr(start);
-				while (!name.empty() && (name.back() == '\r' || name.back() == ' '))
-					name.pop_back();
-			}
-
-			std::istringstream parse{ std::format("{} {} {} {} {} {}", fields[1], fields[2], fields[3],
-				fields[4], fields[5], fields[6]) };
-
-			const std::string& idText = fields[0];
-			std::uint32_t      system = 0;
-			std::uint32_t      parent = 0;
-			std::uint32_t      planet = 0;
-			int                authored = 1;
-			int                planetClass = 0;
-			int                settled = 0;
-			if (idText.empty() || !(parse >> system >> parent >> planet >> authored >> planetClass >> settled)) {
-				if (++rejected <= 3)
-					REX::WARN("[bodies] {}:{} could not be read - expected "
-							  "formID,system,parent,planet",
-						kBodyTablePath, line);
-				continue;
-			}
-
-			std::uint32_t formID = 0;
-			try {
-				formID = static_cast<std::uint32_t>(std::stoul(idText, nullptr, 16));
-			} catch (...) {
-				if (++rejected <= 3)
-					REX::WARN("[bodies] {}:{} '{}' is not a hex form id", kBodyTablePath, line, idText);
-				continue;
-			}
-			if (formID == 0 || planet == 0)
-				continue;
-
-			a_out.insert_or_assign(formID,
-				BodyEntry{ GalaxyData{ system, parent, planet }, name,
-					static_cast<PlanetClass>(planetClass), authored != 0, settled != 0 });
-			++loaded;
-		}
-
-		// A cache with no fingerprint predates load-order awareness, so its ids
-		// cannot be trusted against anything but the base game.
-		if (loaded == 0 || !sawFingerprint)
-			return false;
-
-		REX::INFO("[bodies] loaded {} bodies from {}{}", loaded, kBodyTablePath,
-			rejected ? std::format(" ({} lines rejected)", rejected) : "");
-		return true;
-	}
-
 	// Off the main thread: reaching the planets means seeking most of the way
-	// through a 1.4 GB file and inflating ~1700 records, which is a second or
-	// two the game should not be made to wait for. Nesting simply starts working
-	// shortly after load, and the table is cached so later launches are instant.
+	// through a 1.4 GB file and inflating ~1700 records - a few hundred
+	// milliseconds the game should not be made to wait for. Nesting simply
+	// starts working shortly after load. The parse runs every launch: versions
+	// up to 0.16.x cached it to ShipNavPanelBodies.txt, but a runtime-generated
+	// file is invisible to mod managers and outlives an uninstall, and the
+	// saving never justified that. The log prints the measured duration.
 	void LoadBodyTable()
 	{
 		if (g_bodyTableLoaded.exchange(true, std::memory_order_acq_rel))
 			return;
 
 		std::thread{ [] {
-			std::unordered_map<std::uint32_t, BodyEntry> table;
-			const auto fingerprint = LoadOrderFingerprint(CollectPlugins());
+			// One launch of a version that no longer writes the cache is enough
+			// to clean up what an older one left; absence is the normal case and
+			// stays silent. The file has no reader anymore, so removing even a
+			// hand-made one (tools/ExportBodies.pas could write it) loses nothing.
+			std::error_code stale;
+			if (std::filesystem::remove(kBodyTablePath, stale))
+				REX::INFO("[bodies] removed the obsolete cache {}", kBodyTablePath);
 
-			if (!ReadBodyTable(table, fingerprint)) {
-				table.clear();
-				if (!ParseAllBodies(table)) {
-					REX::WARN("[bodies] could not read the planet hierarchy - moons will not be nested");
-					return;
-				}
-				WriteBodyTable(table, fingerprint);
+			const auto parseStarted = std::chrono::steady_clock::now();
+
+			std::unordered_map<std::uint32_t, BodyEntry> table;
+			if (!ParseAllBodies(table)) {
+				REX::WARN("[bodies] could not read the planet hierarchy - moons will not be nested");
+				return;
 			}
+
+			const auto parseMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - parseStarted)
+			                         .count();
+			REX::INFO("[bodies] load-order parse took {} ms ({} bodies)", parseMs, table.size());
 
 			std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> bySystem;
 			for (const auto& [formID, entry] : table)

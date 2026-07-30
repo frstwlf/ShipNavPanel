@@ -542,8 +542,12 @@ accumulating in saves. Audited 2026-07-27:
   0.2.21 compiles those hooks out regardless.
 - **The selections are plain C++ atomics**, gone when the process exits — which
   is also why a lock does not survive a restart.
-- **The only file written** is `ShipNavPanelBodies.txt` in `Data\SFSE\Plugins`,
-  outside the save entirely and safe to delete.
+- **No files are written.** The body table is parsed from the load order into
+  memory each launch (a few hundred ms on a background thread; the log prints
+  the measured time). Versions up to 0.16.x cached it to
+  `ShipNavPanelBodies.txt` in `Data\SFSE\Plugins` — mod managers never track a
+  runtime-generated file, so it survived uninstalls as clutter; 0.17.0 removed
+  the cache and deletes that leftover file if it finds one.
 - **Engine writes are two vtable slots** (in-memory, never serialised) and, only
   with the default-off throttle test on, the `disabled` flag of a transient
   input event.
@@ -705,8 +709,10 @@ Each of these cost real time; the reasoning is in the findings docs.
     *next* subrecord**, whose own 16-bit size field then reads 0 — miss that and
     the walk desyncs into the middle of a large payload. It silently cost 1134
     of 1765 records in the prototype, Kurtz among them, while still *looking*
-    like a working parse. `tools/ExportBodies.pas` remains as an xEdit-side
-    alternative but is no longer needed.
+    like a working parse. `tools/ExportBodies.pas` (an xEdit-side alternative
+    from that era) was deleted in 0.17.0 along with the cache file it fed —
+    its instructions would have users place a file the plugin now deletes at
+    launch; git history keeps it.
   - **`BGSPlanet::PlanetData`'s member comments are stale AND the struct is
     incomplete.** The comments start at `0x30`, but they were written against a
     `0x30`-byte `TESForm` and `TESForm` is now `0x38` — so the compiler places

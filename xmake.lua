@@ -14,7 +14,7 @@ set_xmakever("3.0.0")
 
 -- set project constants
 set_project("ShipNavPanel")
-set_version("0.16.4")
+set_version("0.17.0")
 set_license("GPL-3.0-or-later")
 
 set_arch("x64")
@@ -40,8 +40,9 @@ target("ShipNavPanel", function()
     -- ship the default config next to the DLL
     add_installfiles("ShipNavPanel.ini", { prefixdir = "SFSE/Plugins" })
 
-    -- ShipNavPanelBodies.txt is NOT shipped: the plugin builds it from the
-    -- player's own Starfield.esm on first run, so it always matches their game
+    -- No body-table file is shipped or written: the plugin parses the player's
+    -- own load order into memory each launch (0.17.0 dropped the runtime cache
+    -- so uninstalls leave nothing behind)
 
     -- without XSE_SF_GAME_PATH / XSE_SF_MODS_PATH set, deploy into the build tree
     if not os.getenv("XSE_SF_MODS_PATH") and not os.getenv("XSE_SF_GAME_PATH") then
