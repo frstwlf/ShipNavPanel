@@ -543,11 +543,12 @@ accumulating in saves. Audited 2026-07-27:
 - **The selections are plain C++ atomics**, gone when the process exits — which
   is also why a lock does not survive a restart.
 - **No files are written.** The body table is parsed from the load order into
-  memory each launch (a few hundred ms on a background thread; the log prints
-  the measured time). Versions up to 0.16.x cached it to
-  `ShipNavPanelBodies.txt` in `Data\SFSE\Plugins` — mod managers never track a
-  runtime-generated file, so it survived uninstalls as clutter; 0.17.0 removed
-  the cache and deletes that leftover file if it finds one.
+  memory each launch on a background thread; the log prints the measured time
+  (**423 ms on the tester's machine, confirmed in game on 0.17.0's first
+  launch**). Versions up to 0.16.x cached it to `ShipNavPanelBodies.txt` in
+  `Data\SFSE\Plugins` — mod managers never track a runtime-generated file, so
+  it survived uninstalls as clutter; 0.17.0 removed the cache and deletes that
+  leftover file if it finds one (removal confirmed the same launch).
 - **Engine writes are two vtable slots** (in-memory, never serialised) and, only
   with the default-off throttle test on, the `disabled` flag of a transient
   input event.
