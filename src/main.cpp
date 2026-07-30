@@ -1857,6 +1857,28 @@ namespace
 	RE::Scaleform::GFx::Value g_chromeProbeDists[kChromeProbeRows];
 	RE::Scaleform::GFx::Value g_chromeProbeRowFormat;
 
+	// Geometry for telling SAME-NAMED feed entries apart (v0.18.1): two
+	// unresolved contacts both ride the feed as "Sensor Contact", and vanilla
+	// names its clips with that string - so a clip name alone cannot say
+	// WHICH contact a blip or icon belongs to (the tester's Ship+Anomaly
+	// pair; the log kept the same clip name twice in one tick). Filled from
+	// the key body's own high-feed row; `ambiguous` is set only when 2+ feed
+	// candidates share the name, which is the only case any of it is read.
+	struct BlipGeometry
+	{
+		bool   ambiguous{ false };
+		bool   haveRow{ false };
+		double angle{ 0.0 };     // angleToCrosshair, degrees
+		double screenX{ -1.0 };  // screenPositionX/Y percentages, y bottom-up;
+		double screenY{ -1.0 };  // -1 = the engine's "unprojectable" sentinel
+	};
+
+	// A ring blip's ROOT rotation is exactly angleToCrosshair + 180
+	// (OffScreenIcon.as:163) - within this many degrees counts as "the same
+	// contact". Two same-named contacts inside the tolerance degrade to the
+	// pre-v0.18.1 behavior: both kept.
+	constexpr double kDupBearingToleranceDeg = 15.0;
+
 	// Defined further down, but called from the data-feed callbacks above them.
 	bool WorldSettled();
 	void TryCreateArrow();
@@ -1867,7 +1889,8 @@ namespace
 	void RefreshCruiseState();
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
-		const std::string& a_infoTargetName);
+		const std::string& a_infoTargetName,
+		const BlipGeometry& a_selGeom, const BlipGeometry& a_lockGeom);
 
 	// A TT_STAR entry is not necessarily *this* system's star: a quest-marked one
 	// showed up at 8.21e17 m, about 87 light-years. Type alone is not a filter.
@@ -3677,6 +3700,10 @@ namespace
 		{
 			double angle{ 0.0 };
 			double distance{ 0.0 };
+			// Percentages, y bottom-up; -1 is the engine's "unprojectable"
+			// sentinel. Only read by the duplicate-name disambiguation.
+			double screenX{ -1.0 };
+			double screenY{ -1.0 };
 		};
 		std::vector<Row> rows;
 
@@ -3689,6 +3716,10 @@ namespace
 				row.angle = AsNumber(member);
 			if (entry.GetMember("distance", &member))
 				row.distance = AsNumber(member);
+			if (entry.GetMember("screenPositionX", &member))
+				row.screenX = AsNumber(member);
+			if (entry.GetMember("screenPositionY", &member))
+				row.screenY = AsNumber(member);
 			if (rows.size() <= a_index)
 				rows.resize(a_index + 1);
 			rows[a_index] = row;
@@ -3785,6 +3816,8 @@ namespace
 			std::string   infoTargetName;
 			bool          feedAlive = false;
 			bool          lockedInFeed = false;
+			BlipGeometry  selGeom{};
+			BlipGeometry  lockGeom{};
 
 			{
 				std::lock_guard lock{ g_candidateMutex };
@@ -3824,6 +3857,36 @@ namespace
 				if (infoIdx >= 0 && static_cast<std::size_t>(infoIdx) < g_candidates.size() &&
 					g_candidates[infoIdx].fromFeed)
 					infoTargetName = g_candidates[infoIdx].name;
+
+				// Same-named contacts make a clip name ambiguous, so each key
+				// body carries its own bearing and screen position for the
+				// blip pass to tell the clips apart (v0.18.1). Only the
+				// duplicate case ever reads these - a unique name keeps the
+				// pure name match, byte for byte.
+				const auto geometryFor = [&](std::uint32_t a_id, const std::string& a_name) {
+					BlipGeometry geom{};
+					if (a_id == 0 || a_name.empty())
+						return geom;
+					std::size_t sharing = 0;
+					for (const auto& row : g_candidates)
+						if (row.fromFeed && row.name == a_name)
+							++sharing;
+					geom.ambiguous = sharing >= 2;
+					if (!geom.ambiguous)
+						return geom;
+					for (std::size_t i = 0; i < count; ++i) {
+						if (g_candidates[i].id == a_id) {
+							geom.haveRow = true;
+							geom.angle = bearings.rows[i].angle;
+							geom.screenX = bearings.rows[i].screenX;
+							geom.screenY = bearings.rows[i].screenY;
+							break;
+						}
+					}
+					return geom;
+				};
+				selGeom = geometryFor(selectedID, selectedBlipName);
+				lockGeom = geometryFor(lockedForBlips, lockedName);
 
 				// A lock on a RUNTIME form is the one case where holding an id
 				// can go wrong. FF-prefixed ids belong to things the game
@@ -3952,7 +4015,7 @@ namespace
 			// True means vanilla covers the selected body this tick - kept
 			// off-screen blip or visible on-screen icon.
 			const bool selectedCovered = ManageVanillaBlips(selectedID, selectedBlipName,
-				lockedForBlips, lockedName, infoTargetName);
+				lockedForBlips, lockedName, infoTargetName, selGeom, lockGeom);
 
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
@@ -4648,7 +4711,8 @@ namespace
 	// targeting keep outranking the panel.
 	bool ManageVanillaBlips(std::uint32_t a_selectedID, const std::string& a_selectedName,
 		std::uint32_t a_lockedID, const std::string& a_lockedName,
-		const std::string& a_infoTargetName)
+		const std::string& a_infoTargetName,
+		const BlipGeometry& a_selGeom, const BlipGeometry& a_lockGeom)
 	{
 		if (!bHideVanillaBlips.GetValue())
 			return false;
@@ -4768,6 +4832,43 @@ namespace
 			       quest.GetBoolean();
 		};
 
+		// Duplicate-name disambiguation (v0.18.1): when the selection's name
+		// is shared by 2+ feed entries, a name match alone would keep BOTH
+		// contacts' blips (proven in the tester's log - the same clip name
+		// kept twice in one tick). The clip's ROOT rotation is exactly
+		// angleToCrosshair + 180 (OffScreenIcon.as:163) and vanilla keeps
+		// driving kept clips wherever they are parented, so agreement with
+		// the candidate's own bearing says WHICH contact a clip is - and a
+		// kept clip the pool re-keys to the other contact drifts out of
+		// tolerance and pass 2 returns it by itself. Unique names never
+		// reach any of this.
+		const auto bearingAgrees = [](RE::Scaleform::GFx::Value& a_child, double a_angle) {
+			RE::Scaleform::GFx::Value rot;
+			if (!a_child.GetMember("rotation", &rot))
+				return true;  // unreadable clip: fall back to the name match
+			double diff = std::fmod(std::fabs(AsNumber(rot) - (a_angle + 180.0)), 360.0);
+			if (diff > 180.0)
+				diff = 360.0 - diff;
+			return diff <= kDupBearingToleranceDeg;
+		};
+		const auto blipIsSelected = [&](RE::Scaleform::GFx::Value& a_child) {
+			return !a_selGeom.ambiguous || !a_selGeom.haveRow ||
+			       bearingAgrees(a_child, a_selGeom.angle);
+		};
+		const auto blipIsLocked = [&](RE::Scaleform::GFx::Value& a_child) {
+			return !a_lockGeom.ambiguous || !a_lockGeom.haveRow ||
+			       bearingAgrees(a_child, a_lockGeom.angle);
+		};
+		if (a_selGeom.ambiguous) {
+			// Once per selection, so the log names the situation without
+			// ticking - the same gate style as the census.
+			static std::atomic<std::uint32_t> s_dupLoggedFor{ 0 };
+			if (s_dupLoggedFor.exchange(a_selectedID, std::memory_order_acq_rel) != a_selectedID)
+				REX::INFO("[blip] '{}' names more than one contact - telling their clips "
+						  "apart by bearing and screen position",
+					a_selectedName);
+		}
+
 		// The reticle and the selection's/lock's ON-screen icons are resolved
 		// BEFORE the keep passes, because visibility there decides the blips'
 		// fate: a body whose on-screen icon is visible gets its ring blip
@@ -4800,13 +4901,82 @@ namespace
 				return false;  // the paired indicator wearing a stale name
 			return true;
 		};
-		const auto findIcon = [&](const std::string& a_name, RE::Scaleform::GFx::Value& a_out) {
-			const std::string         childName = std::string{ "OnScreenIcon: " } + a_name;
-			RE::Scaleform::GFx::Value arg{ childName.c_str() };
-			if (!reticle.Invoke("getChildByName", &a_out, &arg, 1) ||
-				!(a_out.IsObject() || a_out.IsDisplayObject()))
+		const auto findIcon = [&](const std::string& a_name, const BlipGeometry& a_geom,
+								  RE::Scaleform::GFx::Value& a_out) {
+			const std::string childName = std::string{ "OnScreenIcon: " } + a_name;
+			// The quick path - and the only one before v0.18.1: the first
+			// child wearing the name. With a duplicated name that first hit
+			// can be the OTHER contact's icon, which then vouches for
+			// coverage the selection does not have - so an ambiguous name
+			// walks ALL matches and takes the one nearest the entry's own
+			// screen position instead.
+			if (!(a_geom.ambiguous && a_geom.haveRow &&
+					a_geom.screenX >= 0.0 && a_geom.screenY >= 0.0)) {
+				RE::Scaleform::GFx::Value arg{ childName.c_str() };
+				if (!reticle.Invoke("getChildByName", &a_out, &arg, 1) ||
+					!(a_out.IsObject() || a_out.IsDisplayObject()))
+					return false;
+				return iconIs(a_out, a_name);
+			}
+			// The expected point, through vanilla's own converter - the exact
+			// transform the SWF positions icons with (y percentage runs
+			// bottom-up; Extensions.visibleRect handles the safe rect).
+			bool   havePoint = false;
+			double wantX = 0.0;
+			double wantY = 0.0;
+			{
+				RE::Scaleform::GFx::Value globalFunc;
+				if (root->GetVariable(&globalFunc, "Shared.GlobalFunc") &&
+					(globalFunc.IsObject() || globalFunc.IsDisplayObject())) {
+					RE::Scaleform::GFx::Value args[3];
+					args[0] = V{ a_geom.screenX };
+					args[1] = V{ a_geom.screenY };
+					args[2] = reticle;
+					RE::Scaleform::GFx::Value pt;
+					RE::Scaleform::GFx::Value m;
+					if (globalFunc.Invoke("ConvertScreenPercentsToLocalPoint", &pt, args, 3) &&
+						pt.IsObject() && pt.GetMember("x", &m)) {
+						wantX = AsNumber(m);
+						if (pt.GetMember("y", &m))
+							wantY = AsNumber(m);
+						havePoint = true;
+					}
+				}
+			}
+			V count;
+			if (!reticle.GetMember("numChildren", &count))
 				return false;
-			return iconIs(a_out, a_name);
+			bool   found = false;
+			double bestDist = 0.0;
+			for (int i = 0; i < static_cast<int>(AsNumber(count)); ++i) {
+				V idx{ static_cast<double>(i) };
+				RE::Scaleform::GFx::Value child;
+				if (!reticle.Invoke("getChildAt", &child, &idx, 1) ||
+					!(child.IsObject() || child.IsDisplayObject()))
+					continue;
+				RE::Scaleform::GFx::Value nameVal;
+				if (!child.GetMember("name", &nameVal) || !nameVal.IsString() ||
+					childName != nameVal.GetString())
+					continue;
+				if (!iconIs(child, a_name))
+					continue;
+				if (!havePoint) {
+					// Converter unavailable: the first verified match - the
+					// pre-v0.18.1 reading - rather than nothing.
+					a_out = child;
+					return true;
+				}
+				RE::Scaleform::GFx::Value m;
+				const double cx = child.GetMember("x", &m) ? AsNumber(m) : 0.0;
+				const double cy = child.GetMember("y", &m) ? AsNumber(m) : 0.0;
+				const double d = (cx - wantX) * (cx - wantX) + (cy - wantY) * (cy - wantY);
+				if (!found || d < bestDist) {
+					bestDist = d;
+					a_out = child;
+					found = true;
+				}
+			}
+			return found;
 		};
 		const auto isVisible = [](RE::Scaleform::GFx::Value& a_icon) {
 			RE::Scaleform::GFx::Value vis;
@@ -4818,7 +4988,7 @@ namespace
 		bool                      selVisible = false;
 		bool                      lockIconVisible = false;
 		if (haveReticle && a_selectedID != 0 && !a_selectedName.empty() &&
-			findIcon(a_selectedName, selIcon)) {
+			findIcon(a_selectedName, a_selGeom, selIcon)) {
 			selFound = true;
 			selVisible = isVisible(selIcon);
 		}
@@ -4826,7 +4996,7 @@ namespace
 			lockIconVisible = selVisible;
 		} else if (haveReticle && a_lockedID != 0 && !a_lockedName.empty()) {
 			RE::Scaleform::GFx::Value lockIcon;
-			if (findIcon(a_lockedName, lockIcon))
+			if (findIcon(a_lockedName, a_lockGeom, lockIcon))
 				lockIconVisible = isVisible(lockIcon);
 		}
 
@@ -4856,11 +5026,14 @@ namespace
 
 				// A body whose on-screen icon is visible does not get a ring
 				// blip on top - the icon marks it, cull the blip like a
-				// planet's.
+				// planet's. With a duplicated name the bearing joins the
+				// test, else BOTH same-named contacts' blips get kept.
 				const bool selectedMatch = !selectedClipName.empty() &&
-				                           childName == selectedClipName && !selVisible;
+				                           childName == selectedClipName && !selVisible &&
+				                           blipIsSelected(child);
 				const bool lockedMatch = !lockedClipName.empty() &&
-				                         childName == lockedClipName && !lockIconVisible;
+				                         childName == lockedClipName && !lockIconVisible &&
+				                         blipIsLocked(child);
 				if (selectedMatch || lockedMatch || (keepQuest && isQuest(child))) {
 					if (g_blipHolder.Invoke("addChild", nullptr, &child, 1)) {
 						if (selectedMatch)
@@ -4888,10 +5061,15 @@ namespace
 				const std::string childName = readName(child);
 				if (childName.rfind(kOffScreenIconPrefix, 0) != 0)
 					continue;  // the faux blip and other mod-owned children stay
+				// Same bearing test as pass 1: a kept clip the pool re-keys
+				// to the OTHER same-named contact drifts out of tolerance
+				// and goes home on its own.
 				const bool selectedMatch = !selectedClipName.empty() &&
-				                           childName == selectedClipName && !selVisible;
+				                           childName == selectedClipName && !selVisible &&
+				                           blipIsSelected(child);
 				const bool lockedMatch = !lockedClipName.empty() &&
-				                         childName == lockedClipName && !lockIconVisible;
+				                         childName == lockedClipName && !lockIconVisible &&
+				                         blipIsLocked(child);
 				if (selectedMatch || lockedMatch) {
 					if (selectedMatch)
 						selectedShown = true;

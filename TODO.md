@@ -130,27 +130,32 @@ and subscription whenever the movie-created callback fires, and drop stale
       the DLL removed; see Settled.)
 
 - [ ] **Duplicate feed names break blip identity — CONFIRMED from the
-      tester's own log (2026-07-30), fix unbuilt.** Two distinct spawned
-      POIs (FF01C601, FF0167F0; markers displayed "Ship" and "Anomaly",
-      different locations) both showed whichever one was selected. The
-      log's proof, 17:34:56.565 — the same clip kept TWICE in one tick:
-      `[blip] kept 'OffScreenIcon: Sensor Contact' (panel highlight)` ×2.
-      Both entries' FEED name is "Sensor Contact" — vanilla's name for
-      unresolved distant contacts — while the displayed labels differ
-      (masked generic vs marker label). The keep/cull passes and the icon
-      lookup match clips purely by NAME (`kOffScreenIconPrefix + name` /
-      `getChildByName("OnScreenIcon: " + name)`), so same-named entries
-      are indistinguishable and BOTH get kept. Not a freak pairing: ANY
-      two unresolved contacts in a system share "Sensor Contact", so this
-      recurs in ordinary play. The fix — only when the selection's name
-      is duplicated among candidates, disambiguate by geometry (on-screen
-      icons: rect centre vs the high feed's `screenPositionX/Y`; ring
-      blips: clip bearing vs `angleToCrosshair`), covering the keep pass,
-      the coverage check (`findIcon` takes the FIRST name match, so the
-      mod can stand its marker down against the WRONG contact's icon) and
-      the fade pass. Strictly additive: the unique-name path stays
-      byte-identical, and the keep pass — the most lesson-laden code in
-      the mod — is not restructured.
+      tester's own log, FIXED in v0.18.1, awaiting an in-game pass.** Two
+      distinct spawned POIs (FF01C601, FF0167F0; markers displayed "Ship"
+      and "Anomaly", different locations) both showed whichever one was
+      selected. The log's proof, 17:34:56.565 — the same clip kept TWICE
+      in one tick: `[blip] kept 'OffScreenIcon: Sensor Contact' (panel
+      highlight)` ×2. Both entries' FEED name is "Sensor Contact" —
+      vanilla's name for unresolved distant contacts — while the displayed
+      labels differ (masked generic vs marker label); clip matching is
+      name-keyed, so both matched. Not a freak pairing: ANY two unresolved
+      contacts in a system collide. **The v0.18.1 fix**, gated strictly on
+      the selection's name being shared by 2+ feed entries (unique names
+      take the old path untouched): ring blips must also agree with the
+      candidate's own bearing — the clip's ROOT rotation is exactly
+      `angleToCrosshair + 180` (OffScreenIcon.as:163), 15° tolerance —
+      applied in BOTH keep passes, so a kept clip the pool re-keys to the
+      other contact drifts out of tolerance and returns on its own; the
+      icon coverage check walks ALL same-named `OnScreenIcon:` children
+      (getChildByName only ever returned the FIRST) and takes the one
+      nearest the entry's own screen position via vanilla's
+      `ConvertScreenPercentsToLocalPoint` (y percentage runs BOTTOM-UP —
+      the converter flips it). Fallbacks at every rung: unreadable
+      rotation / failed converter / `-1` unprojectable sentinel → the
+      pre-v0.18.1 reading. One `[blip] '<name>' names more than one
+      contact` line logs once per selection when the machinery engages.
+      Test: two simultaneous unresolved contacts, select each — only the
+      selected one's marker shows, and the log names the ambiguity.
 
 Later, nice-to-have:
 
