@@ -191,6 +191,17 @@ namespace
 	REX::TIniSetting<std::uint32_t> uPanelHeaderColor{ "Panel", "uPanelHeaderColor", 0x218286 };
 	REX::TIniSetting<float>         fPanelHeaderAlpha{ "Panel", "fPanelHeaderAlpha", 1.0f };
 	REX::TIniSetting<std::uint32_t> uPanelTitleColor{ "Panel", "uPanelTitleColor", 0x76C0C4 };
+
+	// The cockpit tilt (v0.16.4, the tester's ask): vanilla eases its quick
+	// container into a Matrix3D whose rotation decomposes to ~5 deg of
+	// pitch (top edge away) and ~5 deg of yaw turning the panel toward
+	// screen centre. The yaw is MIRRORED here for the left side; both
+	// angles to taste. Applied once at build - the animation's x/y/scale
+	// writes flow through a 3D matrix's translation and scale without
+	// touching its rotation.
+	REX::TIniSetting<bool>  bPanelTilt{ "Panel", "bPanelTilt", true };
+	REX::TIniSetting<float> fPanelTiltPitch{ "Panel", "fPanelTiltPitch", -5.0f };
+	REX::TIniSetting<float> fPanelTiltYaw{ "Panel", "fPanelTiltYaw", -5.0f };
 	// Every text in the panel except the header wears the pills' own label
 	// colour (v0.16.0, measured off the SWF: the filled button's Label_tf
 	// is 0xB7B7B7). The header keeps its cyan. The wheel hint went back to
@@ -6157,6 +6168,47 @@ namespace
 		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
 		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
 		g_panelClip.SetMember("visible", V{ false });
+
+		// The cockpit tilt (v0.16.4): the same Matrix3D treatment vanilla
+		// gives its quick container, rebuilt through the engine's own
+		// appendRotation - pitch about X first, yaw about Y second,
+		// vanilla's composition order - with the yaw mirrored for the left
+		// side. Assigning matrix3D zeroes the translation, so the offsets
+		// are re-asserted right after (and the animation keeps writing
+		// x/y/scale into the 3D matrix without touching the rotation).
+		if (bPanelTilt.GetValue()) {
+			bool                      tilted = false;
+			RE::Scaleform::GFx::Value m3d;
+			root->CreateObject(&m3d, "flash.geom.Matrix3D");
+			if (m3d.IsObject()) {
+				const auto rotate = [&](double a_deg, double a_x, double a_y, double a_z) {
+					RE::Scaleform::GFx::Value axis;
+					V                         axisArgs[]{ V{ a_x }, V{ a_y }, V{ a_z } };
+					root->CreateObject(&axis, "flash.geom.Vector3D", axisArgs, 3);
+					if (!axis.IsObject())
+						return false;
+					V rotArgs[2];
+					rotArgs[0] = V{ a_deg };
+					rotArgs[1] = axis;
+					return m3d.Invoke("appendRotation", nullptr, rotArgs, 2);
+				};
+				if (rotate(static_cast<double>(fPanelTiltPitch.GetValue()), 1.0, 0.0, 0.0) &&
+					rotate(static_cast<double>(fPanelTiltYaw.GetValue()), 0.0, 1.0, 0.0)) {
+					RE::Scaleform::GFx::Value transform;
+					if (g_panelClip.GetMember("transform", &transform) && transform.IsObject() &&
+						transform.SetMember("matrix3D", m3d))
+						tilted = true;
+				}
+			}
+			if (tilted) {
+				g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
+				g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
+				REX::INFO("[panel] cockpit tilt applied (pitch {}, yaw {})",
+					fPanelTiltPitch.GetValue(), fPanelTiltYaw.GetValue());
+			} else {
+				REX::WARN("[panel] cockpit tilt could not be applied - the panel stays flat");
+			}
+		}
 
 		g_panelListTop.store(listTop, std::memory_order_release);
 		g_panelHeight.store(height, std::memory_order_release);
