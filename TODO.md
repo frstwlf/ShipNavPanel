@@ -108,14 +108,11 @@ and subscription whenever the movie-created callback fires, and drop stale
       startup timing, and timing is the whole of it. Worth remembering the shape
       of that: a config that reliably reproduces a race is still only evidence
       about timing.
-- [ ] **Reposition the panel to sit with the HUD.** Offsets are still the
-      original guess (540 left, 160 up from screen centre) against one
-      resolution. It hangs off `Reticle_mc`, whose origin is screen centre,
-      so offsets are relative to centre rather than to a stage size the mod
-      never learns. `fPanelOffsetX` / `fPanelOffsetY` / `fPanelRowHeight` /
-      `uPanelMaxRows` cover it without a rebuild; find the values in game
-      first, then change the defaults. (Width is done — `fPanelWidth`
-      defaulted to the loot panel's own 425 in v0.12.1.)
+- [x] ~~Reposition the panel to sit with the HUD.~~ Resolved 2026-07-30: the
+      tester confirmed the shipped offsets (−540, −160 from screen centre) as
+      final defaults — the original guess turned out right. Width was already
+      the loot panel's own 425 (v0.12.1); `fPanelOffsetX/Y`,
+      `fPanelRowHeight`, `uPanelMaxRows` remain per-user knobs.
 
 - [ ] **The panel can outlive a forced exit from cruise.** Seen when a random
       combat event dropped the ship out: the panel stayed up until the scanner
@@ -161,11 +158,17 @@ Later, nice-to-have:
       hook.** The v0.2.0 inert-build class — packaging flipped recon defaults
       off and two pieces of load-bearing machinery sat behind them. Run the
       grep on every packaging commit.
-- [ ] **Scan history for `C:\Users\...` paths and log excerpts** before going
-      public; deleting a file later does not remove it from history. Not
-      hypothetical: the pre-2026-07-30 README carried the full local log
-      path, and the phase docs carry `M:\...` paths throughout (harmless but
-      worth a conscious pass).
+- [x] ~~Scan history for `C:\Users\...` paths and log excerpts~~ — RUN
+      2026-07-30, all 122 revisions. The local username appears in exactly
+      two blob lines across history: the old README's log path (121 revs)
+      and this checklist item's own old wording (85 revs); HEAD is clean.
+      No email or other personal strings in any blob. **One decision left:
+      every commit's author/committer metadata carries the real personal
+      email.** Going public exposes it in commit data and the API. Either
+      accept that, or rewrite history (`git filter-repo --mailmap` to a
+      GitHub noreply address — can scrub the two username blob lines in the
+      same pass) + force-push before the flip. Decide before flipping;
+      nothing else in history needs scrubbing.
 - [ ] Flip `frstwlf/ShipNavPanel` public — **GPL obligation** once a DLL is
       distributed (CommonLibSF is GPL-3.0-or-later).
 - [ ] Decide on the PDB. It ships now deliberately so tester crash logs come

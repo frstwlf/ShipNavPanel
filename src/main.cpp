@@ -326,7 +326,7 @@ namespace
 	// shows no names on blips, and the panel row already carries the text.)
 	REX::TIniSetting<bool>  bArrow{ "Panel", "bArrow", true };
 	REX::TIniSetting<float> fArrowRadius{ "Panel", "fArrowRadius", 150.0f };
-	REX::TIniSetting<float> fMaxTargetLightSeconds{ "Panel", "fMaxTargetLightSeconds", 20000.0f };
+	REX::TIniSetting<float> fMaxTargetLightSeconds{ "Panel", "fMaxTargetLightSeconds", 80000.0f };
 	REX::TIniSetting<float> fArrowAngleOffset{ "Panel", "fArrowAngleOffset", 0.0f };
 	REX::TIniSetting<bool>  bArrowInvertAngle{ "Panel", "bArrowInvertAngle", false };
 
