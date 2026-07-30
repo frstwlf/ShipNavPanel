@@ -109,8 +109,9 @@ and subscription whenever the movie-created callback fires, and drop stale
       of that: a config that reliably reproduces a race is still only evidence
       about timing.
 - [x] ~~Reposition the panel to sit with the HUD.~~ Resolved 2026-07-30: the
-      tester confirmed the shipped offsets (−540, −160 from screen centre) as
-      final defaults — the original guess turned out right. Width was already
+      tester's in-game values are **(−780, −180)** from screen centre, shipped
+      as defaults in v0.17.2 (an earlier note blessing the old −540/−160
+      guess was the tester's slip, corrected the same day). Width was already
       the loot panel's own 425 (v0.12.1); `fPanelOffsetX/Y`,
       `fPanelRowHeight`, `uPanelMaxRows` remain per-user knobs.
 
@@ -158,17 +159,19 @@ Later, nice-to-have:
       hook.** The v0.2.0 inert-build class — packaging flipped recon defaults
       off and two pieces of load-bearing machinery sat behind them. Run the
       grep on every packaging commit.
-- [x] ~~Scan history for `C:\Users\...` paths and log excerpts~~ — RUN
-      2026-07-30, all 122 revisions. The local username appears in exactly
-      two blob lines across history: the old README's log path (121 revs)
-      and this checklist item's own old wording (85 revs); HEAD is clean.
-      No email or other personal strings in any blob. **One decision left:
-      every commit's author/committer metadata carries the real personal
-      email.** Going public exposes it in commit data and the API. Either
-      accept that, or rewrite history (`git filter-repo --mailmap` to a
-      GitHub noreply address — can scrub the two username blob lines in the
-      same pass) + force-push before the flip. Decide before flipping;
-      nothing else in history needs scrubbing.
+- [x] ~~Scan history for `C:\Users\...` paths and log excerpts~~ — scanned
+      AND scrubbed, 2026-07-30. The scan (all revisions) found the local
+      username in two doc blob lines and the personal email in every
+      commit's author/committer metadata; nothing else. History was then
+      rewritten (`git filter-branch`: identity → the GitHub noreply
+      address, username path → `C:\Users\<you>`) and force-pushed with the
+      user's approval. Verified post-rewrite: one identity across all 123
+      commits, zero sensitive strings in any revision, HEAD tree
+      byte-identical. The noreply is also the global `user.email` now, so
+      new commits stay clean. **History is flip-ready.** (Lesson: an
+      INLINE filter-branch tree-filter silently no-opped under MSYS
+      argument mangling — put filter scripts in a FILE and verify content
+      hits, not just ref-rewritten messages.)
 - [ ] Flip `frstwlf/ShipNavPanel` public — **GPL obligation** once a DLL is
       distributed (CommonLibSF is GPL-3.0-or-later).
 - [ ] Decide on the PDB. It ships now deliberately so tester crash logs come

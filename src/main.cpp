@@ -314,8 +314,8 @@ namespace
 	// hatch, not because it is experimental.
 	REX::TIniSetting<bool> bWheelFilter{ "Panel", "bWheelFilter", true };
 
-	REX::TIniSetting<float>         fPanelOffsetX{ "Panel", "fPanelOffsetX", -540.0f };
-	REX::TIniSetting<float>         fPanelOffsetY{ "Panel", "fPanelOffsetY", -160.0f };
+	REX::TIniSetting<float>         fPanelOffsetX{ "Panel", "fPanelOffsetX", -780.0f };
+	REX::TIniSetting<float>         fPanelOffsetY{ "Panel", "fPanelOffsetY", -180.0f };
 	// 425 = the original 340 plus the tester's quarter (v0.12.0), close to
 	// the vanilla loot panel's own 423.
 	REX::TIniSetting<float>         fPanelWidth{ "Panel", "fPanelWidth", 425.0f };
