@@ -150,12 +150,23 @@ and subscription whenever the movie-created callback fires, and drop stale
       (getChildByName only ever returned the FIRST) and takes the one
       nearest the entry's own screen position via vanilla's
       `ConvertScreenPercentsToLocalPoint` (y percentage runs BOTTOM-UP —
-      the converter flips it). Fallbacks at every rung: unreadable
-      rotation / failed converter / `-1` unprojectable sentinel → the
-      pre-v0.18.1 reading. One `[blip] '<name>' names more than one
+      the converter flips it). One `[blip] '<name>' names more than one
       contact` line logs once per selection when the machinery engages.
-      Test: two simultaneous unresolved contacts, select each — only the
-      selected one's marker shows, and the log names the ambiguity.
+      **Round 2 (v0.18.2, tester's baked save): off-screen blips worked,
+      but selecting the OFF-screen contact while the other was in-FOV
+      produced NO marker at all** — v0.18.1's icon fallback took the
+      first-match path exactly when the selection's screen position was
+      the `-1` sentinel (the off-screen case), so the in-FOV contact's
+      icon "covered" the selection. ⚠ Lesson: **in an ambiguity, a
+      fallback must never take the OPTIMISTIC branch** — v0.18.2 makes
+      every no-confirmation road answer "no icon" (sentinel /
+      out-of-[0,1] percentages / no bearings row / dead converter /
+      nearest icon further than 60 px from the expected point), so the
+      worst failure is blip+icon both showing (vanilla's own stock look
+      for stations), never an unmarked selection. Unique names keep the
+      pre-v0.18.1 path byte for byte. Test on the baked save: select
+      each contact with the other in-FOV — the off-screen one must wear
+      its ring blip; on-screen selections still hand over to their icon.
 
 Later, nice-to-have:
 

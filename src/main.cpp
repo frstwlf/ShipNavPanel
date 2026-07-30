@@ -1879,6 +1879,11 @@ namespace
 	// pre-v0.18.1 behavior: both kept.
 	constexpr double kDupBearingToleranceDeg = 15.0;
 
+	// An on-screen icon sits AT its body's converted screen point, so the
+	// selection's own icon lands within a few pixels of it - a same-named icon
+	// further away than this (reticle space) is the OTHER contact's.
+	constexpr double kDupIconMatchTolerancePx = 60.0;
+
 	// Defined further down, but called from the data-feed callbacks above them.
 	bool WorldSettled();
 	void TryCreateArrow();
@@ -4904,20 +4909,29 @@ namespace
 		const auto findIcon = [&](const std::string& a_name, const BlipGeometry& a_geom,
 								  RE::Scaleform::GFx::Value& a_out) {
 			const std::string childName = std::string{ "OnScreenIcon: " } + a_name;
-			// The quick path - and the only one before v0.18.1: the first
-			// child wearing the name. With a duplicated name that first hit
-			// can be the OTHER contact's icon, which then vouches for
-			// coverage the selection does not have - so an ambiguous name
-			// walks ALL matches and takes the one nearest the entry's own
-			// screen position instead.
-			if (!(a_geom.ambiguous && a_geom.haveRow &&
-					a_geom.screenX >= 0.0 && a_geom.screenY >= 0.0)) {
+			if (!a_geom.ambiguous) {
+				// Unique name: the pre-v0.18.1 path, byte for byte.
 				RE::Scaleform::GFx::Value arg{ childName.c_str() };
 				if (!reticle.Invoke("getChildByName", &a_out, &arg, 1) ||
 					!(a_out.IsObject() || a_out.IsDisplayObject()))
 					return false;
 				return iconIs(a_out, a_name);
 			}
+			// Ambiguous name: an icon may only vouch for the selection with
+			// POSITIVE geometric confirmation. v0.18.1 fell back to the
+			// first-match path when the selection's screen position was the
+			// -1 sentinel - which is precisely the off-screen case, so with
+			// one contact in-FOV and the OTHER selected, the in-FOV icon
+			// "covered" the off-screen selection into invisibility (the
+			// tester's second round with the baked save). Every road without
+			// confirmation now answers "no icon": the worst that follows is
+			// a blip AND an icon both showing - vanilla's own stock look for
+			// stations - never an unmarked selection.
+			if (!a_geom.haveRow)
+				return false;
+			if (a_geom.screenX < 0.0 || a_geom.screenX > 1.0 ||
+				a_geom.screenY < 0.0 || a_geom.screenY > 1.0)
+				return false;  // sentinel or outside the view: no icon is the selection's
 			// The expected point, through vanilla's own converter - the exact
 			// transform the SWF positions icons with (y percentage runs
 			// bottom-up; Extensions.visibleRect handles the safe rect).
@@ -4943,6 +4957,8 @@ namespace
 					}
 				}
 			}
+			if (!havePoint)
+				return false;
 			V count;
 			if (!reticle.GetMember("numChildren", &count))
 				return false;
@@ -4960,12 +4976,6 @@ namespace
 					continue;
 				if (!iconIs(child, a_name))
 					continue;
-				if (!havePoint) {
-					// Converter unavailable: the first verified match - the
-					// pre-v0.18.1 reading - rather than nothing.
-					a_out = child;
-					return true;
-				}
 				RE::Scaleform::GFx::Value m;
 				const double cx = child.GetMember("x", &m) ? AsNumber(m) : 0.0;
 				const double cy = child.GetMember("y", &m) ? AsNumber(m) : 0.0;
@@ -4976,7 +4986,11 @@ namespace
 					found = true;
 				}
 			}
-			return found;
+			// Nearest is not enough: with the selection's own icon absent the
+			// nearest same-named icon is simply the OTHER contact's. It must
+			// actually sit at the expected point.
+			return found &&
+			       bestDist <= kDupIconMatchTolerancePx * kDupIconMatchTolerancePx;
 		};
 		const auto isVisible = [](RE::Scaleform::GFx::Value& a_icon) {
 			RE::Scaleform::GFx::Value vis;
