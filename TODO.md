@@ -129,6 +129,27 @@ and subscription whenever the movie-created callback fires, and drop stale
       (The 2026-07-29 scanner-drop observation is NOT this — it reproduces with
       the DLL removed; see Settled.)
 
+- [ ] **Duplicate feed names break blip identity — tester observation
+      2026-07-30, diagnosis from code, fix unbuilt.** A "Ship" and an
+      "Anomaly" marker (two DISTINCT POIs, likely a spawned encounter pair)
+      both showed as blips + in-FOV markers whichever one was selected. The
+      keep/cull passes and icon lookup match clips purely by NAME
+      (`kOffScreenIconPrefix + name` / `getChildByName("OnScreenIcon: " +
+      name)`) because vanilla names its clips with the feed `name` — so two
+      entries sharing a feed name are indistinguishable, and selecting
+      either keeps BOTH. The differing PANEL labels don't disprove shared
+      feed names: masking can render one as "Ship" (generic) while the
+      other shows its real name. Plan, two steps: (1) a one-line recon
+      detector — log when the candidate set contains duplicate names, so
+      the next spawn proves the hypothesis in passing; (2) the fix —
+      when (and only when) the selection's name is duplicated among
+      candidates, disambiguate the clip by position (icons: rect centre vs
+      the high feed's `screenPositionX/Y`; ring blips: clip bearing vs
+      `angleToCrosshair`), strictly additive so the unique-name path stays
+      byte-identical. The keep pass is the most lesson-laden code in the
+      mod — do not restructure it for this; gate the extra check on the
+      duplicate case.
+
 Later, nice-to-have:
 
 - [ ] **Per-body detail from `InfoTargetProvider`** — the Phase 5 find: the
