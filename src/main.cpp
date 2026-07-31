@@ -306,6 +306,13 @@ namespace
 
 	REX::TIniSetting<bool>        bProbeStarmapFeed{ "Recon", "bProbeStarmapFeed", false };
 	REX::TIniSetting<std::string> sStarmapFeed{ "Recon", "sStarmapFeed", "StarmapSystemBodyInfoProvider" };
+
+	// Phase 6 probe A (PHASE6-SURVEY-STATE.md). One question decides whether the
+	// panel can show a body's fully-surveyed state at all: can this plugin
+	// dispatch the native Papyrus `Planet.GetSurveyPercent()` and get a float
+	// back? It is the only per-body survey read that covers a whole system, and
+	// nothing about the call is verified. On: the scanner key runs the probe.
+	REX::TIniSetting<bool> bProbeSurveyVM{ "Recon", "bProbeSurveyVM", false };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -404,6 +411,7 @@ namespace
 	std::atomic<bool>          g_captureHighRequested{ false };
 	std::atomic<bool>          g_starmapDumpRequested{ false };
 	std::atomic<bool>          g_dumpPlanetsRequested{ false };
+	std::atomic<bool>          g_surveyVmProbeRequested{ false };
 	std::atomic<std::uint32_t> g_starmapCallbacks{ 0 };
 	std::atomic<bool> g_interposeInstalled{ false };
 	std::atomic<bool> g_interposeFailed{ false };
@@ -2416,6 +2424,8 @@ namespace
 			g_starmapDumpRequested.store(true, std::memory_order_release);
 		if (bDumpPlanetRecords.GetValue())
 			g_dumpPlanetsRequested.store(true, std::memory_order_release);
+		if (bProbeSurveyVM.GetValue())
+			g_surveyVmProbeRequested.store(true, std::memory_order_release);
 
 		// Only hijack the scanner key while cruising; outside cruise it still
 		// opens the vanilla ship scanner.
@@ -3493,6 +3503,239 @@ namespace
 		REX::INFO("[dump] ==== end ====");
 	}
 
+	// ---------------------------------------------------------------------------
+	// Phase 6 probe A: can this plugin call Papyrus? (PHASE6-SURVEY-STATE.md §7)
+	//
+	// The whole "fully surveyed" feature rests on one question no amount of file
+	// reading can answer. `Planet.GetSurveyPercent()` (Planet.psc:105) is the
+	// native the vanilla survey quests themselves poll, and the ONLY per-body
+	// survey read that covers a whole system - every UI feed that carries survey
+	// state describes exactly one body. So: can it be dispatched from C++?
+	//
+	// Nothing about that call is verified. `DispatchMethodCall` is a pure virtual
+	// at vtable slot 0x30 whose ordinal comes from a comment, not a symbol; its
+	// argument functor is a `BSTThreadScrapFunction`, which CommonLibSF aliases
+	// to std::function with NO size assertion; and its result arrives
+	// asynchronously through an `IStackCallbackFunctor` that has to be written by
+	// hand. The probe therefore walks the chain one step at a time and names the
+	// step that breaks - "it did not work" is worth nothing, "step 2 returned
+	// false" names the next move.
+	//
+	// ⚠ It runs from the per-frame task, NOT from a feed callback, and the
+	// shipping sweep must do the same. A feed callback is already inside
+	// Scaleform's locks, and reaching into a second engine subsystem from there
+	// is the lock-order inversion that froze v0.8.x. Reading the candidate list
+	// needs g_candidateMutex, so the rows are SNAPSHOTTED under the lock and the
+	// lock released before any dispatch - the discipline RefreshPanel uses.
+	//
+	// It is also strictly read-only. GetSurveyPercent reports; it writes nothing,
+	// which is what keeps the mod's "touches no save state" guarantee intact.
+	// ---------------------------------------------------------------------------
+
+	std::string ThreadIdString()
+	{
+		std::ostringstream out;
+		out << std::this_thread::get_id();
+		return out.str();
+	}
+
+	// The dispatch is asynchronous: the VM runs the call on its own schedule and
+	// hands the return value to this functor, so the answer cannot be read at the
+	// call site. What it logs is deliberately more than the float - the thread it
+	// arrives on decides whether the shipping sweep has to marshal, and the round
+	// trip decides whether a sweep can ride a refresh tick or must wait for a
+	// trigger.
+	class SurveyProbeCallback : public RE::BSScript::IStackCallbackFunctor
+	{
+	public:
+		SurveyProbeCallback(std::string a_label, std::chrono::steady_clock::time_point a_sent) :
+			_label(std::move(a_label)), _sent(a_sent)
+		{}
+
+		void CallQueued() override {}
+		void CallCanceled() override { REX::WARN("[surveyed] {} - CANCELED by the VM", _label); }
+		void StartMultiDispatch() override {}
+		void EndMultiDispatch() override {}
+		bool CanSave() override { return false; }
+
+		void operator()(RE::BSScript::Variable a_result) override
+		{
+			const auto ms = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - _sent)
+			                    .count();
+
+			if (a_result.is<float>()) {
+				const float pct = RE::BSScript::get<float>(a_result);
+				REX::INFO("[surveyed] {} -> {:.4f} = {} ({:.1f} ms, thread {})",
+					_label, pct, pct >= 1.0f ? "FULLY SURVEYED" : "incomplete",
+					ms, ThreadIdString());
+			} else {
+				// A non-float answer is as interesting as a float one: it means
+				// the call was accepted and returned something else, which is a
+				// different failure from silence.
+				REX::WARN("[surveyed] {} -> raw type {}, expected float ({:.1f} ms, thread {})",
+					_label, static_cast<std::uint32_t>(a_result.GetType().GetRawType()),
+					ms, ThreadIdString());
+			}
+		}
+
+	private:
+		std::string                           _label;
+		std::chrono::steady_clock::time_point _sent;
+	};
+
+	// One dispatch. The return says whether the VM ACCEPTED the call, not whether
+	// it answered - that arrives later, in the callback.
+	bool DispatchSurveyPercent(const RE::TESForm* a_form, const char* a_scriptType, std::string a_label)
+	{
+		const auto game = RE::GameVM::GetSingleton();
+		const auto vm = game ? game->GetVM() : nullptr;
+		if (!vm)
+			return false;
+
+		auto&      handles = vm->GetObjectHandlePolicy();
+		const auto handle = handles.GetHandleForObject(
+			RE::BSScript::GetVMTypeID<RE::BGSPlanet::PlanetData>(), a_form);
+		if (handle == handles.EmptyHandle()) {
+			REX::WARN("[surveyed] {} - no VM handle for the form (EmptyHandle)", a_label);
+			return false;
+		}
+
+		const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+			new SurveyProbeCallback(std::move(a_label), std::chrono::steady_clock::now())
+		};
+
+		// GetSurveyPercent takes no arguments, but the argument functor still has
+		// to exist and still has to return true or the VM treats the call as
+		// malformed.
+		return vm->DispatchMethodCall(
+			handle,
+			RE::BSFixedString(a_scriptType),
+			RE::BSFixedString("GetSurveyPercent"),
+			[](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; },
+			callback,
+			0);
+	}
+
+	void ProbeSurveyVM()
+	{
+		REX::INFO("[surveyed] ==== probe A: Papyrus Planet.GetSurveyPercent ====");
+		REX::INFO("[surveyed] probe thread {}", ThreadIdString());
+
+		// Step 1 - the VM. GameVM::GetSingleton() is the ONE Address Library id
+		// this route costs (ID::GameVM::Singleton, 937585). It is not free and
+		// must not be written up as if it were.
+		const auto game = RE::GameVM::GetSingleton();
+		if (!game) {
+			REX::WARN("[surveyed] step 1 FAILED: GameVM singleton is null - the address id "
+					  "did not resolve for this build");
+			return;
+		}
+		const auto vm = game->GetVM();
+		if (!vm) {
+			REX::WARN("[surveyed] step 1 FAILED: GameVM holds no IVirtualMachine");
+			return;
+		}
+		REX::INFO("[surveyed] step 1 OK: GameVM {} -> IVirtualMachine {}",
+			static_cast<const void*>(game), static_cast<const void*>(vm));
+
+		// Whatever the previous batch did to the VM shows up here, not in the run
+		// that caused it - the dispatches are asynchronous, so the aftermath is
+		// only visible next time round.
+		{
+			static std::uint32_t s_lastFlags{ 0 };
+			static bool          s_haveLast{ false };
+			if (s_haveLast)
+				REX::INFO("[surveyed] VM since the previous probe: overflowFlags {} -> {} ({}), "
+						  "overage suspend/running/stack = {}/{}/{}",
+					s_lastFlags, game->overflowFlags,
+					s_lastFlags == game->overflowFlags ? "unchanged - the batch did not stress it" :
+														 "CHANGED - the batch stressed it, keep the sweep rate low",
+					game->initialSuspendOverageTime, game->initialRunningOverageTime,
+					game->initialStackMemoryOverageTime);
+			s_lastFlags = game->overflowFlags;
+			s_haveLast = true;
+		}
+
+		// Step 2 - does the VM bind a script type to the PNDT form type? `Planet`
+		// is declared `Native Hidden` and Planet.pex ships in Starfield - Misc,
+		// so the type should be bound. If it is not, every step below is
+		// unreachable and the Papyrus route is dead.
+		const auto                                        typeID = RE::BSScript::GetVMTypeID<RE::BGSPlanet::PlanetData>();
+		RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> typeInfo;
+		if (!vm->GetScriptObjectType(typeID, typeInfo) || !typeInfo) {
+			REX::WARN("[surveyed] step 2 FAILED: no script object type bound to PNDT (typeID {}). "
+					  "The VM does not bind native-hidden types this way - the Papyrus route is "
+					  "dead, see PHASE6-SURVEY-STATE.md route 3.",
+				typeID);
+			return;
+		}
+		const std::string scriptType = SafeStr(typeInfo->name.c_str());
+		REX::INFO("[surveyed] step 2 OK: PNDT typeID {} binds script type '{}' (expected 'Planet')",
+			typeID, scriptType);
+
+		// Steps 3-5 - a handle and a dispatch per listed body.
+		//
+		// ★ Gate on the feed's uTargetType, never on "the row has an id". A POI
+		// or station row carries a REFR id; LookupPlanet would reject it anyway,
+		// but the gate is what records the rule. This is the v0.11.1 class of bug
+		// - Venus wore a station's badge because presence was read as identity.
+		struct Target
+		{
+			std::uint32_t id{ 0 };
+			std::string   name;
+			bool          isMoon{ false };
+		};
+		std::vector<Target> targets;
+		{
+			std::lock_guard lock{ g_candidateMutex };
+			targets.reserve(g_candidates.size());
+			for (const auto& row : g_candidates) {
+				if (row.type != kTargetTypePlanet || row.id == 0)
+					continue;
+				// A moon is a body whose GNAM names a parent planet - Sol is
+				// system 0, so presence is haveGalaxy, never a non-zero id.
+				targets.push_back(Target{ row.id, row.name,
+					row.haveGalaxy && row.galaxy.parentPlanetID != 0 });
+			}
+		}
+		// The lock is released HERE, before anything below touches the VM.
+
+		if (targets.empty()) {
+			REX::WARN("[surveyed] no planet rows to probe - run this in cruise, with the system listed");
+			return;
+		}
+
+		const auto moons = std::count_if(targets.begin(), targets.end(),
+			[](const Target& a_target) { return a_target.isMoon; });
+		REX::INFO("[surveyed] step 3-5: dispatching for {} body/bodies ({} moon(s)). A MOON must "
+				  "answer too - the multi-body case is what the feature exists for.",
+			targets.size(), moons);
+
+		const auto    batchStart = std::chrono::steady_clock::now();
+		std::uint32_t accepted = 0;
+		for (const auto& target : targets) {
+			const auto* form = LookupPlanet(target.id);
+			if (!form) {
+				REX::WARN("[surveyed] {:08X} '{}' is not a PNDT form - skipped", target.id, target.name);
+				continue;
+			}
+			if (DispatchSurveyPercent(form, scriptType.c_str(),
+					std::format("{:08X} {}{}", target.id, target.isMoon ? "moon " : "", target.name)))
+				++accepted;
+			else
+				REX::WARN("[surveyed] {:08X} '{}' - DispatchMethodCall returned FALSE",
+					target.id, target.name);
+		}
+
+		REX::INFO("[surveyed] {} of {} dispatch(es) accepted, queued in {:.1f} ms. Results follow "
+				  "ASYNCHRONOUSLY - if none arrive at all, the BSTThreadScrapFunction ABI is wrong "
+				  "and this is a CommonLibSF question, not a game one.",
+			accepted, targets.size(),
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - batchStart).count());
+		REX::INFO("[surveyed] ==== probe A end (dispatch phase) ====");
+	}
+
 	// The HUD offers only the handful of bodies it considers relevant - sitting
 	// in Jemison's gravity well it listed one of Alpha Centauri's eight moons -
 	// which makes for a list that is really "what is near", not "what is here".
@@ -3731,6 +3974,91 @@ namespace
 		}
 	};
 
+	// ---------------------------------------------------------------------------
+	// Phase 6 probe B: the body dossier riding InfoTargetProvider.
+	//
+	// `TargetOnlyData.PlanetCardInfo` is the one structure in the ship HUD movie
+	// that carries fSurveyPercent, and vanilla's own test for fully surveyed is
+	// `fSurveyPercent >= 1` (BodyDataInfo.as:164). It describes ONE body - the
+	// info target - so it cannot power the feature, but it is a free ORACLE: if
+	// probe A's float agrees with this one for the same body, the Papyrus native
+	// and the planet card are reading the same quantity. That is currently an
+	// inference from a shared name and nothing more.
+	//
+	// It also settles the ID SPACE. uBodyID is the star map's and the almanac's
+	// identity key, while the ship feed's is uniqueID - and uniqueID is a form id
+	// (PHASE1). Whether they are the same number decides whether a row join can
+	// be written at all, so both are logged side by side. ⚠ Do not write that
+	// join before reading this log: a small dense integer means uBodyID is a
+	// galaxy body index, and every join against it would be wrong.
+	//
+	// Turn it on with bProbeStarmapFeed=true and sStarmapFeed=InfoTargetProvider.
+	// ---------------------------------------------------------------------------
+	bool GetPlanetCardInfo(RE::Scaleform::GFx::Value& a_data, RE::Scaleform::GFx::Value& a_card)
+	{
+		if (!a_data.IsObject())
+			return false;
+		// Vanilla subscribes the provider straight into its TargetOnlyData
+		// member (SpaceshipHudMenu.as:416), so the dossier should sit at the top
+		// of the payload - but that nesting is read off decompiled source, so
+		// try the wrapped shape too rather than concluding "absent".
+		if (a_data.GetMember("PlanetCardInfo", &a_card) && a_card.IsObject())
+			return true;
+		RE::Scaleform::GFx::Value only;
+		if (a_data.GetMember("TargetOnlyData", &only) && only.IsObject() &&
+			only.GetMember("PlanetCardInfo", &a_card) && a_card.IsObject())
+			return true;
+		return false;
+	}
+
+	// Logs the dossier's decisive fields, and only when they CHANGE. The feed
+	// publishes at UI rate; a line per publish would bury the log and say nothing
+	// a line per change does not - and the question this answers is whether
+	// fSurveyPercent MOVES live while a scan completes from the pilot seat.
+	void WatchPlanetCard(RE::Scaleform::GFx::Value& a_data)
+	{
+		RE::Scaleform::GFx::Value card;
+		if (!GetPlanetCardInfo(a_data, card))
+			return;
+
+		const auto field = [&](const char* a_name) -> std::string {
+			RE::Scaleform::GFx::Value member;
+			return card.GetMember(a_name, &member) ? DescribeValue(member) : "-";
+		};
+
+		auto line = std::format("uBodyID={} sBodyName={} fSurveyPercent={} iType={} iScanLevel={}",
+			field("uBodyID"), field("sBodyName"), field("fSurveyPercent"),
+			field("iType"), field("iScanLevel"));
+
+		// The feed callbacks land on whatever worker is free, so the last-seen
+		// line is shared state like any other.
+		static std::mutex  s_mutex;
+		static std::string s_last;
+		{
+			std::lock_guard lock{ s_mutex };
+			if (line == s_last)
+				return;
+			s_last = std::move(line);
+			REX::INFO("[surveyed] card {}", s_last);
+		}
+	}
+
+	// Reads one element of a feed array. GFx::Value exposes no GetElement, but
+	// VisitElements takes an index and a count, so a one-element visit is the
+	// public way to reach a single entry.
+	class SingleElement : public RE::Scaleform::GFx::Value::ArrayVisitor
+	{
+	public:
+		RE::Scaleform::GFx::Value value;
+		bool                      found{ false };
+
+		void Visit(std::uint32_t, const RE::Scaleform::GFx::Value& a_value) override
+		{
+			value = a_value;
+			found = true;
+		}
+	};
+
 	// Logs the whole shape of whatever the star map feed delivers, once per
 	// press of the capture trigger rather than continuously - it fires as often
 	// as any other feed and would otherwise bury the log.
@@ -3740,6 +4068,19 @@ namespace
 		void Call(const Params& a_params) override
 		{
 			const auto seen = g_starmapCallbacks.fetch_add(1, std::memory_order_relaxed) + 1;
+
+			// The payload comes out first: the card watch runs on EVERY publish
+			// (it logs only on change), while the full dump waits for a keypress.
+			RE::Scaleform::GFx::Value data;
+			bool                      haveData = false;
+			if (a_params.argCount >= 1 && a_params.args) {
+				RE::Scaleform::GFx::Value event = a_params.args[0];
+				if (!event.IsObject() || !event.GetMember("data", &data))
+					data = event;
+				haveData = true;
+				WatchPlanetCard(data);
+			}
+
 			if (!g_starmapDumpRequested.exchange(false, std::memory_order_acq_rel)) {
 				if (seen == 1)
 					REX::INFO("[starmap] feed is LIVE outside the map - {} callback(s) so far. "
@@ -3749,18 +4090,57 @@ namespace
 			}
 
 			REX::INFO("[starmap] ==== dump after {} callback(s) ====", seen);
-			if (a_params.argCount < 1 || !a_params.args) {
+			if (!haveData) {
 				REX::WARN("[starmap] callback carried no argument");
 				return;
 			}
 
-			RE::Scaleform::GFx::Value event = a_params.args[0];
-			RE::Scaleform::GFx::Value data;
-			if (!event.IsObject() || !event.GetMember("data", &data))
-				data = event;
-
 			LevelCollector top{ "[starmap] payload", nullptr };
 			data.VisitMembers(&top);
+
+			// ★ That dump is FLAT: LevelCollector only queues children when it is
+			// given somewhere to queue them, and this one is not. No capture this
+			// project has ever taken could see a nested field - which is why
+			// PlanetCardInfo has to be descended into by name rather than waited
+			// for.
+			RE::Scaleform::GFx::Value card;
+			if (GetPlanetCardInfo(data, card)) {
+				REX::INFO("[starmap] --- PlanetCardInfo: the body dossier ---");
+				LevelCollector cardVisitor{ "[starmap] pci", nullptr };
+				card.VisitMembers(&cardVisitor);
+			} else {
+				REX::INFO("[starmap] no PlanetCardInfo on this payload - either the subscribed feed "
+						  "is not InfoTargetProvider, or the engine leaves the member empty here "
+						  "(which would kill the dossier route outright)");
+			}
+
+			// The info target's index and the entry it points at, side by side
+			// with the dossier above: this pairing is what says whether uBodyID
+			// and uniqueID are the same number for the same body.
+			{
+				RE::Scaleform::GFx::Value idxVal;
+				const auto                index = data.GetMember("iInfoTargetIndex", &idxVal) ?
+				                                      static_cast<std::int32_t>(AsNumber(idxVal)) :
+				                                      -1;
+				RE::Scaleform::GFx::Value entries;
+				if (index >= 0 && GetEntryArray(data, entries) && entries.IsArray()) {
+					SingleElement one;
+					entries.VisitElements(&one, static_cast<std::uint32_t>(index), 1);
+					if (one.found && one.value.IsObject()) {
+						RE::Scaleform::GFx::Value member;
+						const auto                entryField = [&](const char* a_name) -> std::string {
+                            return one.value.GetMember(a_name, &member) ? DescribeValue(member) : "-";
+						};
+						REX::INFO("[starmap] iInfoTargetIndex={} -> entry uniqueID={} uTargetType={} name={}",
+							index, entryField("uniqueID"), entryField("uTargetType"),
+							entryField("name"));
+					} else {
+						REX::INFO("[starmap] iInfoTargetIndex={} but the entry could not be read", index);
+					}
+				} else {
+					REX::INFO("[starmap] iInfoTargetIndex={} (no entry to pair it with)", index);
+				}
+			}
 
 			// The bodies are expected to sit in an array much like the target
 			// feed's; dump every entry, since which one is a moon is the point.
@@ -7487,6 +7867,14 @@ namespace
 				DumpShipHudDataModel();
 		}
 
+		// Phase 6 probe A. Here rather than in a feed callback on purpose - see
+		// the header above ProbeSurveyVM. The single-winner exchange is the same
+		// protection the dump gets: this task can land on two threads in one
+		// frame, and two batches of VM dispatches at once is not a thing to find
+		// out about the hard way.
+		if (g_surveyVmProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
+			ProbeSurveyVM();
+
 		if (bLogHeartbeat.GetValue())
 			LogHeartbeat();
 	}
@@ -7515,6 +7903,15 @@ namespace
 			uMaxInputLines.GetValue(), bLogMenus.GetValue(), bLogHeartbeat.GetValue(),
 			fHeartbeatSeconds.GetValue(), bVerifyVTableID.GetValue(), bSuppressThrottleTest.GetValue());
 		REX::INFO("config: bSurveyCruiseKeys={}", bSurveyCruiseKeys.GetValue());
+
+		if (bProbeSurveyVM.GetValue())
+			REX::INFO("[surveyed] probe A ON - in cruise, press the scanner key to dispatch "
+					  "Planet.GetSurveyPercent for every listed body. Read the '[surveyed]' lines: "
+					  "step 2 must name 'Planet', and a MOON must answer with a float.");
+		if (bProbeStarmapFeed.GetValue() && sStarmapFeed.GetValue() == "InfoTargetProvider")
+			REX::INFO("[surveyed] probe B ON - '[surveyed] card' lines print whenever the info "
+					  "target's dossier changes; the scanner key dumps PlanetCardInfo in full "
+					  "beside the entry it belongs to.");
 
 		if (!bWheelFilter.GetValue())
 			REX::WARN("bWheelFilter is off - scrolling the list will also swing your point of view");
