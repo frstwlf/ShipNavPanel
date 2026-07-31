@@ -313,6 +313,14 @@ namespace
 	// back? It is the only per-body survey read that covers a whole system, and
 	// nothing about the call is verified. On: the scanner key runs the probe.
 	REX::TIniSetting<bool> bProbeSurveyVM{ "Recon", "bProbeSurveyVM", false };
+	// How many bodies one press dispatches for. ⚠ Defaults to ONE on purpose.
+	// DispatchMethodCall is reached through a vtable slot the compiler derives
+	// from CommonLibSF's declaration of IVirtualMachine - if that declaration is
+	// missing or has gained a virtual above slot 0x30, the call lands somewhere
+	// else entirely with the wrong arguments. Finding that out once is a
+	// diagnosis; finding it out twenty times in a frame is a crash. Prove one
+	// call is survivable, then set this to 0 for the whole system.
+	REX::TIniSetting<std::uint32_t> uProbeSurveyMaxBodies{ "Recon", "uProbeSurveyMaxBodies", 1 };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -3708,9 +3716,23 @@ namespace
 
 		const auto moons = std::count_if(targets.begin(), targets.end(),
 			[](const Target& a_target) { return a_target.isMoon; });
-		REX::INFO("[surveyed] step 3-5: dispatching for {} body/bodies ({} moon(s)). A MOON must "
-				  "answer too - the multi-body case is what the feature exists for.",
-			targets.size(), moons);
+
+		// The cap exists because the first call is the dangerous one - see the
+		// note on uProbeSurveyMaxBodies. Moons sort to the front once the cap is
+		// lifted off 1, so a small cap still reaches the case the feature is for
+		// rather than spending itself on whichever planet happened to be first.
+		const auto cap = uProbeSurveyMaxBodies.GetValue();
+		if (cap != 1)
+			std::stable_partition(targets.begin(), targets.end(),
+				[](const Target& a_target) { return a_target.isMoon; });
+		const auto planned = cap == 0 ? targets.size() : std::min<std::size_t>(cap, targets.size());
+
+		REX::INFO("[surveyed] step 3-5: {} listed body/bodies ({} moon(s)); dispatching for {}. "
+				  "A MOON must answer too - the multi-body case is what the feature exists for, "
+				  "so once one call is proven survivable set uProbeSurveyMaxBodies=0 for all.",
+			targets.size(), moons, planned);
+
+		targets.resize(planned);
 
 		const auto    batchStart = std::chrono::steady_clock::now();
 		std::uint32_t accepted = 0;

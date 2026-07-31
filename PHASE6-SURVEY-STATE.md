@@ -240,6 +240,7 @@ strictly read-only, so the mod's "writes no save state" guarantee is intact.
 ```
 [Recon]
 bProbeSurveyVM=true
+uProbeSurveyMaxBodies=1
 bProbeStarmapFeed=true
 sStarmapFeed=InfoTargetProvider
 ```
@@ -247,6 +248,14 @@ sStarmapFeed=InfoTargetProvider
 Then get into cruise with the system listed, E-target a planet, and press the scanner key
 once. Everything lands in the log under **`[surveyed]`** and `[starmap]`.
 *(`[survey]` was already taken by the cruise-key survey — hence `[surveyed]`.)*
+
+⚠ **`uProbeSurveyMaxBodies` defaults to 1 on purpose.** `DispatchMethodCall` is reached
+through a vtable slot the compiler derives from CommonLibSF's declaration of
+`IVirtualMachine`; if that declaration has drifted — a missing or added virtual above slot
+0x30 — the call lands somewhere else entirely with the wrong arguments. Finding that out
+once is a diagnosis; finding it out twenty times in a frame is a crash. **First press: one
+body. Once that comes back safely, set it to 0 for the whole system** (moons sort first, so
+a small cap still reaches the case the feature exists for).
 
 **PROBE A — `[Recon] bProbeSurveyVM`. Decisive.** Runs from the **per-frame task**, not a
 feed callback — a feed callback is already inside Scaleform's locks, and reaching into the
