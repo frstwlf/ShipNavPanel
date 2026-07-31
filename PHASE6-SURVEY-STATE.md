@@ -1,12 +1,12 @@
 # PHASE 6 — Fully-surveyed state on panel rows
 
-**Status (2026-08-01, v0.19.2): ✅ ROUTE 1 CONFIRMED IN GAME. `Planet.GetSurveyPercent()`
-dispatched from C++ and returned `0.3478` for Masada I. The dossier is live in cruise,
-`uBodyID` is a form id, and the VM handle encodes the same form id — so every id in this
-feature is one number. Three questions remain for flight 3: does a MOON answer, does
-latency scale with N, and does the Papyrus float equal the number the card draws (now
-checked automatically). No feature code written yet.** Recon done 2026-07-31, offline, from
-the decompressed Interface BA2, the
+**Status (2026-08-01, v0.19.2): ✅ ALL GATES PASSED — THE FEATURE IS CLEARED TO BUILD.
+Three probe flights settled every unknown: `Planet.GetSurveyPercent()` dispatches from C++
+and answers for planets AND moons; a 100 % body reads exactly `1.0`; the Papyrus float
+equals the number the vanilla card draws (`ORACLE MATCH`); ten bodies cost 0.4 ms of frame
+time and settle in ~86 ms; and every id in this feature — row id, body-table key, VM
+handle, dossier `uBodyID` — is the same form id. No feature code written yet.** Recon done
+2026-07-31, offline, from the decompressed Interface BA2, the
 decompiled AS3, the base Papyrus corpus, CommonLibSF, `main.cpp`, and — the one new
 modality this project had never used — **raw string-table greps of `Starfield.exe`**.
 
@@ -127,7 +127,68 @@ Four things that change the shipping design:
    cruising (bounded by where the player already goes), and consider whether a survey-state
    cache makes a second bind of the same body unnecessary.
 
-### Flight 3 — the remaining three questions, one press
+## 0d. THIRD FLIGHT — 2026-08-01, v0.19.2 — ✅ **ALL GATES PASSED, THE FEATURE IS CLEARED TO BUILD**
+
+Ten bodies, one press. Every remaining question answered, plus two facts nobody asked for.
+
+```
+10 of 10 dispatch(es) accepted, queued in 0.4 ms
+0005E1E4 moon Masada VI-a -> 0.3478 = incomplete      (52.6 ms, thread 3352)
+0005E1DA Masada I         -> 0.3478 = incomplete      (52.7 ms, thread 3352)
+0005E1DB Masada II        -> 0.3333 = incomplete      (52.7 ms, thread 3352)
+0005E1DC Masada III       -> 0.1311 = incomplete      (53.1 ms, thread 3352)
+0005E1DD Masada IV        -> 0.2667 = incomplete      (85.9 ms, thread 16168)
+0005E1DF Masada V         -> 1.0000 = FULLY SURVEYED  (85.9 ms, thread 16168)
+0005E1E3 Masada VI        -> 0.4000 = incomplete      (85.9 ms, thread 16168)
+ORACLE MATCH: the card says 0.4000 for the same body, Papyrus says 0.4000 - same quantity, confirmed
+```
+
+| Question | Answer |
+|---|---|
+| **Does a MOON answer?** | **YES.** `moon Masada VI-a -> 0.3478`. The multi-body case the feature exists for is reachable. |
+| **Does latency scale with N?** | **No — it is VM tick granularity, not per-call cost.** Ten dispatches queued in **0.4 ms** of our thread; results came back in **two batches** (four at ~52.7 ms, six at ~85.9 ms), i.e. two VM update ticks ~33 ms apart. One body took 17 ms, ten take 86 ms. A whole-system sweep costs **0.4 ms of frame time** and settles in under a tenth of a second. |
+| **Is `GetSurveyPercent` the quantity the card draws?** | **YES — `ORACLE MATCH`, 0.4000 vs 0.4000.** §2.1 is closed: it is no longer an inference from a shared name. |
+| **Does a 100 % body read as 1.0?** | **YES — Masada V returned exactly `1.0000`.** The state the feature actually draws was observed live, not extrapolated. |
+
+### Two facts the flight handed over unasked
+
+**1. `uBodyID == form id`, now PROVEN rather than inferred.** The dispatch logged every
+body's real form id, and all three of probe B's earlier card readings match exactly:
+
+| Card `uBodyID` | = hex | Form id from the sweep |
+|---|---|---|
+| 385501 | `0x5E1DD` | `0005E1DD` Masada IV ✓ |
+| 385507 | `0x5E1E3` | `0005E1E3` Masada VI ✓ |
+| 385509 | `0x5E1E5` | `0005E1E5` Masada VII ✓ |
+
+Together with the handle encoding (`0xffff0005e1da` = `0xFFFF << 32 | formID`, confirmed
+across all ten), **every id in this feature is the same number**: the panel row's
+`Candidate::id`, `g_bodyTable`'s key, the VM handle, and the dossier's `uBodyID`. No
+translation anywhere.
+
+**2. ⭐ The one body already bound was the one body at 100 %.** Nine bodies logged
+`no object bound to this handle`; **Masada V logged `already bound (nothing created)` — and
+Masada V is the fully-surveyed one.** The obvious reading is that vanilla binds a Planet
+object when the player actually surveys a body, its own survey machinery having called this
+very function on it.
+
+That materially shrinks §0c's save concern: **the bodies a player engages with are already
+bound by vanilla, so a sweep's incremental cost is only bodies they never touched.** It is
+n=1, so it is a strong hypothesis rather than a fact — but it points the pre-ship
+measurement at the right question, and it is a good sign that our route is the same route
+vanilla walks.
+
+### Settled numbers for the implementation
+
+- Sweep cost: **0.4 ms on the calling thread** for ten bodies; results within **~86 ms**.
+  A trigger-driven sweep is free; even 1 Hz would be invisible.
+- **Results arrive on threads that are neither the caller nor each other** (3352 and
+  16168 here, dispatched from 11824). The store must be lock-protected and written from
+  the callback, read at render time.
+- Survey percents are real fractions (`0.1311`, `0.2667`, `0.3333`, `0.3478`, `0.4`, `1.0`)
+  — only `>= 1.0` draws.
+
+### Flight 3 — the remaining three questions, one press *(completed; see above)*
 
 Set `uProbeSurveyMaxBodies=0` and E-target a body before pressing. That answers:
 
@@ -143,6 +204,10 @@ Set `uProbeSurveyMaxBodies=0` and E-target a body before pressing. That answers:
 ## 1. Verdict
 
 **Feasible, and the render half is nearly free. The data half hangs on one unproven ABI.**
+
+*(§1–§9 below were written before the flights. §0b–§0d are the measurements; where they
+disagree with a prediction here, the measurement wins. Nothing has been overturned — the
+data half's "one unproven ABI" is now proven, and route 1 is confirmed.)*
 
 | Half | Verdict |
 |---|---|
