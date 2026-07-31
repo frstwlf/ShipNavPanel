@@ -425,6 +425,12 @@ namespace
 	std::atomic<bool>          g_starmapDumpRequested{ false };
 	std::atomic<bool>          g_dumpPlanetsRequested{ false };
 	std::atomic<bool>          g_surveyVmProbeRequested{ false };
+	// Last body dossier the info-target feed published, kept so probe A's float
+	// can be checked against the number the vanilla planet card would draw for
+	// the same body. That the two are the same quantity is an inference from a
+	// shared name and a shared >= 1 test; this is what turns it into a reading.
+	std::atomic<std::uint32_t> g_cardBodyID{ 0 };
+	std::atomic<float>         g_cardPercent{ -1.0f };
 	std::atomic<std::uint32_t> g_starmapCallbacks{ 0 };
 	std::atomic<bool> g_interposeInstalled{ false };
 	std::atomic<bool> g_interposeFailed{ false };
@@ -3561,8 +3567,8 @@ namespace
 	class SurveyProbeCallback : public RE::BSScript::IStackCallbackFunctor
 	{
 	public:
-		SurveyProbeCallback(std::string a_label, std::chrono::steady_clock::time_point a_sent) :
-			_label(std::move(a_label)), _sent(a_sent)
+		SurveyProbeCallback(std::string a_label, std::uint32_t a_formID, std::chrono::steady_clock::time_point a_sent) :
+			_label(std::move(a_label)), _formID(a_formID), _sent(a_sent)
 		{}
 
 		void CallQueued() override {}
@@ -3582,6 +3588,21 @@ namespace
 				REX::INFO("[surveyed] {} -> {:.4f} = {} ({:.1f} ms, thread {})",
 					_label, pct, pct >= 1.0f ? "FULLY SURVEYED" : "incomplete",
 					ms, ThreadIdString());
+
+				// The oracle. If the info-target feed happens to be describing
+				// this same body, its fSurveyPercent is the number the vanilla
+				// planet card draws - so agreeing with it is what proves the
+				// Papyrus native reads the same quantity the card does, rather
+				// than merely something with a similar name.
+				if (_formID != 0 && g_cardBodyID.load(std::memory_order_acquire) == _formID) {
+					const float card = g_cardPercent.load(std::memory_order_acquire);
+					const bool  agree = std::fabs(card - pct) < 0.001f;
+					REX::INFO("[surveyed] ORACLE {}: the card says {:.4f} for the same body, "
+							  "Papyrus says {:.4f}{}",
+						agree ? "MATCH" : "MISMATCH", card, pct,
+						agree ? " - same quantity, confirmed" :
+								" - DIFFERENT QUANTITIES, the whole plan rests on these agreeing");
+				}
 			} else {
 				// A non-float answer is as interesting as a float one: it means
 				// the call was accepted and returned something else, which is a
@@ -3594,6 +3615,7 @@ namespace
 
 	private:
 		std::string                           _label;
+		std::uint32_t                         _formID{ 0 };
 		std::chrono::steady_clock::time_point _sent;
 	};
 
@@ -3612,7 +3634,7 @@ namespace
 	// Both dispatch overloads are tried, handle first then object, because they
 	// are different vtable slots (0x30 and 0x31) and a failure in one is a
 	// different fact from a failure in both.
-	bool DispatchSurveyPercent(const RE::TESForm* a_form, const char* a_scriptType, std::string a_label)
+	bool DispatchSurveyPercent(const RE::TESForm* a_form, std::uint32_t a_formID, const char* a_scriptType, std::string a_label)
 	{
 		const auto game = RE::GameVM::GetSingleton();
 		const auto vm = game ? game->GetVM() : nullptr;
@@ -3675,7 +3697,7 @@ namespace
 
 		{
 			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-				new SurveyProbeCallback(a_label + " [by handle]", std::chrono::steady_clock::now())
+				new SurveyProbeCallback(a_label + " [by handle]", a_formID, std::chrono::steady_clock::now())
 			};
 			if (vm->DispatchMethodCall(handle, RE::BSFixedString(a_scriptType),
 					RE::BSFixedString("GetSurveyPercent"), args, callback, 0)) {
@@ -3689,7 +3711,7 @@ namespace
 		// shared verdict.
 		{
 			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-				new SurveyProbeCallback(a_label + " [by object]", std::chrono::steady_clock::now())
+				new SurveyProbeCallback(a_label + " [by object]", a_formID, std::chrono::steady_clock::now())
 			};
 			if (vm->DispatchMethodCall(object, RE::BSFixedString("GetSurveyPercent"),
 					args, callback, 0)) {
@@ -3828,7 +3850,7 @@ namespace
 				REX::WARN("[surveyed] {:08X} '{}' is not a PNDT form - skipped", target.id, target.name);
 				continue;
 			}
-			if (DispatchSurveyPercent(form, scriptType.c_str(),
+			if (DispatchSurveyPercent(form, target.id, scriptType.c_str(),
 					std::format("{:08X} {}{}", target.id, target.isMoon ? "moon " : "", target.name)))
 				++accepted;
 			else
@@ -4133,6 +4155,18 @@ namespace
 			RE::Scaleform::GFx::Value member;
 			return card.GetMember(a_name, &member) ? DescribeValue(member) : "-";
 		};
+
+		// Kept numerically as well, for probe A's oracle check. uBodyID is a
+		// FORM ID - measured 2026-08-01, not assumed: the values land in the
+		// same block as the PNDT ids the mod already resolves, where a galaxy
+		// body index would have been a single digit.
+		{
+			RE::Scaleform::GFx::Value member;
+			if (card.GetMember("uBodyID", &member))
+				g_cardBodyID.store(static_cast<std::uint32_t>(AsNumber(member)), std::memory_order_release);
+			if (card.GetMember("fSurveyPercent", &member))
+				g_cardPercent.store(static_cast<float>(AsNumber(member)), std::memory_order_release);
+		}
 
 		auto line = std::format("uBodyID={} sBodyName={} fSurveyPercent={} iType={} iScanLevel={}",
 			field("uBodyID"), field("sBodyName"), field("fSurveyPercent"),

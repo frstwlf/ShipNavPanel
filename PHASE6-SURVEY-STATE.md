@@ -1,9 +1,11 @@
 # PHASE 6 — Fully-surveyed state on panel rows
 
-**Status (2026-08-01, v0.19.1): FIRST FLIGHT FLOWN. Probe B fully answered — the dossier is
-live in cruise and `uBodyID` is a form id, so the row join is writable. Probe A cleared its
-kill-gate (PNDT binds `'Planet'`) and then failed on a missing object bind, now implemented;
-second flight pending.** No feature code written yet. Recon done 2026-07-31, offline, from
+**Status (2026-08-01, v0.19.2): ✅ ROUTE 1 CONFIRMED IN GAME. `Planet.GetSurveyPercent()`
+dispatched from C++ and returned `0.3478` for Masada I. The dossier is live in cruise,
+`uBodyID` is a form id, and the VM handle encodes the same form id — so every id in this
+feature is one number. Three questions remain for flight 3: does a MOON answer, does
+latency scale with N, and does the Papyrus float equal the number the card draws (now
+checked automatically). No feature code written yet.** Recon done 2026-07-31, offline, from
 the decompressed Interface BA2, the
 decompiled AS3, the base Papyrus corpus, CommonLibSF, `main.cpp`, and — the one new
 modality this project had never used — **raw string-table greps of `Starfield.exe`**.
@@ -83,6 +85,60 @@ result to hope for.
 `uProbeSurveyMaxBodies=1` meant the failure cost one dispatch instead of ten. Worth keeping
 as the pattern for any future ABI probe: **the first call through an unverified vtable slot
 is the dangerous one, and it should be alone.**
+
+## 0c. SECOND FLIGHT — 2026-08-01, v0.19.1 — ✅ **ROUTE 1 CONFIRMED**
+
+```
+step 1 OK: GameVM 0x7ff6adb97b00 -> IVirtualMachine 0x2af1e2b3900 (frozen=false, completely=false)
+step 2 OK: PNDT typeID 186 binds script type 'Planet' (expected 'Planet')
+0005E1DA Masada I - handle 0xffff0005e1da (loaded=true available=true)
+0005E1DA Masada I - FindBoundObject: no object bound to this handle
+0005E1DA Masada I - CreateObject + BindObject: ok
+0005E1DA Masada I - dispatch BY HANDLE accepted (vtable slot 0x30)
+0005E1DA Masada I [by handle] -> 0.3478 = incomplete (17.4 ms, thread 14688)
+```
+
+**A float came back from Papyrus.** The diagnosis was exactly right — `FindBoundObject`
+reported nothing bound, the bind fixed it, and the **handle overload (slot `0x30`) works**
+once an object exists. `DispatchMethodCall` is reachable from an SFSE plugin; the vtable
+ordinal and the `BSTThreadScrapFunction` ABI are both fine as CommonLibSF declares them.
+
+Four things that change the shipping design:
+
+1. **The handle encodes the form id.** `0xffff0005e1da` = `0xFFFF << 32 | 0x0005E1DA`. No
+   translation table is needed anywhere in this feature — the panel row's id, `g_bodyTable`'s
+   key, the VM handle and the card's `uBodyID` are all the same number.
+2. **⚠ The result arrives on a DIFFERENT thread** — dispatched from 14584, answered on
+   14688. The sweep must marshal its results into a mod-side store rather than assuming it
+   can touch anything from the callback. (That store is read at render time anyway, so this
+   costs nothing — it just has to be written as a lock-protected store from the start.)
+3. **17.4 ms round trip for one call.** Queuing was 0.1 ms, so that is the VM's own
+   scheduling latency, not per-call cost — Papyrus runs on its update tick. Whether it
+   scales with N is the open question, and it decides sweep rate. Not a blocker either way:
+   only the 100 % state draws, so a late read renders as lateness.
+4. **⚠ NEW DESIGN QUESTION — the bind is not free at scale.** Every body needed
+   `CreateObject` + `BindObject`; nothing was bound already. A whole-system sweep therefore
+   binds a Planet object per planet form, and across a playthrough of 100+ systems that
+   accumulates in the VM's tables and, plausibly, in the save. `Planet` has no script
+   variables so each is tiny, and vanilla binds Planet objects itself whenever its own
+   survey quests run — but "this mod writes nothing" is a shipped guarantee and this quietly
+   weakens it. **Assess before shipping the sweep:** save size before/after sweeping several
+   systems. Mitigation if it matters: sweep only bodies the panel actually lists while
+   cruising (bounded by where the player already goes), and consider whether a survey-state
+   cache makes a second bind of the same body unnecessary.
+
+### Flight 3 — the remaining three questions, one press
+
+Set `uProbeSurveyMaxBodies=0` and E-target a body before pressing. That answers:
+
+- **Does a MOON answer?** Masada VI-a is in the list. This is the case the feature exists
+  for and it is still formally unproven.
+- **Does latency scale with N?** Ten dispatches at once against one at 17.4 ms.
+- **Is `GetSurveyPercent` the same quantity the card draws?** v0.19.2 checks this
+  automatically: `WatchPlanetCard` now keeps the dossier's `uBodyID`/`fSurveyPercent`
+  numerically, and when the probe's answer comes back for that same body it logs
+  `ORACLE MATCH` or `ORACLE MISMATCH` with both numbers. That closes §2.1 — currently an
+  inference from a shared name and a shared `>= 1` test.
 
 ## 1. Verdict
 
