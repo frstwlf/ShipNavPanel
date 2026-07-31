@@ -91,6 +91,38 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
+- [ ] **PHASE 6 — fully-surveyed state on the rows.** Recon complete and
+      adversarially verified 2026-07-31; the plan is
+      [PHASE6-SURVEY-STATE.md](PHASE6-SURVEY-STATE.md) and **it is the
+      reference**, not this entry. In short: a body's fully-surveyed state
+      shows as a colour filling the row's 20 px **icon cell**, behind the icon
+      when there is one — only the 100 % state draws, incomplete and partial
+      stay blank.
+
+      **Feasible; the render half is nearly free and the data half hangs on one
+      unproven ABI.** `RefreshPanel` already runs on the HIGH feed and already
+      reads mod-side stores at render time, so a `formID -> bool` map needs no
+      invalidation at all and "several rows flip at once" costs nothing. The
+      only data source that covers a whole system is the native Papyrus
+      `Planet.GetSurveyPercent()` — every UI feed that carries survey state
+      describes exactly ONE body.
+
+      **v0.19.0 ships the two probes that gate it** (both default OFF,
+      read-only, off the shipping path — see the ini):
+      `bProbeSurveyVM` dispatches `Planet.GetSurveyPercent` for every listed
+      body and logs which step of the chain breaks; `bProbeStarmapFeed` +
+      `sStarmapFeed=InfoTargetProvider` watches the body dossier the vanilla
+      planet card draws. Log tag `[surveyed]` — `[survey]` was already taken by
+      the cruise-key survey.
+
+      **The single decisive unknown:** can this plugin dispatch
+      `IVirtualMachine::DispatchMethodCall` at all? Its vtable ordinal comes
+      from a comment, its argument functor is a `BSTThreadScrapFunction`
+      aliased to `std::function` with no size assertion, and no SFSE code here
+      has ever exercised it. If probe A answers with a float for a **moon** as
+      well as a planet, build the feature; if step 2 fails, the Papyrus route is
+      dead and the answer is Ghidra.
+
 - [ ] **Remaining blip-pass eyeballs** — cases the passes cover by design
       (v0.8.6–0.8.13, checklist in
       [PHASE3-BLIP-PLAN.md §7–10](PHASE3-BLIP-PLAN.md)) that were never
