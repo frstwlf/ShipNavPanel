@@ -11,11 +11,10 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v0.18.2. Everything below is confirmed in game unless marked otherwise
-(open: v0.18.0's reveal-state labels await their specific case — a spawned
-encounter POI that vanilla names from the first frame; compare row vs
-marker. The duplicate-name work is fully confirmed on the tester's baked
-two-contact save, 2026-07-30).**
+**v0.18.2 — everything below is confirmed in game.** The v0.18.x arc
+closed 2026-07-31: the duplicate-name work on the baked two-contact save,
+and the reveal-state labels across several random POI spawns in normal
+play, every one wearing its proper name.
 
 - **The panel**: in cruise the scanner key opens/closes it, the wheel moves
   the highlight (spliced away from the camera), `TogglePOV` — or anything in
@@ -649,4 +648,6 @@ Each of these cost real time; the reasoning is in the findings docs.
   from the flag. The flag remains only the fallback reading for entries
   without the state field. (The starmap's nameplates use the flag —
   `GetSpacePOIName` — so the two vanilla surfaces genuinely differ; the
-  panel mirrors the HUD, its own surface.)
+  panel mirrors the HUD, its own surface.) **Confirmed in game
+  2026-07-31: several random POI spawns across normal play, every row
+  wearing its proper name.**
