@@ -1,8 +1,10 @@
 # PHASE 6 — Fully-surveyed state on panel rows
 
-**Status: feasibility assessed, plan drafted, PROBES BUILT AND AWAITING THEIR FIRST
-FLIGHT (v0.19.0). No feature code written — one in-game probe session gates the whole
-design.** Recon done 2026-07-31, offline, from the decompressed Interface BA2, the
+**Status (2026-08-01, v0.19.1): FIRST FLIGHT FLOWN. Probe B fully answered — the dossier is
+live in cruise and `uBodyID` is a form id, so the row join is writable. Probe A cleared its
+kill-gate (PNDT binds `'Planet'`) and then failed on a missing object bind, now implemented;
+second flight pending.** No feature code written yet. Recon done 2026-07-31, offline, from
+the decompressed Interface BA2, the
 decompiled AS3, the base Papyrus corpus, CommonLibSF, `main.cpp`, and — the one new
 modality this project had never used — **raw string-table greps of `Starfield.exe`**.
 
@@ -16,6 +18,71 @@ icon**, using the vanilla planet card's own surveyed colours. It must update liv
 pilot seat, including when several bodies complete in quick succession.
 
 ---
+
+## 0b. FIRST FLIGHT — 2026-08-01, v0.19.0, Masada system
+
+**Probe B answered everything it was built to ask. Probe A cleared its own kill-gate and
+then failed on a step the probe itself had skipped — diagnosed, fixed in v0.19.1, awaiting
+a second flight.** No crash, no warning, `overflowFlags 0 -> 0`.
+
+### Probe B — settled, and better than expected
+
+| Question | Answer |
+|---|---|
+| Is `PlanetCardInfo` populated in **plain cruise, scanner closed**? | **YES.** This was an assertion in PHASE5 and is now a measurement. Contradiction **C3 resolves in favour of live-in-cruise** — the member is filled, not just the payload published. |
+| Is `fSurveyPercent` real and per-body? | **YES**, and fractional: Masada VI `0.4`, Masada VII `0.4`, Masada IV `0.266667`. |
+| **Is `uBodyID` a form id or a galaxy body index?** | **A FORM ID.** Observed `385501 / 385507 / 385509`, in the same tight block as the confirmed PNDT form id `0x5E1DA` = `385498` (Masada I) from the same system. A galaxy index would have been one of `1…9, 15` — the system's own planet ids, logged on the `[galaxy]` lines two seconds earlier. **The row join is writable.** |
+| Does the dossier follow the target? | **YES** — five change-lines across the session as the tester moved between bodies. |
+
+Two incidentals worth keeping: **`iType=2` for a planet** (the `BT_*` enum, where `BT_MOON=3`
+— *not* the feed's `TT_*`), and **`iScanLevel=-1`**, which is no `SL_*` value at all. The
+card's text gates all read `iScanLevel >= SL_MINIMAL`, so `-1` is "nothing known" and is
+consistent with unvisited bodies. Do not treat `-1` as an enum member.
+
+### Probe A — the kill-gate PASSED
+
+```
+[surveyed] step 1 OK: GameVM 0x7ff6adb97b00 -> IVirtualMachine 0x2333d4fc300
+[surveyed] step 2 OK: PNDT typeID 186 binds script type 'Planet' (expected 'Planet')
+[surveyed] 0005E1DA 'Masada I' - DispatchMethodCall returned FALSE
+```
+
+**Step 2 was the "if this fails, stop, the route is dead" gate, and it passed.** The VM
+*does* bind a script type to `Native Hidden` form types this way: PNDT typeID 186 (`0xBA`)
+→ `'Planet'`. That also means the vtable is laid out as CommonLibSF declares it at least
+through slot `0x0B`.
+
+**Then `DispatchMethodCall` returned `false` — cleanly, twice, on two different threads,
+with no fault and no VM stress.** A wrong vtable ordinal would more likely have crashed or
+returned garbage than returned a tidy `false`, so the ordinal is probably fine.
+
+**Diagnosis: the probe skipped a step.** A handle is not a callable target. The VM
+dispatches against a script **Object bound to** that handle, and nothing binds one for a
+`Native Hidden` type by itself. That bind dance is exactly what `PackVariable` performs
+whenever CommonLibSF passes a form to Papyrus (`BSScriptUtil.h:494-544`):
+
+```
+FindBoundObject  ->  (if absent) CreateObject  ->  BindObject  ->  dispatch
+```
+
+**v0.19.1 does the dance**, logs each sub-step separately, reports `IsHandleLoaded` /
+`IsHandleObjectAvailable` and whether the VM is frozen (a frozen VM also refuses with a
+bare `false`), and tries **both** dispatch overloads — by handle (slot `0x30`) then by
+object (slot `0x31`) — because a failure in one is a different fact from a failure in both.
+
+⚠ `bProbeSurveyBind` (default on) gates the bind, because it is **the only part of the
+probe that is not purely read-only**. `Planet` has no script variables and no properties,
+and vanilla binds Planet objects itself whenever its own quests call this very function
+(`OutpostBeaconScript.psc:59`), so the exposure is a few bytes of VM bookkeeping — but this
+mod's guarantee is that it writes nothing, so it gets a switch. **The log says
+`already bound (nothing created)` when the bind was not needed at all**, which is the
+result to hope for.
+
+### What the escalation cap bought
+
+`uProbeSurveyMaxBodies=1` meant the failure cost one dispatch instead of ten. Worth keeping
+as the pattern for any future ABI probe: **the first call through an unverified vtable slot
+is the dangerous one, and it should be alone.**
 
 ## 1. Verdict
 

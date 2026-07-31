@@ -321,6 +321,11 @@ namespace
 	// diagnosis; finding it out twenty times in a frame is a crash. Prove one
 	// call is survivable, then set this to 0 for the whole system.
 	REX::TIniSetting<std::uint32_t> uProbeSurveyMaxBodies{ "Recon", "uProbeSurveyMaxBodies", 1 };
+	// Whether the probe may BIND a script object to a planet form when the VM
+	// has none. It is the only part of the probe that is not purely read-only -
+	// see the note in DispatchSurveyPercent - so it gets its own switch even
+	// though the whole probe is already opt-in.
+	REX::TIniSetting<bool> bProbeSurveyBind{ "Recon", "bProbeSurveyBind", true };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -3594,6 +3599,19 @@ namespace
 
 	// One dispatch. The return says whether the VM ACCEPTED the call, not whether
 	// it answered - that arrives later, in the callback.
+	//
+	// v0.19.1: the first flight got a clean `false` here, and the reason was a
+	// step this function skipped. A handle is not a callable target - the VM
+	// dispatches against a script OBJECT BOUND to that handle, and nothing binds
+	// one for a `Native Hidden` type by itself. That bind dance is exactly what
+	// `PackVariable` does whenever CommonLibSF passes a form to Papyrus
+	// (BSScriptUtil.h:494-544), and it was the missing move:
+	//
+	//     FindBoundObject -> (if absent) CreateObject -> BindObject -> dispatch
+	//
+	// Both dispatch overloads are tried, handle first then object, because they
+	// are different vtable slots (0x30 and 0x31) and a failure in one is a
+	// different fact from a failure in both.
 	bool DispatchSurveyPercent(const RE::TESForm* a_form, const char* a_scriptType, std::string a_label)
 	{
 		const auto game = RE::GameVM::GetSingleton();
@@ -3608,21 +3626,85 @@ namespace
 			REX::WARN("[surveyed] {} - no VM handle for the form (EmptyHandle)", a_label);
 			return false;
 		}
+		REX::INFO("[surveyed] {} - handle {:#x} (loaded={} available={})", a_label, handle,
+			handles.IsHandleLoaded(handle), handles.IsHandleObjectAvailable(handle));
 
-		const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-			new SurveyProbeCallback(std::move(a_label), std::chrono::steady_clock::now())
-		};
+		// Step 3a - is a script object already bound? For a type vanilla calls
+		// on itself (OutpostBeaconScript.psc:59 does GetCurrentPlanet().
+		// GetSurveyPercent()) one may well exist already, and finding it means
+		// the probe creates NOTHING.
+		RE::BSTSmartPointer<RE::BSScript::Object> object;
+		bool                                      bound = vm->FindBoundObject(handle, a_scriptType, false, object, false) && object;
+		REX::INFO("[surveyed] {} - FindBoundObject: {}", a_label,
+			bound ? "already bound (nothing created)" : "no object bound to this handle");
+
+		// Step 3b - bind one. ⚠ This is the ONLY part of the probe that can add
+		// anything to the VM's tables. `Planet` is Native Hidden with no script
+		// variables and no properties, and vanilla binds Planet objects itself
+		// whenever its own quests call this very function - but it is still a
+		// write-shaped act in a mod whose whole guarantee is that it writes
+		// nothing, so it has its own switch.
+		if (!bound) {
+			if (!bProbeSurveyBind.GetValue()) {
+				REX::WARN("[surveyed] {} - no bound object and bProbeSurveyBind is off, so nothing "
+						  "to dispatch against. Turn it on to let the probe bind one.",
+					a_label);
+				return false;
+			}
+			const auto vmInternal = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+			if (!vmInternal) {
+				REX::WARN("[surveyed] {} - no Internal::VirtualMachine, cannot bind", a_label);
+				return false;
+			}
+			if (!vm->CreateObject(RE::BSFixedString(a_scriptType), object) || !object) {
+				REX::WARN("[surveyed] {} - CreateObject('{}') FAILED", a_label, a_scriptType);
+				return false;
+			}
+			vmInternal->BindObject(object, handle, false);
+			bound = static_cast<bool>(object);
+			REX::INFO("[surveyed] {} - CreateObject + BindObject: {}", a_label,
+				bound ? "ok" : "left no object");
+			if (!bound)
+				return false;
+		}
 
 		// GetSurveyPercent takes no arguments, but the argument functor still has
 		// to exist and still has to return true or the VM treats the call as
 		// malformed.
-		return vm->DispatchMethodCall(
-			handle,
-			RE::BSFixedString(a_scriptType),
-			RE::BSFixedString("GetSurveyPercent"),
-			[](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; },
-			callback,
-			0);
+		const auto args = [](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; };
+
+		{
+			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+				new SurveyProbeCallback(a_label + " [by handle]", std::chrono::steady_clock::now())
+			};
+			if (vm->DispatchMethodCall(handle, RE::BSFixedString(a_scriptType),
+					RE::BSFixedString("GetSurveyPercent"), args, callback, 0)) {
+				REX::INFO("[surveyed] {} - dispatch BY HANDLE accepted (vtable slot 0x30)", a_label);
+				return true;
+			}
+		}
+
+		// Slot 0x30 said no. The object overload is a different slot and a
+		// different lookup path, so it is worth its own attempt rather than one
+		// shared verdict.
+		{
+			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+				new SurveyProbeCallback(a_label + " [by object]", std::chrono::steady_clock::now())
+			};
+			if (vm->DispatchMethodCall(object, RE::BSFixedString("GetSurveyPercent"),
+					args, callback, 0)) {
+				REX::INFO("[surveyed] {} - dispatch BY OBJECT accepted (vtable slot 0x31) - "
+						  "the handle overload is the one to avoid",
+					a_label);
+				return true;
+			}
+		}
+
+		REX::WARN("[surveyed] {} - BOTH dispatch overloads returned false with an object bound. "
+				  "That is no longer a 'we forgot to bind' failure - suspect the vtable ordinals "
+				  "or the argument functor ABI.",
+			a_label);
+		return false;
 	}
 
 	void ProbeSurveyVM()
@@ -3644,8 +3726,12 @@ namespace
 			REX::WARN("[surveyed] step 1 FAILED: GameVM holds no IVirtualMachine");
 			return;
 		}
-		REX::INFO("[surveyed] step 1 OK: GameVM {} -> IVirtualMachine {}",
-			static_cast<const void*>(game), static_cast<const void*>(vm));
+		// A frozen VM refuses dispatches, and it would refuse them the same way a
+		// wrong vtable slot does - with a bare `false`. Rule it out here rather
+		// than wondering later.
+		REX::INFO("[surveyed] step 1 OK: GameVM {} -> IVirtualMachine {} (frozen={}, completely={})",
+			static_cast<const void*>(game), static_cast<const void*>(vm),
+			game->frozen, vm->IsCompletelyFrozen());
 
 		// Whatever the previous batch did to the VM shows up here, not in the run
 		// that caused it - the dispatches are asynchronous, so the aftermath is
