@@ -1,5 +1,7 @@
 # ShipNavPanel
 
+**Released on [Nexus Mods](https://www.nexusmods.com/starfield/mods/17836).**
+
 An Elite-Dangerous-style navigation panel for Starfield's cruise mode. Press
 the ship scanner key while cruising and a panel lists **every body in the
 current system** — planets, moons (nested under their planet), stations and
