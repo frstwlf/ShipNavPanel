@@ -264,10 +264,11 @@ Later, nice-to-have:
 - [x] ~~Decide on the PDB~~ — **it ships** (user's call, 2026-08-01). A first
       public release of a native plugin is exactly when symbolised crash logs
       are worth the ~14 MB.
-- [x] ~~Mod page copy~~ — drafted 2026-08-01 in `release/`:
-      `nexus-description.bbcode`, `patreon-post.md`, `kofi-post.md`. Points
-      carried in: cruise-mode only; **points rather than targets** (the UI
-      layer has no by-id set target); whole system listed — planets, moons,
+- [x] ~~Mod page copy~~ — written and published 2026-08-02. The drafts are
+      **kept privately, outside this repo** (`release/` is gitignored now);
+      the published versions are the mod page itself and the two posts.
+      Points carried in: cruise-mode only; **points rather than targets** (the
+      UI layer has no by-id set target); whole system listed — planets, moons,
       stations, POIs; the settlement mark means *there is somewhere to go
       here*, not "a city is down there" (Deimos's mark is the staryard);
       `fArrowAngleOffset` / `bArrowInvertAngle` first if anyone reports the
