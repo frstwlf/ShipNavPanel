@@ -11,10 +11,33 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v0.18.2 — everything below is confirmed in game.** The v0.18.x arc
-closed 2026-07-31: the duplicate-name work on the baked two-contact save,
-and the reveal-state labels across several random POI spawns in normal
-play, every one wearing its proper name.
+**v1.0.0 — the release build.** Everything below is confirmed in game. The
+v0.18.x arc closed 2026-07-31 (duplicate-name work on the baked two-contact
+save; reveal-state labels across several random POI spawns in normal play,
+every one wearing its proper name), and Phase 6's survey marks closed
+2026-08-01 with save exposure measured at nil.
+
+**Release pass, 2026-08-01** — version 1.0.0, and three changes with it:
+
+- **`bVerboseLog` (new, `[Recon]`, default off) is the log-volume gate.**
+  Everything that repeated with a player's actions — every wheel notch's
+  `[panel] highlight`, `[camera] hid`, `[blip] kept`/`returned`, the
+  `[blip-dbg]` reticle census, the `[arrow]` bearing, the `[galaxy]`
+  per-body dump, the blip container census — now prints only with it on. A
+  quiet session logs startup, settings, once-only state and warnings: the
+  sample session that produced 159 lines produces about 55, and no longer
+  scales with the wheel. **Rule for anything added later: if a line repeats
+  when the player does something, it goes behind that flag.**
+- **The ini was rewritten for players** (577 → ~430 lines): same 108 keys,
+  same defaults, grouped start-here / list / survey / look / HUD /
+  conflict-chasing, with the build narrative dropped. Colours are `0xRRGGBB`
+  now — **SimpleIni parses `0x` (base 16 when prefixed, base 10 otherwise)**.
+  ⚠ And it requires the WHOLE value to be consumed, so a same-line `;`
+  comment makes the setting fall back to its default *silently*. The first
+  draft of this rewrite had exactly that bug in it. Never put a comment after
+  a value.
+- The startup config dump now prints the diagnostics block only when
+  something is on, and says where `bVerboseLog` is when nothing is.
 
 - **The panel**: in cruise the scanner key opens/closes it, the wheel moves
   the highlight (spliced away from the camera), `TogglePOV` — or anything in
@@ -62,8 +85,14 @@ line, first line of the log.
 
 ## Quick reference — the mechanism that works
 
-Everything below is verified in game. No Address Library ids, no Ghidra, no SWF
-patching.
+Everything below is verified in game. No Ghidra and no SWF patching, and no
+offset found by hand: the engine side is only what CommonLibSF already
+publishes. ⚠ That is **not** "no Address Library ids" — the phrase this
+section used to carry. `RE::UI::GetSingleton`, `TESForm::LookupByID` and
+`GameVM::Singleton` are all `REL::ID` lookups, so **Address Library for SFSE
+Plugins is a hard requirement from startup**, and a missing or mismatched
+`versionlib-*.bin` is a `REX::FAIL` dialog, not a degraded feature. It has to
+be listed on the mod page.
 
 | what | where |
 |---|---|
@@ -205,13 +234,17 @@ Later, nice-to-have:
 - [x] ~~Discard `build/packages/ShipNavPanel-0.2.0.zip`~~ — deleted
       2026-07-30 (the inert v0.2.0 build; `build/` is gitignored, so nothing
       to scrub from history on its account).
-- [x] ~~Rewrite `README.md`~~ — rewritten to the current mod 2026-07-30.
-      Before the flip it still wants screenshots and a fresh-eyes
-      read-through, but it no longer lies.
-- [ ] **Pre-package grep: `GetValue()` guarding a `Register`, an install or a
-      hook.** The v0.2.0 inert-build class — packaging flipped recon defaults
-      off and two pieces of load-bearing machinery sat behind them. Run the
-      grep on every packaging commit.
+- [x] ~~Rewrite `README.md`~~ — rewritten to the current mod 2026-07-30,
+      refreshed for 1.0.0 on 2026-08-01 (survey marks, the one address id
+      stated plainly rather than "no Address Library ids", the PDB decision,
+      `bVerboseLog`, the same-line-comment trap).
+- [x] ~~**Pre-package grep: `GetValue()` guarding a `Register`, an install or
+      a hook.**~~ Run 2026-08-01 for the 1.0.0 package: every diagnostic flag
+      gates logging only. The two that touch machinery are documented as such
+      — `bLogMenus` gates the open/close sink, which only ever logs (the
+      movie-created callback next to it registers unconditionally, with the
+      v0.2.0 lesson written above it), and `bSuppressThrottleTest` gates the
+      dead throttle experiment. Re-run it on every packaging commit.
 - [x] ~~Scan history for `C:\Users\...` paths and log excerpts~~ — scanned
       AND scrubbed, 2026-07-30. The scan (all revisions) found the local
       username in two doc blob lines and the personal email in every
@@ -226,15 +259,19 @@ Later, nice-to-have:
       argument mangling — put filter scripts in a FILE and verify content
       hits, not just ref-rewritten messages.)
 - [ ] Flip `frstwlf/ShipNavPanel` public — **GPL obligation** once a DLL is
-      distributed (CommonLibSF is GPL-3.0-or-later).
-- [ ] Decide on the PDB. It ships now deliberately so tester crash logs come
-      back symbolised; drop it for a stable release.
-- [ ] Mod page copy: cruise-mode only; **points rather than targets** (the UI
-      layer has no by-id set target); the panel lists the whole system —
-      planets, moons, stations, POIs; the settlement mark means *there is
-      somewhere to go here*, not "a city is down there" (Deimos's mark is the
-      staryard); `fArrowAngleOffset` / `bArrowInvertAngle` are the first
-      thing to try if anyone reports the marker pointing wrongly.
+      distributed (CommonLibSF is GPL-3.0-or-later). Held deliberately until
+      the Nexus page is up; history is flip-ready.
+- [x] ~~Decide on the PDB~~ — **it ships** (user's call, 2026-08-01). A first
+      public release of a native plugin is exactly when symbolised crash logs
+      are worth the ~14 MB.
+- [x] ~~Mod page copy~~ — drafted 2026-08-01 in `release/`:
+      `nexus-description.bbcode`, `patreon-post.md`, `kofi-post.md`. Points
+      carried in: cruise-mode only; **points rather than targets** (the UI
+      layer has no by-id set target); whole system listed — planets, moons,
+      stations, POIs; the settlement mark means *there is somewhere to go
+      here*, not "a city is down there" (Deimos's mark is the staryard);
+      `fArrowAngleOffset` / `bArrowInvertAngle` first if anyone reports the
+      marker pointing wrongly.
 
 ## Save safety
 

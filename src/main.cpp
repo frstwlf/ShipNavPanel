@@ -58,6 +58,18 @@ namespace
 	// vtable entry for the input tap.
 	// ---------------------------------------------------------------------------
 
+	// The one diagnostic switch worth a player's attention, and the release
+	// gate on log volume. OFF, the log keeps startup, the settings in force,
+	// state that changed once, and every warning - a page or two a bug report
+	// can carry whole. ON, it adds the per-action trace: every wheel notch, the
+	// blips taken and given back, the bearing, the census dumps. That trace is
+	// what built the mod, so it stays reachable; it is just not what a player's
+	// log should be made of.
+	//
+	// Rule for anything added later: if a line repeats when the player does
+	// something, it belongs behind this flag.
+	REX::TIniSetting<bool> bVerboseLog{ "Recon", "bVerboseLog", false };
+
 	// The recon taps default OFF in a shipped build - they were built to answer
 	// questions that are now answered, and left on they write thousands of lines
 	// a session. Testers turn them back on when filing a bug.
@@ -2648,10 +2660,12 @@ namespace
 					// it is simply read. One notch is one step.
 					if (named && std::strcmp(userEvent, kWheelUpEvent) == 0) {
 						MoveHighlight(-1);
-						REX::INFO("[panel] highlight up -> {:08X}", g_highlightID.load(std::memory_order_acquire));
+						if (bVerboseLog.GetValue())
+							REX::INFO("[panel] highlight up -> {:08X}", g_highlightID.load(std::memory_order_acquire));
 					} else if (named && std::strcmp(userEvent, kWheelDownEvent) == 0) {
 						MoveHighlight(1);
-						REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
+						if (bVerboseLog.GetValue())
+							REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
 					} else if (MatchesConfirmEvent(userEvent, button->idCode)) {
 						ConfirmHighlight();
 					} else {
@@ -2800,8 +2814,11 @@ namespace
 			fixes[i].node->next = fixes[i].previousNext;
 
 		if (removed) {
+			// The running total is what matters, and the panel prints it once on
+			// close - a line per wheel notch is a verbose-only trace.
 			const auto total = g_cameraRemovedCount.fetch_add(removed, std::memory_order_relaxed) + removed;
-			REX::INFO("[camera] hid {} input event(s) from PlayerCamera (total {})", removed, total);
+			if (bVerboseLog.GetValue())
+				REX::INFO("[camera] hid {} input event(s) from PlayerCamera (total {})", removed, total);
 		}
 	}
 
@@ -4322,6 +4339,11 @@ namespace
 		if (!haveSystem || s_lastSystem.exchange(system, std::memory_order_acq_rel) == system)
 			return;
 
+		// A line per body, once per system entered - a trace of what the parse
+		// produced, and verbose-only for the same reason.
+		if (!bVerboseLog.GetValue())
+			return;
+
 		REX::INFO("[galaxy] system {} - from the body table", system);
 		for (const auto& row : a_rows) {
 			if (row.haveGalaxy)
@@ -4972,11 +4994,14 @@ namespace
 						g_arrowClip.SetMember("y", V{ -markerRadius * std::cos(markerRadians) });
 					}
 
-					// Rate-limited so the bearing can be correlated with what is
-					// actually on screen without flooding the log.
-					static std::atomic<std::uint32_t> s_tick{ 0 };
-					if ((s_tick.fetch_add(1, std::memory_order_relaxed) % 120) == 0)
-						REX::INFO("[arrow] angleToCrosshair={:.1f} -> rotation={:.1f}", selectedAngle, rotation);
+					// Rate-limited even when asked for, so the bearing can be
+					// correlated with what is actually on screen without
+					// flooding the log.
+					if (bVerboseLog.GetValue()) {
+						static std::atomic<std::uint32_t> s_tick{ 0 };
+						if ((s_tick.fetch_add(1, std::memory_order_relaxed) % 120) == 0)
+							REX::INFO("[arrow] angleToCrosshair={:.1f} -> rotation={:.1f}", selectedAngle, rotation);
+					}
 				}
 			}
 
@@ -5414,7 +5439,7 @@ namespace
 		// One-time census of what the container holds, for checking the naming
 		// assumption against the live movie - the in-game test's first item.
 		RE::Scaleform::GFx::Value count;
-		if (a_container.GetMember("numChildren", &count)) {
+		if (bVerboseLog.GetValue() && a_container.GetMember("numChildren", &count)) {
 			const int n = static_cast<int>(AsNumber(count));
 			REX::INFO("[blip] container census: {} children", n);
 			for (int i = 0; i < n; ++i) {
@@ -5951,10 +5976,11 @@ namespace
 					if (g_blipHolder.Invoke("addChild", nullptr, &child, 1)) {
 						if (selectedMatch)
 							selectedShown = true;
-						REX::INFO("[blip] kept '{}'{}", childName,
-							selectedMatch ? (lockedMatch ? " (locked body)" : " (panel highlight)") :
-							lockedMatch   ? " (locked body)" :
-							                " (quest target)");
+						if (bVerboseLog.GetValue())
+							REX::INFO("[blip] kept '{}'{}", childName,
+								selectedMatch ? (lockedMatch ? " (locked body)" : " (panel highlight)") :
+								lockedMatch   ? " (locked body)" :
+								                " (quest target)");
 					}
 				}
 			}
@@ -5988,7 +6014,8 @@ namespace
 						selectedShown = true;
 				} else if (!(keepQuest && isQuest(child))) {
 					container.Invoke("addChild", nullptr, &child, 1);
-					REX::INFO("[blip] returned '{}'", childName);
+					if (bVerboseLog.GetValue())
+						REX::INFO("[blip] returned '{}'", childName);
 				}
 			}
 		}
@@ -6039,7 +6066,7 @@ namespace
 			// icons DO exist, so the log answers "what was vanilla actually
 			// showing" instead of the next theory guessing it. One selection's
 			// dump is ~a dozen lines, and it only fires on the failure case.
-			if (haveReticle && !selFound && !selectedShown) {
+			if (haveReticle && !selFound && !selectedShown && bVerboseLog.GetValue()) {
 				static std::atomic<std::uint32_t> s_dumpedFor{ 0 };
 				if (s_dumpedFor.exchange(a_selectedID, std::memory_order_acq_rel) != a_selectedID) {
 					REX::INFO("[blip-dbg] no icon accepted for '{}' ({:08X}) - reticle census:",
@@ -8634,18 +8661,41 @@ namespace
 		iniStore->Init("Data/SFSE/Plugins/ShipNavPanel.ini", "Data/SFSE/Plugins/ShipNavPanelCustom.ini");
 		iniStore->Load();
 
-		REX::INFO("config: bInputTap={} bArrow={} bPanel={} bWheelFilter={}",
-			bInputTap.GetValue(), bArrow.GetValue(), bPanel.GetValue(),
-			bWheelFilter.GetValue());
-		REX::INFO("config: sConfirmEvent='{}' shown as '{}' (bPanelHints={}) - if the hint names the wrong "
-				  "key, correct sConfirmKeyLabel; it cannot be derived from the event name",
-			sConfirmEvent.GetValue(), sConfirmKeyLabel.GetValue(), bPanelHints.GetValue());
-		REX::INFO("config: bLogInput={} bLogInputHeldFrames={} bLogInputNonButton={} uMaxInputLines={} "
-				  "bLogMenus={} bLogHeartbeat={} fHeartbeatSeconds={} bVerifyVTableID={} bSuppressThrottleTest={}",
-			bLogInput.GetValue(), bLogInputHeldFrames.GetValue(), bLogInputNonButton.GetValue(),
-			uMaxInputLines.GetValue(), bLogMenus.GetValue(), bLogHeartbeat.GetValue(),
-			fHeartbeatSeconds.GetValue(), bVerifyVTableID.GetValue(), bSuppressThrottleTest.GetValue());
-		REX::INFO("config: bSurveyCruiseKeys={}", bSurveyCruiseKeys.GetValue());
+		REX::INFO("config: bPanel={} bInputTap={} bWheelFilter={} bHideVanillaBlips={} "
+				  "bPanelSurveyMarks={} bVerboseLog={}",
+			bPanel.GetValue(), bInputTap.GetValue(), bWheelFilter.GetValue(),
+			bHideVanillaBlips.GetValue(), bPanelSurveyMarks.GetValue(), bVerboseLog.GetValue());
+		REX::INFO("config: sConfirmEvent='{}' (bPanelHints={}) - the footer pill resolves the key from "
+				  "the binding itself; sConfirmKeyLabel='{}' is only used if that pill cannot be built",
+			sConfirmEvent.GetValue(), bPanelHints.GetValue(), sConfirmKeyLabel.GetValue());
+
+		// The diagnostics dump earns its space only when something is on. A
+		// quiet build says so in one line, and says where the switch is.
+		const bool anyRecon = bLogInput.GetValue() || bLogInputHeldFrames.GetValue() ||
+		                      bLogInputNonButton.GetValue() || bLogMenus.GetValue() ||
+		                      bLogHeartbeat.GetValue() || bVerifyVTableID.GetValue() ||
+		                      bSuppressThrottleTest.GetValue() || bSurveyCruiseKeys.GetValue() ||
+		                      bScaleformReader.GetValue() || bLogTargetCaptures.GetValue() ||
+		                      bDumpPlanetRecords.GetValue() || bProbeStarmapFeed.GetValue() ||
+		                      bProbeSurveyVM.GetValue() || bProbeVanillaChrome.GetValue() ||
+		                      bTestGraphicsClear.GetValue();
+		if (anyRecon) {
+			REX::INFO("config: bLogInput={} bLogInputHeldFrames={} bLogInputNonButton={} uMaxInputLines={} "
+					  "bLogMenus={} bLogHeartbeat={} fHeartbeatSeconds={} bVerifyVTableID={} bSuppressThrottleTest={}",
+				bLogInput.GetValue(), bLogInputHeldFrames.GetValue(), bLogInputNonButton.GetValue(),
+				uMaxInputLines.GetValue(), bLogMenus.GetValue(), bLogHeartbeat.GetValue(),
+				fHeartbeatSeconds.GetValue(), bVerifyVTableID.GetValue(), bSuppressThrottleTest.GetValue());
+			REX::INFO("config: bSurveyCruiseKeys={} bScaleformReader={} bLogTargetCaptures={} "
+					  "bDumpPlanetRecords={} bProbeStarmapFeed={} bProbeSurveyVM={} bProbeVanillaChrome={} "
+					  "bTestGraphicsClear={}",
+				bSurveyCruiseKeys.GetValue(), bScaleformReader.GetValue(), bLogTargetCaptures.GetValue(),
+				bDumpPlanetRecords.GetValue(), bProbeStarmapFeed.GetValue(), bProbeSurveyVM.GetValue(),
+				bProbeVanillaChrome.GetValue(), bTestGraphicsClear.GetValue());
+		} else {
+			REX::INFO("config: diagnostics all off. For a bug report, set bVerboseLog=true in "
+					  "ShipNavPanelCustom.ini and reproduce - that adds the per-action trace without "
+					  "the thousands of lines the [Recon] switches produce.");
+		}
 
 		if (bProbeSurveyVM.GetValue())
 			REX::INFO("[surveyed] probe A ON - in cruise, press the scanner key to dispatch "

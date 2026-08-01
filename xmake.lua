@@ -14,7 +14,7 @@ set_xmakever("3.0.0")
 
 -- set project constants
 set_project("ShipNavPanel")
-set_version("0.20.1")
+set_version("1.0.0")
 set_license("GPL-3.0-or-later")
 
 set_arch("x64")
@@ -30,7 +30,7 @@ target("ShipNavPanel", function()
     add_rules("commonlibsf.plugin", {
         name = "ShipNavPanel",
         author = "frstwlf",
-        description = "Points a labelled arrow at any planet in the system while cruising."
+        description = "A cruise-mode navigation panel: lists every body in the system and points the HUD at the one you pick."
     })
 
     add_files("src/**.cpp")

@@ -37,6 +37,11 @@ tuned to them, and the cockpit displays' slight 3D tilt. Undiscovered
 stations and POIs show the game's own masked generic labels ("Starstation",
 …) in your language, unmasking live on discovery.
 
+Each row's distance cell doubles as a **survey meter**: a slim grey bar for a
+partly surveyed body, and the vanilla SURVEYED banner at 100%, both lifted
+from the planet card. Bodies not yet read show nothing, so a late reading
+only ever reads as late.
+
 On the HUD, the mod manages the cruise blip clutter: while the panel is open
 (or a body is locked) the off-screen ring blips stand down except the ones
 that matter, the locked body's marker wins overlaps, and stations get the
@@ -46,36 +51,47 @@ no SWF is patched.
 ## Requirements and install
 
 - Starfield 1.16.244+ and a matching [SFSE](https://www.nexusmods.com/starfield/mods/106)
+- [Address Library for SFSE Plugins](https://www.nexusmods.com/starfield/mods/3256) —
+  CommonLibSF resolves the UI singleton, `TESForm::LookupByID` and the script
+  VM through it, so it is required, not optional
 - Install with your mod manager (or drop `SFSE/Plugins/` into `Data/`)
 
-The plugin is a single DLL + INI (+ PDB while in beta, so crash logs come back
-symbolised). **No plugin file (ESM/ESP), nothing written to your save, and —
-since 0.17.0 — no files written at all**: the planet/moon hierarchy is parsed
-from your own load order into memory each launch (a few hundred ms, on a
-background thread, DLC and mod-added systems included). Uninstalling leaves
+The plugin is a single DLL + INI, with the PDB alongside so crash logs come
+back symbolised. **No plugin file (ESM/ESP), nothing written to your save, and
+— since 0.17.0 — no files written at all**: the planet/moon hierarchy is
+parsed from your own load order into memory each launch (a few hundred ms, on
+a background thread, DLC and mod-added systems included). Uninstalling leaves
 nothing behind.
 
 Settings live in `Data\SFSE\Plugins\ShipNavPanel.ini`; override in
-`ShipNavPanelCustom.ini` so your changes survive updates. If the marker ever
-points wrongly on your setup, `fArrowAngleOffset` / `bArrowInvertAngle` are
-the first thing to try. The log is at
-`Documents\My Games\Starfield\SFSE\Logs\ShipNavPanel.log`.
+`ShipNavPanelCustom.ini` so your changes survive updates. Note that the ini
+parser reads a same-line `;` comment as part of the value, so keep comments on
+their own line. If the marker ever points wrongly on your setup,
+`fArrowAngleOffset` / `bArrowInvertAngle` are the first thing to try. The log
+is at `Documents\My Games\Starfield\SFSE\Logs\ShipNavPanel.log`, and
+`bVerboseLog=true` adds the per-action trace worth attaching to a bug report
+(the `[Recon]` switches below it are the investigation instrumentation, and
+are far louder).
 
 ## How it works, briefly
 
-An SFSE plugin, no Address Library ids, no Ghidra, no SWF patching. It
-subscribes native functions to the ship HUD's own Scaleform data feeds
+An SFSE plugin, no Ghidra and no SWF patching: the engine side is whatever
+CommonLibSF already publishes (UI singleton, form lookup, and for survey state
+the script VM), never an offset found by hand. It subscribes native functions to the ship HUD's own Scaleform data feeds
 (`TargetLowFrequencyProvider` / `TargetHighFrequencyProvider`), injects the
 panel into the HUD movie via SFSE's menu interface, and drives vanilla UI
 components (`OffScreenIcon`, `DynamicPoiIcon`, hotkey pills) with their own
 public APIs. The moon hierarchy comes from parsing PNDT records straight out
 of the load order — the one piece of galaxy data the engine exposes nowhere
 at runtime (see `PHASE5-STARMAP-DATA.md` for why the star map's own data
-pipeline is unreachable).
+pipeline is unreachable). Survey state is the one place a game *function* is
+called rather than a feed read: native Papyrus `Planet.GetSurveyPercent()`
+through `IVirtualMachine::DispatchMethodCall`, dispatched against a script
+object the mod binds itself — see `PHASE6-SURVEY-STATE.md`.
 
 Repo guide: **`TODO.md` is the current state** — quick reference, open work,
 release checklist, and the settled-do-not-re-derive list.
-`PHASE0-FINDINGS.md` → `PHASE5-STARMAP-DATA.md` are the dated investigation
+`PHASE0-FINDINGS.md` → `PHASE6-SURVEY-STATE.md` are the dated investigation
 records; `STARFIELD-NOTES.md` (one directory up, not in this repo) holds the
 cross-project engine facts.
 
@@ -97,7 +113,11 @@ the top of the log.
 
 No forms are created, no serialization is registered, selections are plain
 process-lifetime state. The engine writes are two vtable hooks (input tap,
-camera-wheel splice) and HUD clip properties. Full audit in `TODO.md`
+camera-wheel splice) and HUD clip properties. The survey read binds a Papyrus
+`Planet` object to a body where the game has not already bound one, which is
+runtime VM bookkeeping only: measured across ten swept systems, save size did
+not grow, and a save made with the mod loads clean with the DLL removed.
+`bPanelSurveyBind=false` turns even that off. Full audit in `TODO.md`
 ("Save safety").
 
 ## License
