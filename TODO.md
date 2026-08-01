@@ -91,13 +91,17 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **PHASE 6 — survey state on the rows. BUILT (v0.20.0), NOT YET FLOWN.**
-      Three probe flights proved the data route; three review rounds
-      (36 + 19 + 1 findings, 7 confirmed and fixed) went over the code.
-      [PHASE6-SURVEY-STATE.md](PHASE6-SURVEY-STATE.md) is **the reference** —
-      §0e in particular, which corrects a refutation that was right for the
-      wrong reason. Next: fly it and judge the colours in the seat.
-      Pre-ship item still open: measure save size across several swept systems. In short: a body's fully-surveyed state
+- [x] ~~**PHASE 6 — survey state on the rows.**~~ **CONFIRMED IN GAME 2026-08-01
+      (v0.20.1).** Survey a gas giant from the pilot seat → the banner appears;
+      quickload → it is gone. Banners read well, the distance number stays
+      legible on the plate, zero warnings across ~10 systems.
+      **Save exposure MEASURED at nil** (7783 → 7623 KB over ten swept systems,
+      i.e. it went *down*) and **a DLL-removed save loads clean**, so the
+      Papyrus bindings neither reach the save nor orphan it — the mod's
+      no-save-state promise survives intact. The whole pre-ship list is closed.
+      [PHASE6-SURVEY-STATE.md](PHASE6-SURVEY-STATE.md) §0e is **the reference**.
+      Only open item: the tester's colour call in the seat, which is an ini
+      swap and needs no rebuild. In short: a body's fully-surveyed state
       shows as a colour filling the row's 20 px **icon cell**, behind the icon
       when there is one — only the 100 % state draws, incomplete and partial
       stay blank.

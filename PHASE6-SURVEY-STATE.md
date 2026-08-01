@@ -1,6 +1,12 @@
 # PHASE 6 — Fully-surveyed state on panel rows
 
-**Status (2026-08-01, v0.19.2): ✅ ALL GATES PASSED — THE FEATURE IS CLEARED TO BUILD.
+**Status (2026-08-01, v0.20.1): ✅ SHIPPED AND CONFIRMED IN GAME.** Survey a gas giant from
+the pilot seat and the banner appears; quickload and it is gone. Save-state exposure
+measured at nil (7783 → 7623 KB over ten swept systems) and a DLL-removed save loads
+clean. Zero warnings across the session. Remaining: the tester's colour call in the seat,
+which is an ini swap. Detail in §0e; the history below is how it got here.
+
+**Earlier status (v0.19.2): ALL PROBE GATES PASSED — THE FEATURE WAS CLEARED TO BUILD.
 Three probe flights settled every unknown: `Planet.GetSurveyPercent()` dispatches from C++
 and answers for planets AND moons; a 100 % body reads exactly `1.0`; the Papyrus float
 equals the number the vanilla card draws (`ORACLE MATCH`); ten bodies cost 0.4 ms of frame
@@ -245,13 +251,82 @@ anyone looking.
 The reader is now the authority rather than the writer, so no ordering between the HIGH
 feed and the per-frame task is assumed. `fPanelAnimSeconds=0` is safe by construction.
 
-### One thing still unproven, to check on the next flight
+### ✅ CONFIRMED IN GAME — 2026-08-01, v0.20.0, ~10 systems
 
-The clear only fires if `WorldSettled()` is *called* while a load screen is up. That is
-asserted from logs, not from the source. **After any quickload that had marks on screen,
-the log must contain `[surveyed] world reloaded - dropped N cached survey reading(s)`.**
-If it never appears, the epoch never bumps and the guard is not running — though with the
-reader now epoch-gated, a missing bump fails toward *no marks*, not toward wrong ones.
+**Quicksave → fully survey a gas giant from the pilot seat → the banner appears in the
+panel → quickload → the banner is gone.** Both halves of the feature, verified by the
+tester in one pass: the live update, and the stale-mark guard doing exactly its job.
+Banners read well, the distance number stays perfectly legible on the plate, and the log
+carried **zero warnings and zero errors** across the session.
+
+The guard's evidence in the log is the **in-flight discard**, which fired for all ten
+Masada bodies at once:
+
+```
+[surveyed] 0005E1E4 moon Masada VI-a [by handle] - answer discarded, the world reloaded while it was in flight
+… ×10
+```
+
+That is the async hole — a dispatch issued before the load answering after it — being
+caught in practice, not just in theory. It is worth noting it fired at all: this was the
+race the guard was speculatively hardened against, and it turns out to happen on an
+ordinary quickload.
+
+⚠ **The check this section used to prescribe was impossible to pass.** It said the log
+"must contain `world reloaded - dropped N`" — but that line was gated on `dropped != 0`,
+so a clear that found the map already empty printed nothing. On a flight where the guard
+worked perfectly, the line never appeared once. **v0.20.1 logs every clear, empty or not,
+with the epoch number.** A check that cannot pass is not a check.
+
+### Save-state exposure: MEASURED, and it is nil
+
+The one open pre-ship question. Tester's numbers across the session:
+
+| | |
+|---|---|
+| save before | 7783 KB |
+| save after (~10 systems swept) | **7623 KB** |
+| tester's verdict | "on par with behaviour I've seen without the mod" |
+
+It went **down**, and within normal variation. **The Papyrus `Planet` bindings do not
+measurably reach the save file** — consistent with `Planet` being `Native Hidden` with no
+script variables. Better still, the tester **removed the DLL and loaded a save made with
+the mod installed, with no issues**: the bindings do not orphan a save, so uninstalling is
+clean. Item closed.
+
+### The shipping feature is nearly silent
+
+The session's log ran to 5 380 lines / 596 KB — and **14 of them came from the feature**.
+Everything else was the recon probes, which the tester had left enabled:
+
+| source | lines |
+|---|---|
+| probe B card watch + its dumps | ~3 770 |
+| probe A per-body verbose | ~1 000 |
+| **the sweep itself** | **14** |
+
+One line per sweep, and only when the count changes. The sweep's own numbers show the
+skip-complete optimisation working exactly as designed:
+
+```
+sweep: 10 of 10 listed body/bodies queried (0 already complete, never re-read)
+sweep:  9 of 10 listed body/bodies queried (1 already complete, never re-read)
+```
+
+— that "1 already complete" is the gas giant, never queried again once it read 1.0.
+
+### The oracle needed fixing, the feature did not
+
+22 of 24 `ORACLE` samples matched exactly. The 2 mismatches were both the same body,
+claiming the card said `0.4270` / `0.5308` where Papyrus said `1.0000` — **and they were
+the diagnostic's fault, not the data's.** `g_cardBodyID` and `g_cardPercent` were two
+independent atomics, so under target churn the pair could TEAR: one body's id read
+alongside another body's percent. v0.20.1 packs both into a single 64-bit atomic (id high,
+float bits low), published together or not at all.
+
+Nothing shipped ever read those values — the marks come from `g_surveyedPercent`, filled
+from Papyrus — so the feature was never affected. But a diagnostic that cries wolf is worse
+than none, because the next real mismatch gets waved away.
 
 ## 1. Verdict
 

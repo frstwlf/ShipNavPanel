@@ -495,8 +495,14 @@ namespace
 	// can be checked against the number the vanilla planet card would draw for
 	// the same body. That the two are the same quantity is an inference from a
 	// shared name and a shared >= 1 test; this is what turns it into a reading.
-	std::atomic<std::uint32_t> g_cardBodyID{ 0 };
-	std::atomic<float>         g_cardPercent{ -1.0f };
+	// ⚠ ONE atomic, not two: the body id in the high word and the percent's bit
+	// pattern in the low one. As two independent atomics the pair could TEAR -
+	// one body's id read alongside another body's reading - and the 2026-08-01
+	// flight caught exactly that twice in 24 samples, reporting a bogus
+	// "ORACLE MISMATCH" against a body that was fine. A diagnostic that cries
+	// wolf is worse than no diagnostic, because the next real mismatch gets
+	// waved away. 0 means "nothing sampled yet".
+	std::atomic<std::uint64_t> g_cardSample{ 0 };
 
 	// Survey state per body, keyed by FORM ID - which is every id this feature
 	// has: the panel row's, the body table's, the VM handle's low word, and the
@@ -3766,9 +3772,12 @@ namespace
 				// planet card draws - so agreeing with it is what proves the
 				// Papyrus native reads the same quantity the card does, rather
 				// than merely something with a similar name.
-				if (_formID != 0 && g_cardBodyID.load(std::memory_order_acquire) == _formID) {
-					const float card = g_cardPercent.load(std::memory_order_acquire);
-					const bool  agree = std::fabs(card - pct) < 0.001f;
+				const auto sample = g_cardSample.load(std::memory_order_acquire);
+				if (_formID != 0 && static_cast<std::uint32_t>(sample >> 32) == _formID) {
+					float card{};
+					const auto bits = static_cast<std::uint32_t>(sample & 0xFFFFFFFFu);
+					std::memcpy(&card, &bits, sizeof(card));
+					const bool agree = std::fabs(card - pct) < 0.001f;
 					REX::INFO("[surveyed] ORACLE {}: the card says {:.4f} for the same body, "
 							  "Papyrus says {:.4f}{}",
 						agree ? "MATCH" : "MISMATCH", card, pct,
@@ -3986,9 +3995,16 @@ namespace
 			}
 			// Logged OUTSIDE the lock: a Papyrus callback thread blocked on this
 			// mutex should never be waiting on a file write.
-			if (cleared && dropped != 0)
-				REX::INFO("[surveyed] world reloaded - dropped {} cached survey reading(s)",
-					dropped);
+			//
+			// ⚠ Logged on EVERY clear, including one that found the map already
+			// empty. PHASE6 tells the next person to look for this line after a
+			// quickload to confirm the guard is running - and the first cut hid
+			// it behind `dropped != 0`, so on the 2026-08-01 flight it never
+			// printed once despite the guard working perfectly. A check that
+			// cannot pass is not a check.
+			if (cleared)
+				REX::INFO("[surveyed] world reloaded (epoch {}) - dropped {} cached survey reading(s)",
+					epoch, dropped);
 		}
 
 		// Steady-clock ticks rather than a time_point, so the throttle can live
@@ -4509,11 +4525,17 @@ namespace
 		// same block as the PNDT ids the mod already resolves, where a galaxy
 		// body index would have been a single digit.
 		{
-			RE::Scaleform::GFx::Value member;
-			if (card.GetMember("uBodyID", &member))
-				g_cardBodyID.store(static_cast<std::uint32_t>(AsNumber(member)), std::memory_order_release);
-			if (card.GetMember("fSurveyPercent", &member))
-				g_cardPercent.store(static_cast<float>(AsNumber(member)), std::memory_order_release);
+			RE::Scaleform::GFx::Value idVal;
+			RE::Scaleform::GFx::Value pctVal;
+			// Published together or not at all - a half-sample is what tore.
+			if (card.GetMember("uBodyID", &idVal) && card.GetMember("fSurveyPercent", &pctVal)) {
+				const auto  id = static_cast<std::uint32_t>(AsNumber(idVal));
+				const float pct = static_cast<float>(AsNumber(pctVal));
+				std::uint32_t bits{};
+				std::memcpy(&bits, &pct, sizeof(bits));
+				g_cardSample.store((static_cast<std::uint64_t>(id) << 32) | bits,
+					std::memory_order_release);
+			}
 		}
 
 		auto line = std::format("uBodyID={} sBodyName={} fSurveyPercent={} iType={} iScanLevel={}",
