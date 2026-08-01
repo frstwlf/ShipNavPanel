@@ -1,6 +1,8 @@
 # ShipNavPanel
 
-**Released on [Nexus Mods](https://www.nexusmods.com/starfield/mods/17836).**
+**Released as [Cruise Navigation Panel](https://www.nexusmods.com/starfield/mods/17836)
+on Nexus Mods.** `ShipNavPanel` is the plugin's own name and stays on the DLL,
+the ini and the log; the two names are the same mod.
 
 An Elite-Dangerous-style navigation panel for Starfield's cruise mode. Press
 the ship scanner key while cruising and a panel lists **every body in the
