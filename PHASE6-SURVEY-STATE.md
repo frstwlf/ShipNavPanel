@@ -201,6 +201,58 @@ Set `uProbeSurveyMaxBodies=0` and E-target a body before pressing. That answers:
   `ORACLE MATCH` or `ORACLE MISMATCH` with both numbers. That closes §2.1 — currently an
   inference from a shared name and a shared `>= 1` test.
 
+## 0e. THE STALE-MARK GUARD — settled 2026-08-01, and the first answer was wrong
+
+Three review rounds (36 + 19 + 1 findings) ran over the implementation. The load-bearing
+outcome is this one, because **round one refuted the stale-mark risk for the wrong reason
+and the correct reason is more fragile than it looked.**
+
+Round one said: a load rebuilds the HUD movie, `OnMenuMovieCreated` sets
+`g_panelReady = false`, so `RefreshPanel` returns at its first gate. **That is not
+sufficient** — the panel rebuilds automatically ~2.5 s after the load and sets
+`g_panelReady = true` again with no player action. Had `g_panelOpen` survived the rebuild,
+the row loop would have run against the previous save's map.
+
+The actual barrier was `OnMenuMovieCreated` forcing **`g_panelOpen = false`**, whose only
+route back to true is `OnTriggerPressed` → `TogglePanel`, which needs `g_inCruise`, which
+only `RefreshCruiseState` sets, behind `WorldSettled()`. A human keypress therefore sat
+between the load and any row-loop execution — and that keypress also satisfied the sweep's
+gate.
+
+**That is a chain of five unrelated guards, none of which exists for this purpose, and
+`fPanelAnimSeconds=0` already punched a one-frame hole through it** (with no animation the
+row loop runs in the same `RefreshPanel` call as the toggle, so the ~18 frames of sweep
+ticks that normally cover the gap disappear). Two more holes: an in-flight Papyrus answer
+(~86 ms) landing after the clear would re-poison the map, and the whole clear depends on
+`OnFrame` ticking during a load screen.
+
+**So the guard no longer argues, it enforces. `g_surveyedEpoch` names the generation the
+map's contents belong to:**
+
+| Site | Rule |
+|---|---|
+| `WorldSettled` | bumps `g_unsettledEpoch` once per unsettled episode |
+| the sweep | under the lock: if the two differ, **clear the map, then stamp** |
+| **the reader** | under the lock: read only if the two match — else the row is UNKNOWN, and unknown draws nothing |
+| the callback | captures the map's epoch when it asks; files its answer only if the map still belongs to it |
+
+Every check-and-act pair is under `g_surveyedMutex`, and the clear precedes the stamp.
+**Stamping first — which the first cut did — leaves a window where the epoch says "current"
+while the map still holds the previous save's readings**, which is exactly the mark the
+epoch exists to prevent. A guard with a hole in it is worse than none, because it stops
+anyone looking.
+
+The reader is now the authority rather than the writer, so no ordering between the HIGH
+feed and the per-frame task is assumed. `fPanelAnimSeconds=0` is safe by construction.
+
+### One thing still unproven, to check on the next flight
+
+The clear only fires if `WorldSettled()` is *called* while a load screen is up. That is
+asserted from logs, not from the source. **After any quickload that had marks on screen,
+the log must contain `[surveyed] world reloaded - dropped N cached survey reading(s)`.**
+If it never appears, the epoch never bumps and the guard is not running — though with the
+reader now epoch-gated, a missing bump fails toward *no marks*, not toward wrong ones.
+
 ## 1. Verdict
 
 **Feasible, and the render half is nearly free. The data half hangs on one unproven ABI.**

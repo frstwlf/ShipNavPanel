@@ -91,10 +91,13 @@ and subscription whenever the movie-created callback fires, and drop stale
 
 ## Open work
 
-- [ ] **PHASE 6 — fully-surveyed state on the rows.** Recon complete and
-      adversarially verified 2026-07-31; the plan is
-      [PHASE6-SURVEY-STATE.md](PHASE6-SURVEY-STATE.md) and **it is the
-      reference**, not this entry. In short: a body's fully-surveyed state
+- [ ] **PHASE 6 — survey state on the rows. BUILT (v0.20.0), NOT YET FLOWN.**
+      Three probe flights proved the data route; three review rounds
+      (36 + 19 + 1 findings, 7 confirmed and fixed) went over the code.
+      [PHASE6-SURVEY-STATE.md](PHASE6-SURVEY-STATE.md) is **the reference** —
+      §0e in particular, which corrects a refutation that was right for the
+      wrong reason. Next: fly it and judge the colours in the seat.
+      Pre-ship item still open: measure save size across several swept systems. In short: a body's fully-surveyed state
       shows as a colour filling the row's 20 px **icon cell**, behind the icon
       when there is one — only the 100 % state draws, incomplete and partial
       stay blank.

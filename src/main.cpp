@@ -238,6 +238,72 @@ namespace
 	REX::TIniSetting<bool> bIncludePOI{ "Panel", "bIncludePOI", true };
 	REX::TIniSetting<bool> bIncludeShips{ "Panel", "bIncludeShips", false };
 	REX::TIniSetting<bool>  bPanelRowSeparators{ "Panel", "bPanelRowSeparators", true };
+
+	// ---------------------------------------------------------------------------
+	// Survey state in the distance cell (Phase 6, PHASE6-SURVEY-STATE.md).
+	//
+	// Two states, both vanilla's own - the planet card encodes progress as a
+	// METER's length and completion as a separate BANNER, and this is the same
+	// design at row scale:
+	//
+	//   0 < pct < 1   a grey progress bar along the cell's bottom edge
+	//   pct >= 1      the SURVEYED banner - a near-white plate under four
+	//                 diagonal bands, the distance text flipped to the banner's
+	//                 own dark label colour
+	//
+	// The icon cell was the first idea and it does not work: 20 x 26 px is
+	// PORTRAIT against a banner that is 5.7:1 landscape, so four bands would be
+	// 4 px each and would sit under an icon besides. The distance cell is 96 x 26
+	// (3.7:1), vanilla anchors its bands to the LEFT edge, and the distance
+	// number is right-aligned - so they share the cell without fighting.
+	//
+	// Every colour is measured off planetinfocard.swf sprite 35 (the banner) and
+	// the STARMAP card's meter. Not the ship card's meter: a parent CXFORM zeroes
+	// its multipliers, so its authored colours never reach the screen.
+	REX::TIniSetting<bool> bPanelSurveyMarks{ "Panel", "bPanelSurveyMarks", true };
+	// The banner, measured: plate #EBECEC with gold/orange/crimson/navy bands
+	// drawn in that order (navy ends up on top and widest), label #152C4E.
+	REX::TIniSetting<std::uint32_t> uPanelSurveyPlate{ "Panel", "uPanelSurveyPlate", 0xEBECEC };
+	REX::TIniSetting<std::uint32_t> uPanelSurveyBand1{ "Panel", "uPanelSurveyBand1", 0xE0B460 };
+	REX::TIniSetting<std::uint32_t> uPanelSurveyBand2{ "Panel", "uPanelSurveyBand2", 0xEA7A49 };
+	REX::TIniSetting<std::uint32_t> uPanelSurveyBand3{ "Panel", "uPanelSurveyBand3", 0xC7233B };
+	REX::TIniSetting<std::uint32_t> uPanelSurveyBand4{ "Panel", "uPanelSurveyBand4", 0x2D4E7B };
+	REX::TIniSetting<std::uint32_t> uPanelSurveyLabel{ "Panel", "uPanelSurveyLabel", 0x152C4E };
+	REX::TIniSetting<float>         fPanelSurveyPlateAlpha{ "Panel", "fPanelSurveyPlateAlpha", 1.0f };
+	// Fraction of the 96 px cell the banner covers, anchored left. 1.0 is the
+	// vanilla look - plate under the whole cell, dark number on top. Drop it to
+	// ~0.5 for bands only on the left with the number on the plain plate, which
+	// is also the escape hatch if the banner ever renders OVER the number:
+	// relative z-order among the panel's own script-added children has never
+	// been proven, only assumed from creation order.
+	REX::TIniSetting<float> fPanelSurveyBannerWidth{ "Panel", "fPanelSurveyBannerWidth", 1.0f };
+	REX::TIniSetting<bool>  bPanelSurveyBannerText{ "Panel", "bPanelSurveyBannerText", true };
+	// The progress bar. Colours are the STARMAP planet card's meter, which is
+	// untinted and therefore real: fill #C5C5C5 over a #4E4E4E track. (Its third
+	// constant, #B7B7B7, is already this panel's row-text colour - the palette
+	// was always going to fit.)
+	REX::TIniSetting<std::uint32_t> uPanelSurveyBarFill{ "Panel", "uPanelSurveyBarFill", 0xC5C5C5 };
+	REX::TIniSetting<std::uint32_t> uPanelSurveyBarTrack{ "Panel", "uPanelSurveyBarTrack", 0x4E4E4E };
+	REX::TIniSetting<float>         fPanelSurveyBarHeight{ "Panel", "fPanelSurveyBarHeight", 3.0f };
+	REX::TIniSetting<float>         fPanelSurveyBarAlpha{ "Panel", "fPanelSurveyBarAlpha", 0.85f };
+	REX::TIniSetting<float>         fPanelSurveyBarTrackAlpha{ "Panel", "fPanelSurveyBarTrackAlpha", 0.55f };
+	// Below this, draw nothing at all. A track on every untouched body in the
+	// system is noise, and 0 % is the overwhelmingly common case.
+	REX::TIniSetting<float> fPanelSurveyMinPercent{ "Panel", "fPanelSurveyMinPercent", 0.01f };
+	// How often the sweep re-reads the listed bodies. Measured cost: ten bodies
+	// queue in 0.4 ms of this thread and settle in ~86 ms, so this is generous
+	// rather than tight. Vanilla's own survey quests poll the same function at 15.
+	REX::TIniSetting<float> fSurveySweepSeconds{ "Panel", "fSurveySweepSeconds", 5.0f };
+	// Whether the sweep may BIND a Papyrus script object to a planet form when
+	// the VM has none - which it must, to call a method on it at all.
+	//
+	// This is a [Panel] key on purpose. It began life as bProbeSurveyBind, a
+	// [Recon] switch, and the sweep was reading THAT - so a user who turned the
+	// recon flag off to keep the mod's no-write promise would have silently lost
+	// every survey mark, with nothing in the [Panel] section hinting at the
+	// connection. A debug flag gating a shipping path is the v0.2.0 mistake that
+	// shipped an inert build; the release checklist greps for it.
+	REX::TIniSetting<bool> bPanelSurveyBind{ "Panel", "bPanelSurveyBind", true };
 	// Indent moons under their planet. Has no effect yet: nothing the ship HUD
 	// feed carries identifies a moon's parent, and the guess v0.3.3 shipped was
 	// wrong. Kept wired up because the data exists elsewhere - see the probe.
@@ -431,6 +497,40 @@ namespace
 	// shared name and a shared >= 1 test; this is what turns it into a reading.
 	std::atomic<std::uint32_t> g_cardBodyID{ 0 };
 	std::atomic<float>         g_cardPercent{ -1.0f };
+
+	// Survey state per body, keyed by FORM ID - which is every id this feature
+	// has: the panel row's, the body table's, the VM handle's low word, and the
+	// dossier's uBodyID are all the same number (measured, flight 3).
+	//
+	// Written from the Papyrus callback, which lands on threads that are neither
+	// the caller nor each other, and read at render time in RefreshPanel - the
+	// same shape rowClass/rowSettled already have, which is why several rows
+	// flipping in one instant needs no invalidation machinery at all.
+	std::mutex                               g_surveyedMutex;
+	std::unordered_map<std::uint32_t, float> g_surveyedPercent;
+	// Bumped whenever the world goes UNSETTLED (a load screen). Survey state is
+	// per-save: the DLL and the panel survive a quickload, the world's progress
+	// does not, and a mark left over from the previous save is the one way this
+	// feature can be WRONG rather than merely late.
+	std::atomic<std::uint32_t> g_unsettledEpoch{ 0 };
+	// Which unsettled-episode the map's contents belong to. ⚠ The READER checks
+	// this, not just the sweep - the difference matters. Relying on the sweep to
+	// clear the map before anything draws is relying on the writer to win a
+	// race, and the two run on unordered threads: RefreshPanel rides the HIGH
+	// feed while the sweep rides the per-frame task, and nothing sequences them.
+	// With the epoch on the read path, a map belonging to a previous save reads
+	// as UNKNOWN - which draws nothing - rather than as data.
+	//
+	// That also closes the async hole: a dispatch issued before a load whose
+	// answer lands after the clear would otherwise re-poison the map, so the
+	// callback carries the epoch it was issued under and drops its own result if
+	// the world has reloaded underneath it.
+	std::atomic<std::uint32_t> g_surveyedEpoch{ 0 };
+	// Ticks of the last survey sweep, 0 for "never". At namespace scope rather
+	// than a function static so opening the panel can zero it - the sweep only
+	// runs while the panel is open, so without the re-arm the first marks would
+	// be up to a whole interval late every time it is opened.
+	std::atomic<std::int64_t> g_lastSweepTicks{ 0 };
 	std::atomic<std::uint32_t> g_starmapCallbacks{ 0 };
 	std::atomic<bool> g_interposeInstalled{ false };
 	std::atomic<bool> g_interposeFailed{ false };
@@ -1821,6 +1921,23 @@ namespace
 	RE::Scaleform::GFx::Value g_panelScrollTrack;
 	RE::Scaleform::GFx::Value g_panelScrollThumb;
 	std::atomic<double>       g_panelNameWidth{ 0.0 };
+	// The survey mark, per row, in the distance cell (Phase 6). All three clips
+	// are drawn ONCE at build time and driven by transform and visibility
+	// afterwards - the scrollbar's discipline, and the reason a survey change
+	// costs two property writes rather than a redraw:
+	//   Bar     the track, full width; parent of the fill
+	//   Fill    1 px of art at the bar's left edge, scaleX = the percentage
+	//   Banner  the finished plate + four bands, visibility toggled
+	// The fill is a CHILD of the bar because a container's own graphics render
+	// BELOW its children - the one z-order rule this project has proven - so the
+	// fill sits over the track for free and only it is scaled.
+	RE::Scaleform::GFx::Value g_panelSurveyBars[kPanelMaxRowsHard];
+	RE::Scaleform::GFx::Value g_panelSurveyFills[kPanelMaxRowsHard];
+	RE::Scaleform::GFx::Value g_panelSurveyBanners[kPanelMaxRowsHard];
+	// Last value driven into each SLOT (not each body - that is what makes
+	// scrolling correct). -2 means "never driven", which no percentage is.
+	float g_panelSurveyDrawn[kPanelMaxRowsHard]{};
+	constexpr float kSurveyNeverDrawn = -2.0f;
 	// The toggle marks which sound to play; the UI thread consumes it. The
 	// input thread must never enter the VM itself (the v0.1.3 lesson).
 	// 0 = none, 1 = open, 2 = close.
@@ -2369,6 +2486,12 @@ namespace
 			MoveHighlight(0);
 			g_suppressedCount.store(0, std::memory_order_release);
 			g_cameraRemovedCount.store(0, std::memory_order_release);
+			// The survey sweep only runs while the panel is open, so re-arm its
+			// throttle here: otherwise the first marks would be up to a whole
+			// interval late every time the panel is opened. This is a plain
+			// atomic store from the INPUT thread - no VM, no Scaleform, which is
+			// the rule this function has always kept.
+			g_lastSweepTicks.store(0, std::memory_order_release);
 			if (bPanelSounds.GetValue())
 				g_pendingPanelSound.store(1, std::memory_order_release);
 			REX::INFO("[panel] opened - wheel moves the highlight, '{}' locks or clears it",
@@ -2900,9 +3023,17 @@ namespace
 			for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
 				g_panelIcons[i] = RE::Scaleform::GFx::Value{};
 				g_panelIconDrawn[i] = false;
+				g_panelIconClass[i] = PlanetClass::kUnknown;
+				g_panelIconSettled[i] = false;
 				g_panelPoiIcons[i] = RE::Scaleform::GFx::Value{};
 				g_panelPoiIconKey[i] = 0;
 				g_panelGiantIcons[i] = RE::Scaleform::GFx::Value{};
+				// The survey marks belonged to the old movie's clips too, and
+				// their last-drawn values described art that no longer exists.
+				g_panelSurveyBanners[i] = RE::Scaleform::GFx::Value{};
+				g_panelSurveyBars[i] = RE::Scaleform::GFx::Value{};
+				g_panelSurveyFills[i] = RE::Scaleform::GFx::Value{};
+				g_panelSurveyDrawn[i] = kSurveyNeverDrawn;
 			}
 			g_panelPoiIconsFailed.store(false, std::memory_order_release);
 			g_panelGiantIconsFailed.store(false, std::memory_order_release);
@@ -3567,12 +3698,20 @@ namespace
 	class SurveyProbeCallback : public RE::BSScript::IStackCallbackFunctor
 	{
 	public:
-		SurveyProbeCallback(std::string a_label, std::uint32_t a_formID, std::chrono::steady_clock::time_point a_sent) :
-			_label(std::move(a_label)), _formID(a_formID), _sent(a_sent)
+		SurveyProbeCallback(std::string a_label, std::uint32_t a_formID,
+			std::chrono::steady_clock::time_point a_sent, bool a_verbose) :
+			_label(std::move(a_label)), _formID(a_formID), _sent(a_sent),
+			// The generation this question was ASKED in. The answer is only
+			// filed if the map still belongs to it - see operator().
+			_epoch(g_surveyedEpoch.load(std::memory_order_acquire)), _verbose(a_verbose)
 		{}
 
 		void CallQueued() override {}
-		void CallCanceled() override { REX::WARN("[surveyed] {} - CANCELED by the VM", _label); }
+		void CallCanceled() override
+		{
+			if (_verbose)
+				REX::WARN("[surveyed] {} - CANCELED by the VM", _label);
+		}
 		void StartMultiDispatch() override {}
 		void EndMultiDispatch() override {}
 		bool CanSave() override { return false; }
@@ -3585,6 +3724,39 @@ namespace
 
 			if (a_result.is<float>()) {
 				const float pct = RE::BSScript::get<float>(a_result);
+
+				// The store first, whether or not anyone is watching the log:
+				// this runs on a VM thread, so the panel reads it under the
+				// lock at render time rather than being touched from here.
+				//
+				// ⚠ Unless the world reloaded while this call was in flight -
+				// ~86 ms of it - in which case the answer describes the PREVIOUS
+				// save and writing it would re-poison a map that was just
+				// cleared. Dropping a reading costs one sweep interval; keeping
+				// a wrong one is the only way this feature can lie.
+				bool discarded = false;
+				if (_formID != 0) {
+					// Compared against the MAP's epoch, under the map's lock:
+					// that is the generation these contents belong to, so an
+					// answer from an older one is rejected without any race
+					// against the clear. Testing g_unsettledEpoch outside the
+					// lock instead would leave the same window the clear itself
+					// had - check passes, load happens, clear runs, then this
+					// writes a stale value into a map now stamped as current.
+					std::lock_guard lock{ g_surveyedMutex };
+					if (g_surveyedEpoch.load(std::memory_order_acquire) == _epoch)
+						g_surveyedPercent[_formID] = pct;
+					else
+						discarded = true;
+				}
+				if (discarded && _verbose)
+					REX::INFO("[surveyed] {} - answer discarded, the world reloaded while it was "
+							  "in flight",
+						_label);
+
+				if (!_verbose)
+					return;
+
 				REX::INFO("[surveyed] {} -> {:.4f} = {} ({:.1f} ms, thread {})",
 					_label, pct, pct >= 1.0f ? "FULLY SURVEYED" : "incomplete",
 					ms, ThreadIdString());
@@ -3603,7 +3775,7 @@ namespace
 						agree ? " - same quantity, confirmed" :
 								" - DIFFERENT QUANTITIES, the whole plan rests on these agreeing");
 				}
-			} else {
+			} else if (_verbose) {
 				// A non-float answer is as interesting as a float one: it means
 				// the call was accepted and returned something else, which is a
 				// different failure from silence.
@@ -3617,6 +3789,8 @@ namespace
 		std::string                           _label;
 		std::uint32_t                         _formID{ 0 };
 		std::chrono::steady_clock::time_point _sent;
+		std::uint32_t                         _epoch{ 0 };
+		bool                                  _verbose{ true };
 	};
 
 	// One dispatch. The return says whether the VM ACCEPTED the call, not whether
@@ -3634,7 +3808,8 @@ namespace
 	// Both dispatch overloads are tried, handle first then object, because they
 	// are different vtable slots (0x30 and 0x31) and a failure in one is a
 	// different fact from a failure in both.
-	bool DispatchSurveyPercent(const RE::TESForm* a_form, std::uint32_t a_formID, const char* a_scriptType, std::string a_label)
+	bool DispatchSurveyPercent(const RE::TESForm* a_form, std::uint32_t a_formID,
+		const char* a_scriptType, std::string a_label, bool a_verbose, bool a_mayBind)
 	{
 		const auto game = RE::GameVM::GetSingleton();
 		const auto vm = game ? game->GetVM() : nullptr;
@@ -3645,11 +3820,13 @@ namespace
 		const auto handle = handles.GetHandleForObject(
 			RE::BSScript::GetVMTypeID<RE::BGSPlanet::PlanetData>(), a_form);
 		if (handle == handles.EmptyHandle()) {
-			REX::WARN("[surveyed] {} - no VM handle for the form (EmptyHandle)", a_label);
+			if (a_verbose)
+				REX::WARN("[surveyed] {} - no VM handle for the form (EmptyHandle)", a_label);
 			return false;
 		}
-		REX::INFO("[surveyed] {} - handle {:#x} (loaded={} available={})", a_label, handle,
-			handles.IsHandleLoaded(handle), handles.IsHandleObjectAvailable(handle));
+		if (a_verbose)
+			REX::INFO("[surveyed] {} - handle {:#x} (loaded={} available={})", a_label, handle,
+				handles.IsHandleLoaded(handle), handles.IsHandleObjectAvailable(handle));
 
 		// Step 3a - is a script object already bound? For a type vanilla calls
 		// on itself (OutpostBeaconScript.psc:59 does GetCurrentPlanet().
@@ -3657,8 +3834,9 @@ namespace
 		// the probe creates NOTHING.
 		RE::BSTSmartPointer<RE::BSScript::Object> object;
 		bool                                      bound = vm->FindBoundObject(handle, a_scriptType, false, object, false) && object;
-		REX::INFO("[surveyed] {} - FindBoundObject: {}", a_label,
-			bound ? "already bound (nothing created)" : "no object bound to this handle");
+		if (a_verbose)
+			REX::INFO("[surveyed] {} - FindBoundObject: {}", a_label,
+				bound ? "already bound (nothing created)" : "no object bound to this handle");
 
 		// Step 3b - bind one. ⚠ This is the ONLY part of the probe that can add
 		// anything to the VM's tables. `Planet` is Native Hidden with no script
@@ -3667,25 +3845,37 @@ namespace
 		// write-shaped act in a mod whose whole guarantee is that it writes
 		// nothing, so it has its own switch.
 		if (!bound) {
-			if (!bProbeSurveyBind.GetValue()) {
-				REX::WARN("[surveyed] {} - no bound object and bProbeSurveyBind is off, so nothing "
-						  "to dispatch against. Turn it on to let the probe bind one.",
-					a_label);
+			if (!a_mayBind) {
+				// NOT gated on a_verbose: the sweep is silent by design, and a
+				// silently dead feature with no line naming the cause is exactly
+				// what this project's release checklist exists to prevent. Once
+				// per session is enough to be diagnosable.
+				static std::atomic<bool> s_saidWhy{ false };
+				if (a_verbose || !s_saidWhy.exchange(true, std::memory_order_acq_rel))
+					REX::WARN("[surveyed] {} - nothing is bound to this form and binding is turned "
+							  "off, so its survey state cannot be read. Most rows will stay blank; "
+							  "any body the GAME has already bound still reads normally, since "
+							  "that costs nothing. Set bPanelSurveyBind (or bProbeSurveyBind, for "
+							  "the probe) to mark the rest.",
+						a_label);
 				return false;
 			}
 			const auto vmInternal = RE::BSScript::Internal::VirtualMachine::GetSingleton();
 			if (!vmInternal) {
-				REX::WARN("[surveyed] {} - no Internal::VirtualMachine, cannot bind", a_label);
+				if (a_verbose)
+					REX::WARN("[surveyed] {} - no Internal::VirtualMachine, cannot bind", a_label);
 				return false;
 			}
 			if (!vm->CreateObject(RE::BSFixedString(a_scriptType), object) || !object) {
-				REX::WARN("[surveyed] {} - CreateObject('{}') FAILED", a_label, a_scriptType);
+				if (a_verbose)
+					REX::WARN("[surveyed] {} - CreateObject('{}') FAILED", a_label, a_scriptType);
 				return false;
 			}
 			vmInternal->BindObject(object, handle, false);
 			bound = static_cast<bool>(object);
-			REX::INFO("[surveyed] {} - CreateObject + BindObject: {}", a_label,
-				bound ? "ok" : "left no object");
+			if (a_verbose)
+				REX::INFO("[surveyed] {} - CreateObject + BindObject: {}", a_label,
+					bound ? "ok" : "left no object");
 			if (!bound)
 				return false;
 		}
@@ -3697,11 +3887,13 @@ namespace
 
 		{
 			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-				new SurveyProbeCallback(a_label + " [by handle]", a_formID, std::chrono::steady_clock::now())
+				new SurveyProbeCallback(a_label + " [by handle]", a_formID,
+					std::chrono::steady_clock::now(), a_verbose)
 			};
 			if (vm->DispatchMethodCall(handle, RE::BSFixedString(a_scriptType),
 					RE::BSFixedString("GetSurveyPercent"), args, callback, 0)) {
-				REX::INFO("[surveyed] {} - dispatch BY HANDLE accepted (vtable slot 0x30)", a_label);
+				if (a_verbose)
+					REX::INFO("[surveyed] {} - dispatch BY HANDLE accepted (vtable slot 0x30)", a_label);
 				return true;
 			}
 		}
@@ -3711,22 +3903,177 @@ namespace
 		// shared verdict.
 		{
 			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-				new SurveyProbeCallback(a_label + " [by object]", a_formID, std::chrono::steady_clock::now())
+				new SurveyProbeCallback(a_label + " [by object]", a_formID,
+					std::chrono::steady_clock::now(), a_verbose)
 			};
 			if (vm->DispatchMethodCall(object, RE::BSFixedString("GetSurveyPercent"),
 					args, callback, 0)) {
-				REX::INFO("[surveyed] {} - dispatch BY OBJECT accepted (vtable slot 0x31) - "
-						  "the handle overload is the one to avoid",
-					a_label);
+				if (a_verbose)
+					REX::INFO("[surveyed] {} - dispatch BY OBJECT accepted (vtable slot 0x31) - "
+							  "the handle overload is the one to avoid",
+						a_label);
 				return true;
 			}
 		}
 
-		REX::WARN("[surveyed] {} - BOTH dispatch overloads returned false with an object bound. "
-				  "That is no longer a 'we forgot to bind' failure - suspect the vtable ordinals "
-				  "or the argument functor ABI.",
-			a_label);
+		if (a_verbose)
+			REX::WARN("[surveyed] {} - BOTH dispatch overloads returned false with an object bound. "
+					  "That is no longer a 'we forgot to bind' failure - suspect the vtable ordinals "
+					  "or the argument functor ABI.",
+				a_label);
 		return false;
+	}
+
+	// ---------------------------------------------------------------------------
+	// The shipping sweep.
+	//
+	// Re-reads every listed body's survey percent into g_surveyedPercent, from the
+	// per-frame task - never a feed callback, for the lock-order reason above.
+	// Measured cost (flight 3): ten bodies queue in 0.4 ms of this thread and the
+	// answers land within ~86 ms, because the latency is the VM's own update tick
+	// rather than anything per-call. So the interval below is comfort, not need.
+	//
+	// A body already reading 1.0 is never re-read: survey progress only goes up,
+	// and skipping it saves both a dispatch and - more to the point - a bind.
+	//
+	// The cache is thrown away whenever the world goes unsettled, because survey
+	// state is per-save and the panel is not. A mark carried across a quickload
+	// would be the one way this feature can be WRONG rather than merely late.
+	// ---------------------------------------------------------------------------
+	std::atomic<bool> g_surveySweepInFlight{ false };
+
+	void SweepSurveyState()
+	{
+		using clock = std::chrono::steady_clock;
+
+		// ⚠ OnFrame lands on whatever BSJobs worker is free and can run on two
+		// threads in the same frame - the log has shown the same logical work
+		// reporting from five thread ids in one second. Without this claim, two
+		// sweeps would dispatch and BIND the same bodies concurrently, which is
+		// the shape of the v0.7.4 crash: two threads inside the same one-shot
+		// builder, entering an engine VM. The throttle below is check-then-act
+		// and cannot serve as the gate - that is the whole lesson of SingleWinner.
+		//
+		// Released on exit rather than latched, so a sweep that finds nothing is
+		// free to try again next frame.
+		const SingleWinner winner{ g_surveySweepInFlight };
+		if (!winner.Won())
+			return;
+
+		// Per-save state, and the panel outlives the save. Drop it on any load.
+		// The stamp is g_surveyedEpoch itself, not a private static: the READER
+		// checks it too, so the map cannot be believed merely because the sweep
+		// has not got round to clearing it yet.
+		{
+			const auto  epoch = g_unsettledEpoch.load(std::memory_order_acquire);
+			std::size_t dropped = 0;
+			bool        cleared = false;
+			{
+				// ⚠ The stamp and the clear happen TOGETHER, under the lock the
+				// reader also takes, and the stamp comes AFTER the clear. Stamping
+				// first - as the first cut did - leaves a window in which the
+				// epoch already says "current" while the map still holds the
+				// previous save's readings, which is precisely the stale mark the
+				// epoch exists to prevent. A guard with a hole in it is worse than
+				// none, because it stops anyone looking.
+				std::lock_guard lock{ g_surveyedMutex };
+				if (g_surveyedEpoch.load(std::memory_order_acquire) != epoch) {
+					dropped = g_surveyedPercent.size();
+					g_surveyedPercent.clear();
+					g_surveyedEpoch.store(epoch, std::memory_order_release);
+					cleared = true;
+				}
+			}
+			// Logged OUTSIDE the lock: a Papyrus callback thread blocked on this
+			// mutex should never be waiting on a file write.
+			if (cleared && dropped != 0)
+				REX::INFO("[surveyed] world reloaded - dropped {} cached survey reading(s)",
+					dropped);
+		}
+
+		// Steady-clock ticks rather than a time_point, so the throttle can live
+		// in an atomic. 0 is the "never swept" sentinel, and opening the panel
+		// restores it so the first sweep of a session is immediate.
+		const auto  now = clock::now();
+		const auto  nowTicks = now.time_since_epoch().count();
+		const float interval = std::max(fSurveySweepSeconds.GetValue(), 0.5f);
+		{
+			const auto last = g_lastSweepTicks.load(std::memory_order_acquire);
+			if (last != 0 &&
+				std::chrono::duration<float>(clock::duration{ nowTicks - last }).count() < interval)
+				return;
+		}
+		// Stamped HERE, not at each exit. Every path below is a completed
+		// attempt, and the early ones (no rows, all complete, no VM) are exactly
+		// the paths that would otherwise re-run every frame - locking the hot
+		// candidate mutex at frame rate for nothing.
+		g_lastSweepTicks.store(nowTicks, std::memory_order_release);
+
+		// ★ Gate on the feed's uTargetType, never on "the row has an id" - a POI
+		// or station row carries a REFR id, not a PNDT one. Snapshot under the
+		// lock, release, and only then touch the VM.
+		std::vector<std::pair<std::uint32_t, std::string>> targets;
+		{
+			std::lock_guard lock{ g_candidateMutex };
+			targets.reserve(g_candidates.size());
+			for (const auto& row : g_candidates) {
+				if (row.type != kTargetTypePlanet || row.id == 0)
+					continue;
+				targets.emplace_back(row.id, row.name);
+			}
+		}
+		if (targets.empty())
+			return;
+
+		// Drop the ones already known complete before entering the VM at all.
+		const auto listed = targets.size();
+		{
+			std::lock_guard lock{ g_surveyedMutex };
+			std::erase_if(targets, [](const auto& a_target) {
+				const auto found = g_surveyedPercent.find(a_target.first);
+				return found != g_surveyedPercent.end() && found->second >= 1.0f;
+			});
+		}
+		const auto complete = listed - targets.size();
+		if (targets.empty())
+			return;
+
+		const auto game = RE::GameVM::GetSingleton();
+		const auto vm = game ? game->GetVM() : nullptr;
+		if (!vm)
+			return;
+
+		RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> typeInfo;
+		if (!vm->GetScriptObjectType(RE::BSScript::GetVMTypeID<RE::BGSPlanet::PlanetData>(), typeInfo) ||
+			!typeInfo) {
+			// The type is bound in 1.16.244 (measured); if a future build ever
+			// stops binding it, say so once and leave the marks unmarked rather
+			// than retrying into the VM every interval forever.
+			static std::atomic<bool> s_warned{ false };
+			if (!s_warned.exchange(true, std::memory_order_acq_rel))
+				REX::WARN("[surveyed] the VM binds no script type to PNDT - survey marks are off "
+						  "for this session");
+			return;
+		}
+		const std::string scriptType = SafeStr(typeInfo->name.c_str());
+
+		const bool    mayBind = bPanelSurveyBind.GetValue();
+		std::uint32_t sent = 0;
+		for (const auto& [formID, name] : targets) {
+			const auto* form = LookupPlanet(formID);
+			if (!form)
+				continue;
+			if (DispatchSurveyPercent(form, formID, scriptType.c_str(), name, false, mayBind))
+				++sent;
+		}
+
+		// One line per sweep, and only when the count moves - this runs for as
+		// long as the player cruises.
+		static std::atomic<std::uint32_t> s_lastSent{ 0xFFFFFFFF };
+		if (s_lastSent.exchange(sent, std::memory_order_acq_rel) != sent)
+			REX::INFO("[surveyed] sweep: {} of {} listed body/bodies queried ({} already complete, "
+					  "never re-read)",
+				sent, listed, complete);
 	}
 
 	void ProbeSurveyVM()
@@ -3851,7 +4198,8 @@ namespace
 				continue;
 			}
 			if (DispatchSurveyPercent(form, target.id, scriptType.c_str(),
-					std::format("{:08X} {}{}", target.id, target.isMoon ? "moon " : "", target.name)))
+					std::format("{:08X} {}{}", target.id, target.isMoon ? "moon " : "", target.name),
+					true, bProbeSurveyBind.GetValue()))
 				++accepted;
 			else
 				REX::WARN("[surveyed] {:08X} '{}' - DispatchMethodCall returned FALSE",
@@ -4871,10 +5219,17 @@ namespace
 		static std::atomic<std::int64_t> s_lastUnsettledMs{ 0 };
 		const auto                       nowMs =
 			std::chrono::duration_cast<std::chrono::milliseconds>(clock::now().time_since_epoch()).count();
+		static std::atomic<bool> s_wasUnsettled{ false };
 		if (ui->IsMenuOpen(s_loadingMenu) || ui->IsMenuOpen(s_mainMenu)) {
 			s_lastUnsettledMs.store(nowMs, std::memory_order_release);
+			// Once per unsettled EPISODE, not once per frame of it: anything
+			// holding per-save state watches this counter to know it must throw
+			// what it has away.
+			if (!s_wasUnsettled.exchange(true, std::memory_order_acq_rel))
+				g_unsettledEpoch.fetch_add(1, std::memory_order_acq_rel);
 			return false;
 		}
+		s_wasUnsettled.store(false, std::memory_order_release);
 		const auto last = s_lastUnsettledMs.load(std::memory_order_acquire);
 		// First call of the session lands here with 0: treat process start as
 		// the unsettled moment, which the timer then measures from.
@@ -6492,9 +6847,140 @@ namespace
 				return true;
 			};
 
+			// The survey marks go in BEFORE the text fields, so that whatever
+			// orders the panel's script-added children puts them underneath the
+			// distance number rather than over it. Creation order is the only
+			// lever there is here - relative z among script-added siblings has
+			// never been proven in this project, only assumed - which is why
+			// fPanelSurveyBannerWidth exists as the escape hatch: shrink the
+			// banner off the number and the question stops mattering.
+			const double distX = width - kNamePad - kDistWidth;
+			if (bPanelSurveyMarks.GetValue()) {
+				// Clamped at BOTH ends: a bar taller than the row would be drawn
+				// at a negative y offset, i.e. into the row above (or into the
+				// header, for row 0).
+				const double barH = std::clamp(
+					static_cast<double>(fPanelSurveyBarHeight.GetValue()), 1.0,
+					std::max(1.0, rowHeight - 4.0));
+				const double bannerW = kDistWidth *
+				                       std::clamp(static_cast<double>(fPanelSurveyBannerWidth.GetValue()), 0.1, 1.0);
+
+				// The completed banner: vanilla's plate with the four bands over
+				// it, anchored left exactly as sprite 35 draws them. Static art -
+				// built once, only `visible` moves afterwards.
+				if (g_panelClip.CreateEmptyMovieClip(&g_panelSurveyBanners[i],
+						std::format("SurveyBanner{}", i).c_str(),
+						static_cast<std::uint32_t>(10 + i))) {
+					RE::Scaleform::GFx::Value gfxB;
+					if (g_panelSurveyBanners[i].GetMember("graphics", &gfxB)) {
+						const double top = rowY + 1.0;
+						const double bot = rowY + rowHeight - 1.0;
+						const auto   quad = [&](double a_x0Top, double a_x1Top, double a_x0Bot,
+									  double a_x1Bot, std::uint32_t a_colour, double a_alpha) {
+                            V fill[]{ V{ a_colour }, V{ a_alpha } };
+                            gfxB.Invoke("beginFill", nullptr, fill, 2);
+                            V p0[]{ V{ a_x0Top }, V{ top } };
+                            gfxB.Invoke("moveTo", nullptr, p0, 2);
+                            V p1[]{ V{ a_x1Top }, V{ top } };
+                            gfxB.Invoke("lineTo", nullptr, p1, 2);
+                            V p2[]{ V{ a_x1Bot }, V{ bot } };
+                            gfxB.Invoke("lineTo", nullptr, p2, 2);
+                            V p3[]{ V{ a_x0Bot }, V{ bot } };
+                            gfxB.Invoke("lineTo", nullptr, p3, 2);
+                            gfxB.Invoke("lineTo", nullptr, p0, 2);
+                            gfxB.Invoke("endFill", nullptr, nullptr, 0);
+						};
+
+						const double plateAlpha =
+							std::clamp(static_cast<double>(fPanelSurveyPlateAlpha.GetValue()), 0.0, 1.0);
+						quad(distX, distX + bannerW, distX, distX + bannerW,
+							uPanelSurveyPlate.GetValue(), plateAlpha);
+
+						// Four nested bands, each starting at the left edge and
+						// leaning right, drawn gold -> orange -> crimson -> navy
+						// so the last is on top and widest - which is the order
+						// and the outcome measured off the vanilla shape.
+						const std::uint32_t bands[]{ uPanelSurveyBand1.GetValue(),
+							uPanelSurveyBand2.GetValue(), uPanelSurveyBand3.GetValue(),
+							uPanelSurveyBand4.GetValue() };
+						// Widths as fractions of the banner, mirroring the
+						// vanilla areas (navy widest, gold narrowest).
+						const double widths[]{ 0.62, 0.50, 0.37, 0.24 };
+						// ⚠ The lean must not exceed the NARROWEST band, or that
+						// band's bottom edge crosses its own left edge: the quad
+						// self-intersects and paints into the 6 px gutter beside
+						// the name field. At the ini's own recommended
+						// fPanelSurveyBannerWidth=0.5 a flat 0.55*rowHeight lean
+						// did exactly that. Scaled here AND clamped per band,
+						// because the width is user-editable and a knob that can
+						// draw outside its own cell eventually will.
+						const double lean = std::min(rowHeight * 0.55, bannerW * widths[3]);
+						for (int b = 0; b < 4; ++b) {
+							const double w = bannerW * widths[b];
+							const double xBot = std::max(distX, distX + w - lean);
+							quad(distX, distX + w, distX, xBot, bands[b], plateAlpha);
+						}
+					}
+					g_panelSurveyBanners[i].SetMember("visible", V{ false });
+				}
+
+				// The progress bar's TRACK, full width along the cell's bottom
+				// edge. Its own graphics render below its children, so the fill
+				// child sits over it without any z-order question at all.
+				if (g_panelClip.CreateEmptyMovieClip(&g_panelSurveyBars[i],
+						std::format("SurveyBar{}", i).c_str(),
+						static_cast<std::uint32_t>(40 + i))) {
+					RE::Scaleform::GFx::Value gfxT;
+					if (g_panelSurveyBars[i].GetMember("graphics", &gfxT)) {
+						const double y0 = rowY + rowHeight - barH - 2.0;
+						V fill[]{ V{ uPanelSurveyBarTrack.GetValue() },
+							V{ std::clamp(static_cast<double>(fPanelSurveyBarTrackAlpha.GetValue()), 0.0, 1.0) } };
+						gfxT.Invoke("beginFill", nullptr, fill, 2);
+						V p0[]{ V{ distX }, V{ y0 } };
+						gfxT.Invoke("moveTo", nullptr, p0, 2);
+						V p1[]{ V{ distX + kDistWidth }, V{ y0 } };
+						gfxT.Invoke("lineTo", nullptr, p1, 2);
+						V p2[]{ V{ distX + kDistWidth }, V{ y0 + barH } };
+						gfxT.Invoke("lineTo", nullptr, p2, 2);
+						V p3[]{ V{ distX }, V{ y0 + barH } };
+						gfxT.Invoke("lineTo", nullptr, p3, 2);
+						gfxT.Invoke("lineTo", nullptr, p0, 2);
+						gfxT.Invoke("endFill", nullptr, nullptr, 0);
+					}
+					// The fill: full-width art whose scaleX becomes the
+					// percentage. Drawn from x=0 in the child's own space and
+					// the child placed at the cell's left edge, so scaling grows
+					// it rightwards from there - the scrollbar's thumb trick,
+					// turned on its side.
+					if (g_panelSurveyBars[i].CreateEmptyMovieClip(&g_panelSurveyFills[i],
+							"Fill", 1)) {
+						RE::Scaleform::GFx::Value gfxF;
+						if (g_panelSurveyFills[i].GetMember("graphics", &gfxF)) {
+							const double y0 = rowY + rowHeight - barH - 2.0;
+							V fill[]{ V{ uPanelSurveyBarFill.GetValue() },
+								V{ std::clamp(static_cast<double>(fPanelSurveyBarAlpha.GetValue()), 0.0, 1.0) } };
+							gfxF.Invoke("beginFill", nullptr, fill, 2);
+							V p0[]{ V{ 0.0 }, V{ y0 } };
+							gfxF.Invoke("moveTo", nullptr, p0, 2);
+							V p1[]{ V{ kDistWidth }, V{ y0 } };
+							gfxF.Invoke("lineTo", nullptr, p1, 2);
+							V p2[]{ V{ kDistWidth }, V{ y0 + barH } };
+							gfxF.Invoke("lineTo", nullptr, p2, 2);
+							V p3[]{ V{ 0.0 }, V{ y0 + barH } };
+							gfxF.Invoke("lineTo", nullptr, p3, 2);
+							gfxF.Invoke("lineTo", nullptr, p0, 2);
+							gfxF.Invoke("endFill", nullptr, nullptr, 0);
+						}
+						g_panelSurveyFills[i].SetMember("x", V{ distX });
+					}
+					g_panelSurveyBars[i].SetMember("visible", V{ false });
+				}
+			}
+			g_panelSurveyDrawn[i] = kSurveyNeverDrawn;
+
 			if (!makeField(g_panelRows[i], kNamePad + iconColumn, nameWidth, false))
 				break;
-			if (!makeField(g_panelDists[i], width - kNamePad - kDistWidth, kDistWidth, true))
+			if (!makeField(g_panelDists[i], distX, kDistWidth, true))
 				break;
 
 			// The icon clip sits in its own column and is drawn into later, when
@@ -7362,6 +7848,12 @@ namespace
 					setVis(g_panelIcons[i], false);
 					setVis(g_panelPoiIcons[i], false);
 					setVis(g_panelGiantIcons[i], false);
+					// Hidden with the rest during the animation, and forgotten
+					// so the settled-open pass re-asserts them rather than
+					// believing a stale "already drawn".
+					setVis(g_panelSurveyBanners[i], false);
+					setVis(g_panelSurveyBars[i], false);
+					g_panelSurveyDrawn[i] = kSurveyNeverDrawn;
 				}
 			}
 		}
@@ -7545,6 +8037,18 @@ namespace
 						poiIcon.SetMember("visible", V{ false });
 					if (haveGiantIcon)
 						giantIcon.SetMember("visible", V{ false });
+					// ⚠ Every EXEMPTION from a level-based write is also an
+					// exemption from the RESTORE - the v0.10.2 lesson. An empty
+					// slot has to stand its survey mark down explicitly and
+					// forget what it drew, or the mark rides a scroll onto a
+					// body that never earned it.
+					if (g_panelSurveyDrawn[r] != kSurveyNeverDrawn) {
+						if (g_panelSurveyBanners[r].IsObject() || g_panelSurveyBanners[r].IsDisplayObject())
+							g_panelSurveyBanners[r].SetMember("visible", V{ false });
+						if (g_panelSurveyBars[r].IsObject() || g_panelSurveyBars[r].IsDisplayObject())
+							g_panelSurveyBars[r].SetMember("visible", V{ false });
+						g_panelSurveyDrawn[r] = kSurveyNeverDrawn;
+					}
 					continue;
 				}
 
@@ -7798,17 +8302,74 @@ namespace
 					}
 				}
 
+				// The survey mark in the distance cell (Phase 6). Read from the
+				// mod-side store at render time, the way rowClass and rowSettled
+				// already are - which is the whole reason "several rows flip at
+				// once" needs no machinery: this runs on the HIGH feed, while the
+				// candidate list only rebuilds on the LOW one.
+				//
+				// ★ Gated on uTargetType, never on "the row has an id": a POI or
+				// station row carries a REFR id, and a survey percent keyed by it
+				// would be a different body's answer. Nothing is drawn for a body
+				// the sweep has not reached yet - unknown and unsurveyed look the
+				// same, which is what keeps a late read merely late.
+				//
+				// ⚠ The epoch test is the one that matters. Without it, "the map
+				// is current" would rest on the sweep having cleared it before
+				// this ran - and the two are unordered threads (this rides the
+				// HIGH feed, the sweep the per-frame task). Whether that race is
+				// winnable today depends on a chain of unrelated guards that a
+				// later change could quietly remove; with the test, a map from
+				// another save simply reads as UNKNOWN, and unknown draws
+				// nothing. The reader is the authority, not the writer.
+				float surveyPct = -1.0f;
+				if (bPanelSurveyMarks.GetValue() && row.type == kTargetTypePlanet && row.id != 0) {
+					// Epoch tested INSIDE the lock, with the same ordering the
+					// clear uses, so "the map is current" and "these are the
+					// map's contents" are one observation rather than two.
+					std::lock_guard lock{ g_surveyedMutex };
+					if (g_surveyedEpoch.load(std::memory_order_acquire) ==
+						g_unsettledEpoch.load(std::memory_order_acquire)) {
+						const auto found = g_surveyedPercent.find(row.id);
+						if (found != g_surveyedPercent.end())
+							surveyPct = found->second;
+					}
+				}
+				const bool surveyChanged = g_panelSurveyDrawn[r] != surveyPct;
+				const bool bannerShown = surveyPct >= 1.0f;
+				if (surveyChanged) {
+					const float minPct = std::max(fPanelSurveyMinPercent.GetValue(), 0.0f);
+					const bool  barShown = surveyPct > minPct && surveyPct < 1.0f;
+					if (g_panelSurveyBanners[r].IsObject() || g_panelSurveyBanners[r].IsDisplayObject())
+						g_panelSurveyBanners[r].SetMember("visible", V{ bannerShown });
+					if (g_panelSurveyBars[r].IsObject() || g_panelSurveyBars[r].IsDisplayObject()) {
+						g_panelSurveyBars[r].SetMember("visible", V{ barShown });
+						if (barShown && (g_panelSurveyFills[r].IsObject() ||
+											g_panelSurveyFills[r].IsDisplayObject()))
+							g_panelSurveyFills[r].SetMember("scaleX",
+								V{ static_cast<double>(std::clamp(surveyPct, 0.0f, 1.0f)) });
+					}
+					g_panelSurveyDrawn[r] = surveyPct;
+				}
+
 				// The highlighted row's text steps up to the bright colour
 				// while the bar is on it - vanilla's Selected trick
 				// (v0.16.2). textColor overrides the format's colour, so it
 				// is re-asserted after every text refresh (whose
 				// setTextFormat resets it) and on the tick the highlight
-				// arrives at or leaves this row.
-				if (refreshText || rowBright != g_panelRowBright[r]) {
+				// arrives at or leaves this row - or the survey mark does.
+				if (refreshText || rowBright != g_panelRowBright[r] || surveyChanged) {
 					const V rowColour{ rowBright ? uPanelTextColorHighlight.GetValue() :
 					                               uPanelTextColor.GetValue() };
 					nameField.SetMember("textColor", rowColour);
-					distField.SetMember("textColor", rowColour);
+					// On a surveyed row the number sits ON vanilla's near-white
+					// plate, so it wears the banner's own dark label colour -
+					// which is exactly what the banner does with its own text.
+					// This wins over the highlight: bright-on-near-white would
+					// be nothing at all.
+					const bool darkOnPlate = bannerShown && bPanelSurveyBannerText.GetValue();
+					distField.SetMember("textColor",
+						darkOnPlate ? V{ uPanelSurveyLabel.GetValue() } : rowColour);
 				}
 				g_panelRowBright[r] = rowBright;
 
@@ -8016,6 +8577,24 @@ namespace
 		// out about the hard way.
 		if (g_surveyVmProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
 			ProbeSurveyVM();
+
+		// The survey sweep (Phase 6). Same place as the probe and for the same
+		// reason - a feed callback is inside Scaleform's locks and this reaches
+		// into the Papyrus VM.
+		//
+		// ⚠ Gated on the panel being OPEN, not merely on cruising. RefreshPanel
+		// is the only consumer of this data and it returns before the row loop
+		// unless the panel is open, so a cruise-only gate meant the mod bound a
+		// Papyrus object to every planet of every system it passed through to
+		// fill a map nothing would ever read - turning the mod's single
+		// save-state exception from "the cost of using the feature" into "the
+		// cost of having the mod installed". PHASE6's own plan said "panel
+		// open"; the first cut dropped it. Opening the panel zeroes the throttle
+		// (see TogglePanel), so the first sweep still lands immediately.
+		if (bPanelSurveyMarks.GetValue() && bPanel.GetValue() &&
+			g_panelOpen.load(std::memory_order_acquire) &&
+			g_inCruise.load(std::memory_order_acquire) && WorldSettled())
+			SweepSurveyState();
 
 		if (bLogHeartbeat.GetValue())
 			LogHeartbeat();
