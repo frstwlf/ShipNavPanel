@@ -11,18 +11,24 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**⭐⭐ COURSE LOCK — CONFIRMED IN GAME 2026-08-02, and it changes what this mod
-is.** Highlight a row, press fire, and the cruise autopilot takes the ship to
-that body. **Nothing has to be targeted first**, which is the part that matters:
-`Reticle_OnCruiseLockCourse` accepts a `uBodyID` the base game never sends —
-one that is not the current info target — so the panel finally has a verb that
-reaches the engine directly. `bLockCourse` (default **on**) and
+**⭐⭐ COURSE LOCK — CONFIRMED IN GAME, and it changes what this mod is.**
+Highlight a **planet or moon**, press the course key, and the cruise autopilot
+takes the ship there. **Nothing has to be targeted first**, which is the part
+that matters: `Reticle_OnCruiseLockCourse` accepts a `uBodyID` the base game
+never sends — one that is not the current info target — so the panel finally has
+a verb that reaches the engine directly. `bLockCourse` (default **on**) and
 `sLockCourseEvent` (default **`LockCourse`** — the player's own course key) live
 in `[Panel]` with the rest of the controls. **Vanilla needs a target before it
 will lock a course; with the panel open the mod aims the same key at the
 highlighted row instead**, and with the panel closed the key is untouched. One
 event, both devices (RB on a pad), no hint pill needed because the game already
 prompts with it.
+
+**Scope, measured rather than assumed (2026-08-03): planets and moons only.**
+Stations, POIs and ships cannot take a course by id, so on those rows the mod
+**leaves the press to vanilla**, whose own route goes through the info target and
+reaches them. Getting there took four flights and four gates; the account is in
+Settled and the mechanism is at `IsCourseableType`.
 
 Still **no version bump** — head is v1.1.2 plus this, pending a release
 candidate.
@@ -401,15 +407,15 @@ Later, nice-to-have:
       already cleared by the diff, and what is left is the mechanism — see
       Settled.
 
-- [ ] **⚠ TT_STATION — the only row type still unmeasured.** The gate delegates
-      it, which is safe but may be needlessly narrow: no station has ever been
-      course-locked with the audit watching (the early "stations work" report
-      belongs to the same retracted recollection). One press settles it —
-      highlight a station with `bVerboseLog` on and read whether
-      `[course] the engine reports a course locked on '<station>'` appears or the
-      1.5 s `did not take a course` warning does. If stations take a by-id
-      course, add `kTargetTypeStation` to `IsCourseableType`: **the gate should be
-      exactly as wide as the engine is and no wider.**
+- [x] ~~TT_STATION — the only row type still unmeasured.~~ **MEASURED
+      2026-08-03: stations, POIs and ships all fail; planets and moons are the
+      only working destinations.** `IsCourseableType` is now `TT_PLANET` alone
+      (moons ride as `TT_PLANET`), and it is the first gate on this feature where
+      the prediction and the measurement agreed — which is the only reason it can
+      be trusted. `TT_STAR` is deliberately not included: no star has ever been
+      course-locked, the system's own does not appear to reach the feed, and a
+      star is an `STDT` record rather than the `PNDT` the by-id route resolves.
+      Delegating it costs nothing.
 
 - [x] ~~THE LEAD: `uniqueID` may be the wrong number to send.~~ **DEAD, measured
       2026-08-03:** `[course] the feed does NOT carry a per-entry uBodyID`.
@@ -1009,6 +1015,13 @@ Each of these cost real time; the reasoning is in the findings docs.
   there.**
   ⭐ And the posture that survives all of it: **when an engine call takes an id,
   audit what came back rather than assuming it refused what it could not use.**
+- **⭐ THE MEASURED SCOPE: planets and moons take a by-id course; stations, POIs
+  and ships do not** (every type tried, 2026-08-03). Exactly what the two-route
+  mechanism predicts — the first time on this feature that a prediction and a
+  measurement agreed, and the reason `IsCourseableType` can be trusted where four
+  earlier gates could not. `TT_STAR` is excluded for want of evidence rather than
+  against it: no star has ever reached the list to be tried, and a star is an
+  `STDT` record, not the `PNDT` the by-id route resolves.
 - **⭐⭐ TWO ROUTES TO A COURSE, resolving DIFFERENT THINGS — this is the whole
   story and it took four flights.** `{uBodyID: 0}` (vanilla's key) means "use the
   **current info target**", resolved through the targeting system, so it reaches

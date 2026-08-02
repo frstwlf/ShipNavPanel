@@ -2006,10 +2006,11 @@ namespace
 	// mistaken and they said so; the type rule stands, but on a mechanism now
 	// rather than on a correlation.
 	//
-	// ⚠ TT_STATION is UNCONFIRMED and is deliberately delegated. Nothing has ever
-	// course-locked one with the audit watching, so if it turns out the engine
-	// takes a station by id, widen IsCourseableType - the gate should be exactly
-	// as wide as the engine is, and no wider.
+	// ⚠ THE BOUNDARY IS NOW MEASURED, not inferred: planets and moons take a
+	// course by id; stations, POIs and ships do not (tester, 2026-08-03, every
+	// type tried). That is exactly what the two-route mechanism predicts, which
+	// is the first time on this feature that a prediction and a measurement have
+	// agreed - and the reason IsCourseableType can finally be trusted.
 	// ---------------------------------------------------------------------------
 	// Defined with the other target-type helpers, below the TT_* constants.
 	bool IsCourseableType(std::uint32_t a_type);
@@ -2301,13 +2302,22 @@ namespace
 	constexpr std::uint32_t kTargetTypeStation = 6;
 	constexpr std::uint32_t kTargetTypePlanet = 7;
 
-	// Which rows the mod can aim the autopilot at by id: star and planet, the two
-	// the feed uses for celestial bodies (moons ride as TT_PLANET like everything
-	// else in the sky). Everything else is delegated to vanilla's target-based
-	// route - see the header above g_highlightCourseable.
+	// Which rows the mod can aim the autopilot at by id. **Measured, not
+	// reasoned** (tester, 2026-08-03): planets and moons work, and stations,
+	// POIs and ships do not - so `TT_PLANET`, which is what moons ride as too.
+	// Everything else is delegated to vanilla's target-based route; see the
+	// header above g_highlightCourseable.
+	//
+	// ⚠ `TT_STAR` is NOT here, and its absence is the honest reading rather than
+	// an oversight. No star has ever been course-locked - the system's own star
+	// does not appear to reach the feed at all, and another system's is filtered
+	// out by distance long before it could be highlighted - so there is no
+	// evidence to include it on. A star is a `STDT` record besides, not the
+	// `PNDT` the by-id route resolves. If one ever turns up in the list and takes
+	// a course, widen this; delegating it meanwhile costs nothing.
 	bool IsCourseableType(std::uint32_t a_type)
 	{
-		return a_type == kTargetTypeStar || a_type == kTargetTypePlanet;
+		return a_type == kTargetTypePlanet;
 	}
 
 	bool IsLocalBody(std::uint32_t a_type, double a_distanceMeters)

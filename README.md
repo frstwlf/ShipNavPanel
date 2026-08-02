@@ -15,17 +15,17 @@ and nothing changes — which is also how you clear a locked target without
 picking another. Outside cruise the mod is idle and the scanner key keeps its
 vanilla job.
 
-**Or just set a course.** Highlight a row and press your normal **course-lock
-key** — the one the game already prompts you with in cruise — and the autopilot
-flies you there. Vanilla needs something targeted before it will lock a course;
-with the panel open it aims at the highlighted row instead. Press again on the
-same body to clear. With the panel closed the key is untouched.
+**Or just set a course.** Highlight a **planet or moon** and press your normal
+**course-lock key** — the one the game already prompts you with in cruise — and
+the autopilot flies you there. Vanilla needs something targeted before it will
+lock a course; with the panel open it aims at the highlighted row instead. Press
+again on the same body to clear. With the panel closed the key is untouched.
 
-That covers **planets, moons and stars**. On any other row — stations, ships,
-contacts — the mod leaves the key alone and your press reaches the game
-untouched, because the game's own course route works through your *target* and
-gets to things the panel's route cannot. Target one and the same key still
-works, panel open or closed.
+On any other row — stations, points of interest, ships — the mod leaves the key
+alone and your press reaches the game untouched. That is deliberate: the game's
+own course route works through your *target* and reaches what the panel's
+by-id route cannot, so target one and the same key still works, panel open or
+closed.
 
 For everything else the mod **points rather than targets**: Starfield's UI layer
 has no by-id "set target", so the panel steers your eyes and you acquire the
