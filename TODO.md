@@ -413,12 +413,18 @@ Later, nice-to-have:
       `$JUMP TO` action (`ShipReticle.as:747`), which nobody has ever sent with a
       destination of their own choosing.
 
-      **⭐ Why this one is worth a flight where the last three gates were not:
-      the engine publishes the permission per row.** `bFarTravelAllowed` /
-      `bFarTravelDisabled` ride the low feed beside every entry, so the probe
-      offers the verb *only where the game has already granted it* — the boundary
-      is known in ADVANCE for the first time on this feature, instead of being
-      reconstructed from failures.
+      ⛔ **Its first cut never dispatched once, and the reason is the lesson.**
+      It was gated on `bFarTravelAllowed`, claimed here as a field "the engine
+      publishes per row" — it is not. That pair belongs to `TargetOnlyData`, the
+      **info-target payload**, which is where the dump that named them came from.
+      [PHASE1-SWF-FINDINGS.md:264](PHASE1-SWF-FINDINGS.md:264) has recorded the
+      per-entry list since July — `bLandingAllowed`/`bLandingDisabled`, no
+      far-travel pair — and it was never checked before the claim was made. Same
+      mistake as expecting the dossier's `uBodyID` on a feed entry, twice in two
+      days. ⭐ **A probe gated on an unverified field is a probe that cannot run,
+      and it fails silently — the worst way for an experiment to fail.** The flag
+      is now the only gate; whether an entry carries those fields is merely
+      reported beside the dispatch.
 
       ⚠ **Save first: it moves the ship**, which nothing else in this mod does.
       ⚠ **No feed reports a far travel**, so unlike the course there is no audit —
@@ -1045,6 +1051,20 @@ Each of these cost real time; the reasoning is in the findings docs.
   there.**
   ⭐ And the posture that survives all of it: **when an engine call takes an id,
   audit what came back rather than assuming it refused what it could not use.**
+- **⛔⛔ WHICH PAYLOAD A FIELD LIVES ON IS NOT GUESSABLE, AND I HAVE GUESSED IT
+  TWICE.** `uBodyID` was read off `PlanetCardInfo` and expected on a low-feed
+  entry (it is not there). `bFarTravelAllowed`/`bFarTravelDisabled` were read off
+  the `InfoTargetProvider` payload and expected on a low-feed entry (also not
+  there) — and that one silently disabled a probe, so a whole flight measured
+  nothing. **The per-entry list has been written down since July**
+  ([PHASE1-SWF-FINDINGS.md:264](PHASE1-SWF-FINDINGS.md:264)): `uniqueID`,
+  `uTargetType`, `bLandingAllowed`, `bLandingDisabled`, `bIsCruiseTargetLock`,
+  `bHasQuestTarget`, `bMarkerDiscovered`, `bDetectedByPlayer`, `hostile`,
+  `iFaction`, `iLevel`, `fMinArrivalDistance`, `handle`. ⭐ **Check that list
+  before writing code against a field name, and if the field is not on it, make
+  the code REPORT its presence rather than depend on it.** The `uBodyID` pass got
+  that right by accident and answered its question in one flight; the far-travel
+  pass got it wrong and answered nothing.
 - **⭐ THE MEASURED SCOPE: planets and moons take a by-id course; stations, POIs
   and ships do not** (every type tried, 2026-08-03). Exactly what the two-route
   mechanism predicts — the first time on this feature that a prediction and a

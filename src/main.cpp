@@ -579,11 +579,18 @@ namespace
 	// panel", which may be better than a course or may be quite wrong for the
 	// feature's feel. One flight says which.
 	//
-	// ⭐ What makes this worth a flight rather than a guess: **the engine
-	// publishes the permission per row.** `bFarTravelAllowed` / `bFarTravelDisabled`
-	// ride the low feed beside every entry, so the mod can offer the verb exactly
-	// where the game says it is granted - the first time on this feature that the
-	// boundary is knowable in ADVANCE rather than reconstructed from failures.
+	// ⛔ **THE FIRST CUT OF THIS PROBE NEVER RAN, AND THE REASON IS THE LESSON.**
+	// It was gated on `bFarTravelAllowed` "which the engine publishes per row" -
+	// except it does not. That pair belongs to `TargetOnlyData`, the INFO TARGET
+	// payload, which is where the dump that named them came from; the low feed's
+	// per-entry list has `bLandingAllowed`/`bLandingDisabled` and no far-travel
+	// pair at all. **PHASE1 recorded that list in July and it was never checked
+	// before the claim was made** - the same mistake as reading `uBodyID` off the
+	// dossier and expecting it on an entry, made twice in two days.
+	// ⭐ So: **a probe gated on an unverified field is a probe that cannot run**,
+	// and it fails silently, which is the worst way for an experiment to fail.
+	// The flag is the opt-in; there is no permission check. Whether the entry
+	// carries those fields is now merely REPORTED beside the dispatch.
 	//
 	// ⚠ Two ways this could fail that are worth recognising in the log rather
 	// than re-deriving:
@@ -836,13 +843,15 @@ namespace
 		// one to send. `haveBodyID` records presence, because 0 is a value.
 		std::uint32_t bodyID{ 0 };
 		bool          haveBodyID{ false };
-		// The engine's own permission for the far-travel verb, per entry - the
-		// pair the far-travel icon reads to decide whether its "$JUMP TO" hold
-		// is offered and enabled (FarTravelIconBase.UpdateButton). Captured for
-		// the far-travel probe, which offers the verb only where the game
-		// already says yes.
+		// ⚠ `bFarTravelAllowed`/`bFarTravelDisabled` are NOT per-entry fields.
+		// They belong to `TargetOnlyData`, the info-target payload, which is
+		// where the dump that named them came from - and PHASE1 recorded the
+		// per-entry list long ago without them in it. Read anyway, so the log can
+		// state whether an entry carries them rather than leaving it to be
+		// assumed a second time; `haveFarTravel` is the answer, not the values.
 		bool farTravelAllowed{ false };
 		bool farTravelDisabled{ false };
+		bool haveFarTravel{ false };
 		// The cruise AUTOPILOT's current course - the per-entry
 		// bIsCruiseTargetLock the far-travel icon reads to decide whether its
 		// button offers LOCK or CLEAR (FarTravelIconBase.UpdateButton). ⚠ NOT
@@ -2058,7 +2067,12 @@ namespace
 	// atomic so the input path never takes the candidate mutex to ask. Written
 	// wherever the highlight or the candidate list changes.
 	std::atomic<bool> g_highlightCourseable{ false };
-	// Same, for the far-travel probe: the engine's own permission on that row.
+	// Whether the highlighted row's feed entry carried the far-travel permission
+	// pair at all. ⚠ NOT a gate - the first cut of the probe gated on the VALUE,
+	// which is false for every entry because the field is not there, so the probe
+	// never dispatched once and the flight measured nothing. **A probe gated on
+	// an unverified field is a probe that cannot run.** The flag is the opt-in;
+	// this is only reported.
 	std::atomic<bool> g_highlightFarTravel{ false };
 	// A far-travel dispatch waiting to be made, by row id; 0 means none.
 	std::atomic<std::uint32_t> g_pendingFarTravelID{ 0 };
@@ -2806,8 +2820,7 @@ namespace
 		// can ask "can the mod course this row" without touching the mutex.
 		const auto& picked = g_candidates[local[pos]];
 		g_highlightCourseable.store(IsCourseableType(picked.type), std::memory_order_release);
-		g_highlightFarTravel.store(picked.farTravelAllowed && !picked.farTravelDisabled,
-			std::memory_order_release);
+		g_highlightFarTravel.store(picked.haveFarTravel, std::memory_order_release);
 	}
 
 	void TogglePanel()
@@ -2873,11 +2886,16 @@ namespace
 		// vanilla for these rows. If the two ever stop matching, the mod must
 		// still not send an id the engine cannot resolve into a destination.
 		if (!g_highlightCourseable.load(std::memory_order_acquire)) {
-			// The probe takes the rows the course cannot, but only where the
-			// engine has already granted far travel on that entry.
-			if (bProbeFarTravel.GetValue() && g_highlightFarTravel.load(std::memory_order_acquire)) {
+			// The probe takes every row the course cannot - no permission check.
+			// The first cut had one, on a field the entries do not carry, so it
+			// was false always and the probe never ran.
+			if (bProbeFarTravel.GetValue()) {
 				g_pendingFarTravelID.store(a_id, std::memory_order_release);
-				REX::INFO("[fartravel] probe: asking for far travel to {:08X}", a_id);
+				REX::INFO("[fartravel] probe: asking for far travel to {:08X} (its feed entry {} "
+						  "the far-travel permission fields)",
+					a_id,
+					g_highlightFarTravel.load(std::memory_order_acquire) ? "DOES carry" :
+					                                                       "does NOT carry");
 				return;
 			}
 
@@ -3136,8 +3154,7 @@ namespace
 		// stealing the press there would break a flow that works without the mod.
 		// See the header above g_highlightCourseable.
 		const bool actionable = g_highlightCourseable.load(std::memory_order_acquire) ||
-		                        (bProbeFarTravel.GetValue() &&
-		                            g_highlightFarTravel.load(std::memory_order_acquire));
+		                        bProbeFarTravel.GetValue();
 		const bool claiming = bLockCourse.GetValue() && bCourseSplice.GetValue() &&
 		                      g_panelOpen.load(std::memory_order_acquire) &&
 		                      g_inCruise.load(std::memory_order_acquire) &&
@@ -4136,8 +4153,10 @@ namespace
 			// the only readback that feature has (see Candidate::courseLocked).
 			if (entry.GetMember("bIsCruiseTargetLock", &member) && member.IsBoolean())
 				row.courseLocked = member.GetBoolean();
-			if (entry.GetMember("bFarTravelAllowed", &member) && member.IsBoolean())
+			if (entry.GetMember("bFarTravelAllowed", &member) && member.IsBoolean()) {
 				row.farTravelAllowed = member.GetBoolean();
+				row.haveFarTravel = true;
+			}
 			if (entry.GetMember("bFarTravelDisabled", &member) && member.IsBoolean())
 				row.farTravelDisabled = member.GetBoolean();
 			// Galaxy data is filled in after collection, from the body table.
@@ -4963,7 +4982,7 @@ namespace
 					for (const auto& row : g_candidates) {
 						if (row.id == highlight) {
 							courseable = IsCourseableType(row.type);
-							farTravel = row.farTravelAllowed && !row.farTravelDisabled;
+							farTravel = row.haveFarTravel;
 							break;
 						}
 					}
@@ -9961,11 +9980,10 @@ namespace
 						  "the game acts on it too. Only useful for the A/B against the pre-splice "
 						  "build; pair it with a key vanilla ignores in cruise.");
 			if (bProbeFarTravel.GetValue())
-				REX::WARN("[fartravel] PROBE ON - on a row the course cannot take, the course key "
-						  "will instead ask the game to FAR TRAVEL to it, wherever the feed says "
-						  "far travel is allowed there. ⚠ That MOVES YOUR SHIP, which nothing else "
-						  "in this mod does. Untried: nobody has ever sent that event with an id "
-						  "of their own choosing.");
+				REX::WARN("[fartravel] PROBE ON - on ANY row the course cannot take, the course key "
+						  "will instead ask the game to FAR TRAVEL to it. ⚠ That MOVES YOUR SHIP, "
+						  "which nothing else in this mod does. Untried: nobody has ever sent that "
+						  "event with an id of their own choosing.");
 		}
 		else
 			REX::INFO("[course] course lock OFF - the panel points, and steering stays manual");
