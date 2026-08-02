@@ -66,6 +66,10 @@ all defaulting `true` in source *and* in the shipped ini. Note that
 removes the gate and restores the older, more permissive behaviour rather than
 producing an inert build.
 
+**LIVE ON NEXUS with a changelog, 2026-08-02** — the third release of the mod,
+and the first that fixes a crash rather than adding to it. No Patreon/Ko-fi
+post: those are one-offs for a new mod, never for an update.
+
 **v1.1.1 — CONTROLLER BROWSING, BOTH HALVES CONFIRMED IN GAME 2026-08-02 and
 PACKAGED for release.** v1.1.0 landed the feature ("it works"); v1.1.1 fixed the
 one thing the tester found — the browse pill did not follow a device swap made
