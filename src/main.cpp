@@ -543,16 +543,16 @@ namespace
 	// a rebind, and it is bound on both devices (RB on a pad), so one line serves
 	// each - the same property the browse pair has.
 	//
-	// It is NOT a free key, and that is deliberate rather than tolerated. The mod
-	// does the same KIND of thing vanilla does with it, only aimed at the panel's
-	// highlight instead of the info target, and only while the panel is open - so
-	// the failure mode of a collision is "a course got set on the other body for a
-	// frame", not a lost control. The alternative tried first, `WeaponGroup1`
-	// (primary fire, idle in cruise), worked but made the game print its own
-	// "weapons unavailable" toast on every press.
+	// It is NOT a free key, and the mod does not try to share it: while the panel
+	// is open the press is SPLICED OUT of the UI's input queue, so the SWF never
+	// sees it and the mod's dispatch is the only one. See
+	// PerformInputProcessingHook for why sharing it does not work - the ordering
+	// is the opposite of what it looks like, and vanilla's `{uBodyID: 0}` is a
+	// CLEAR that lands after. Vanilla keeps the key whole in every other state.
 	//
-	// ⚠ Vanilla dispatches this event up to TWICE per press and the mod's makes a
-	// third - see RequestLockCourse for how the three are kept from fighting.
+	// The alternative tried first, `WeaponGroup1` (primary fire, idle in cruise),
+	// worked but made the game print its own "weapons unavailable" toast on every
+	// press. It stays the fallback if taking this key ever proves worse.
 	REX::TIniSetting<std::string> sLockCourseEvent{ "Panel", "sLockCourseEvent", "LockCourse" };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
@@ -1947,14 +1947,6 @@ namespace
 	// own targeting outranks the panel.
 	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
-	// The same target as a FORM ID, 0 for none - resolved against the candidate
-	// list on the tick the index arrives, because an index only means anything
-	// against the payload it was published with. The blip pass keeps using the
-	// index it already has; this exists so the course key can tell, lock-free on
-	// the input thread, whether the highlighted body is the one vanilla's own
-	// press would act on (see RequestLockCourse).
-	std::atomic<std::uint32_t> g_infoTargetID{ 0 };
-
 	// A course-lock dispatch waiting to be made, by body id; 0 means none. The
 	// input thread only ever stores here - no VM, no Scaleform, the rule that
 	// side of the mod has always kept - and the dispatch itself happens on the UI
@@ -2697,42 +2689,20 @@ namespace
 		}
 	}
 
-	// ---------------------------------------------------------------------------
 	// Queue a cruise-autopilot course change for the UI thread to dispatch.
 	//
-	// ⚠ THE KEY IS SHARED WITH VANILLA, and vanilla is not tidy with it. One press
-	// of `LockCourse` in cruise can produce TWO dispatches from the SWF: the
-	// far-travel icon's button sends the info target's real `uniqueID`
-	// (FarTravelIconBase.as:99), and then the reticle's fallback branch sends
-	// `{uBodyID: 0}` anyway - because `ProcessUserEvent` DISCARDS the button bar's
-	// return value at ShipReticle.as:2105, so consuming the press there does not
-	// suppress the fallback. The mod's is a third.
-	//
-	// The mod's lands LAST by construction, not by luck: this runs on the input
-	// thread and only stores an atomic, while the dispatch happens on the next
-	// high-feed tick. Vanilla's two go out synchronously during input processing.
-	// With one course held at a time, last write wins and the highlight is what
-	// the player ends up flying to.
-	//
-	// The single case that breaks is the highlight ALREADY BEING the info target:
-	// vanilla sets the course on it, and the mod's identical id arriving a tick
-	// later would toggle the same course straight back off - one press, nothing
-	// happens. So the mod stands aside there. It loses nothing by doing so:
-	// vanilla's own press is already aimed at exactly the body the player wanted,
-	// which is the whole reason that case is a collision in the first place.
-	// ---------------------------------------------------------------------------
+	// ⚠ The press this came from is SPLICED OUT of the UI's queue (see
+	// PerformInputProcessingHook), so the SWF never sees it and the mod's is the
+	// only dispatch that press produces. That is what makes this a plain "set the
+	// course" rather than a race - and it also means the mod must handle EVERY
+	// case, including the highlighted body already being the info target. An
+	// earlier version stood aside there on the theory that vanilla's own press
+	// would do the job; with the press taken away, standing aside meant nothing
+	// happened at all.
 	void RequestLockCourse(std::uint32_t a_id)
 	{
 		if (!bLockCourse.GetValue() || a_id == 0)
 			return;
-
-		if (a_id == g_infoTargetID.load(std::memory_order_acquire)) {
-			if (bVerboseLog.GetValue())
-				REX::INFO("[course] standing aside for {:08X} - it is the info target, so the game's "
-						  "own press already acts on it",
-					a_id);
-			return;
-		}
 
 		g_pendingCourseID.store(a_id, std::memory_order_release);
 		if (bVerboseLog.GetValue())
@@ -2934,12 +2904,111 @@ namespace
 		}
 	}
 
+	// ---------------------------------------------------------------------------
+	// ⚠ THE COURSE KEY HAS TO BE TAKEN FROM THE SWF, NOT OUT-ORDERED.
+	//
+	// The first cut let vanilla and the mod both dispatch and assumed the mod's
+	// would land last, because the input thread only stores an atomic while the
+	// dispatch waits for the next high-feed tick. **In game the ordering is the
+	// other way round**, and two symptoms said so:
+	//
+	//   * with a target on A and the panel highlighting B, the course went to A;
+	//   * with NO target and the panel highlighting B, the autopilot came on and
+	//     switched straight back off.
+	//
+	// The second one is the diagnostic. Nothing but the mod could have turned it
+	// ON (vanilla cannot lock a course without a target - the tester's own
+	// finding), so the OFF is vanilla's `{uBodyID: 0}` arriving AFTER it. That
+	// also names what 0 means: **clear**. And the earlier `WeaponGroup1` build is
+	// the control that rules out the alternative reading - a course set on an
+	// untargeted body persisted perfectly there, so the engine is not cancelling
+	// it for want of a target.
+	//
+	// So the fix is not a longer delay - it is to make sure the SWF never sees the
+	// press at all. Same technique as the camera tap below, on the receiver that
+	// feeds the menus: unlink, call through, relink immediately.
+	//
+	// Deliberately narrow. Only the course key, only in cruise, only while the
+	// panel is open, and only when there is a row for it to act on - so an empty
+	// list does not silently eat the key, and vanilla keeps it whole in every
+	// other state.
+	// ---------------------------------------------------------------------------
 	void PerformInputProcessingHook(RE::BSInputEventReceiver* a_this, const RE::InputEvent* a_queueHead)
 	{
 		ProcessInputQueue(a_queueHead);
 
-		if (const auto original = g_origPerformInputProcessing.load(std::memory_order_acquire))
+		const auto original = g_origPerformInputProcessing.load(std::memory_order_acquire);
+		if (!original)
+			return;
+
+		const bool claiming = bLockCourse.GetValue() &&
+		                      g_panelOpen.load(std::memory_order_acquire) &&
+		                      g_inCruise.load(std::memory_order_acquire) &&
+		                      g_highlightID.load(std::memory_order_acquire) != 0;
+		if (!claiming) {
 			original(a_this, a_queueHead);
+			return;
+		}
+
+		const std::string courseEvents = sLockCourseEvent.GetValue();
+
+		// Twin of the camera tap's splice, written out rather than shared: that
+		// one is load-bearing and proven, and a refactor of it to serve this is
+		// risk with no return. Every link changed is recorded with the value it
+		// held and put back in reverse order.
+		struct LinkFix
+		{
+			RE::InputEvent* node;
+			RE::InputEvent* previousNext;
+		};
+		constexpr std::size_t kMaxFixes = 16;
+		LinkFix               fixes[kMaxFixes]{};
+		std::size_t           fixCount = 0;
+
+		const RE::InputEvent* head = a_queueHead;
+		RE::InputEvent*       prev = nullptr;
+		std::uint32_t         removed = 0;
+
+		for (const RE::InputEvent* event = a_queueHead; event;) {
+			RE::InputEvent* nextEvent = event->next;
+
+			bool drop = false;
+			if (event->eventType == RE::InputEvent::EventType::kButton) {
+				const auto* button = static_cast<const RE::ButtonEvent*>(event);
+				// Presses AND releases AND held frames: the SWF's own handler
+				// reads the press/release flag itself, so leaving half the
+				// keystroke in the chain would let the fallback fire on the
+				// half we left behind.
+				drop = MatchesEventList(courseEvents, button->strUserEvent.c_str(), button->idCode);
+			}
+
+			if (drop && fixCount < kMaxFixes) {
+				if (prev) {
+					fixes[fixCount++] = { prev, prev->next };
+					prev->next = nextEvent;
+				} else {
+					head = nextEvent;
+				}
+				++removed;
+				// `prev` deliberately not advanced - the dropped node is out of
+				// the chain, so the last survivor remains the predecessor.
+			} else {
+				prev = const_cast<RE::InputEvent*>(event);
+			}
+
+			event = nextEvent;
+		}
+
+		original(a_this, head);
+
+		// Relink before anything else walks the chain.
+		for (std::size_t i = fixCount; i-- > 0;)
+			fixes[i].node->next = fixes[i].previousNext;
+
+		if (removed && bVerboseLog.GetValue())
+			REX::INFO("[course] hid {} '{}' event(s) from the UI - the panel owns that key while it "
+					  "is open",
+				removed, courseEvents);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -3232,7 +3301,6 @@ namespace
 			// Any faded on-screen icons went down with the movie too.
 			g_iconsFaded.store(false, std::memory_order_release);
 			g_infoTargetIndex.store(-1, std::memory_order_release);
-			g_infoTargetID.store(0, std::memory_order_release);
 
 			// A queued keypress is a keypress the movie it was meant for no
 			// longer exists to receive.
@@ -4671,19 +4739,6 @@ namespace
 							break;
 						}
 					}
-				}
-
-				// The info target as an id, resolved against the list it was
-				// published with. Appended master-file rows sit AFTER the feed's
-				// own, so a feed index never lands on one; the fromFeed test is
-				// belt and braces, matching the blip pass's own resolution.
-				{
-					const auto infoIdx = g_infoTargetIndex.load(std::memory_order_acquire);
-					const bool inRange = infoIdx >= 0 &&
-					                     static_cast<std::size_t>(infoIdx) < g_candidates.size() &&
-					                     g_candidates[infoIdx].fromFeed;
-					g_infoTargetID.store(inRange ? g_candidates[infoIdx].id : 0,
-						std::memory_order_release);
 				}
 
 				// Which body the autopilot is actually flying to, straight from

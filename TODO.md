@@ -388,12 +388,28 @@ Later, nice-to-have:
       mod's, so the row mark is the only place the two agree in front of the
       player.
 
+- [ ] **⚠ FLIGHT-TEST THE SPLICE — it is the first time this mod has taken an
+      event away from the SWF.** The camera tap proved the technique on
+      `PlayerCamera`; whether unlinking at `RE::UI` also hides an event from a
+      MENU's `ProcessUserEvent` has never been tested here, and the one prior
+      datum points the other way (writing `disabled = true` at `RE::UI` did not
+      suppress *flight* input — different consumer, and a flag is not a splice,
+      so it is weak evidence either way). What to watch, with `bVerboseLog` on:
+
+      - `[course] hid N 'LockCourse' event(s) from the UI` — the splice ran.
+      - No target, highlight B, press → the autopilot should come on **and stay
+        on**. If it still switches off, the splice did not reach the SWF and the
+        fallback is `sLockCourseEvent=WeaponGroup1`.
+      - Target on A, highlight B, press → the course should go to **B**.
+      - Highlight the body you already have targeted and press → it must still
+        work; the stand-aside rule that used to cover that case is gone.
+      - Close the panel and press → vanilla's own behaviour, unchanged.
+
 - [ ] **⚠ VERIFY "press again clears".** It is in the ini and the README on the
       strength of a code reading — `FarTravelIconBase.UpdateButton` flips its
       LABEL between `$CruiseCourseLock` and `$CruiseCourseClear` while dispatching
-      the identical event with the identical id, which implies the engine toggles
-      on a repeat. Not yet watched in game. It matters more with a shared key,
-      because vanilla's own dispatches now interleave with the mod's; the
+      the identical event with the identical id. The `{0} = clear` finding above
+      supports the toggle reading but does not prove it for a repeated *id*. The
       `[course] the engine reports ...` line (verbose, logs on change) is the
       readout.
 
@@ -495,33 +511,42 @@ as empty while `bLockCourse` is off** — a switched-off feature must not take a
 key away from the camera, from the game, or from the "that key is not one of the
 panel's controls" advice the log prints.
 
-**The course key is SHARED with vanilla, deliberately.** It is the one control
-the mod does not borrow but overlays: with the panel closed vanilla handles it
-untouched, and with the panel open the mod aims it at the highlight instead of
-the info target. That is why it is the only control with **no hint pill** — the
-game already prompts with `$CruiseCourseLock` in cruise, and a second prompt for
-the same key is noise (item closed, not deferred).
+**The course key is vanilla's own, and while the panel is open the mod TAKES it
+rather than sharing it.** With the panel closed the key is untouched. That is
+also why it is the only control with **no hint pill** — the game already prompts
+with `$CruiseCourseLock` in cruise, and a second prompt for the same key is noise
+(item closed, not deferred).
 
-⚠ **Vanilla dispatches this event up to TWICE per press and the mod's makes a
-third.** `ShipReticle.ProcessUserEvent` **discards the button bar's return value**
-([as:2105](../../Extracted/scripts/shipreticle/scripts/ShipReticle.as:2105)), so
-the far-travel icon consuming the press does *not* suppress the reticle's
-`{uBodyID: 0}` fallback — vanilla sends the info target's real id and then 0.
-The mod's lands **last by construction, not by luck**: the input thread only
-stores an atomic and the dispatch happens on the next high-feed tick, while
-vanilla's two go out synchronously inside input processing. One course is held
-at a time, so last write wins.
+⚠⚠ **Sharing it was tried first and is WRONG — the ordering is the opposite of
+what it looks like.** The reasoning was: the input thread only stores an atomic
+while the dispatch waits for the next high-feed tick, so the mod's lands after
+vanilla's synchronous ones and last write wins. **In game it lost.** Two
+symptoms from the tester:
 
-**The one case that breaks is the highlight already BEING the info target** —
-vanilla sets the course on it and the mod's identical id, arriving a tick later,
-would toggle the same course straight back off. `RequestLockCourse` stands aside
-there, and loses nothing by it: vanilla's own press is already aimed at exactly
-the body the player meant, which is *why* that case collides at all.
+- target on A, panel highlighting B → the course went to **A**;
+- **no target**, panel highlighting B → the autopilot came on and **switched
+  straight back off**.
 
-Earlier choice, kept in the history for its reasoning: `WeaponGroup1` (primary
-fire — one event on both devices, idle in cruise) worked, but the game printed
-its own "weapons unavailable" toast on every press. A shared key whose collision
-is a one-frame course flicker beat a free key with a permanent cosmetic cost.
+The second is the diagnostic. Nothing but the mod could have turned it ON —
+vanilla cannot lock a course without a target — so the OFF is vanilla's
+`{uBodyID: 0}` arriving *after* it. **That also names what 0 means: CLEAR.** And
+the earlier `WeaponGroup1` build is the control that rules out the alternative
+reading: a course set on an untargeted body persisted perfectly there, so the
+engine is not cancelling it for want of a target.
+
+**So the press is spliced out of the UI's input queue** while the panel is open
+in cruise with a row highlighted — the camera tap's technique, on the receiver
+that feeds the menus: unlink, call through, relink immediately. The SWF never
+sees the press, the mod's dispatch is the only one, and both symptoms should go.
+⚠ Consequence worth stating because it bit the first version: **with the press
+taken away, the mod must handle EVERY case**, including the highlight already
+being the info target. The stand-aside rule that covered that case is gone —
+standing aside now means nothing happens at all.
+
+Earlier choice, kept for its reasoning: `WeaponGroup1` (primary fire — one event
+on both devices, idle in cruise) worked perfectly but made the game print its own
+"weapons unavailable" toast on every press. **It is the fallback** if taking
+`LockCourse` from the UI proves worse than the toast.
 
 **The browse lists carry both devices at once and that is deliberate.** A user
 event is not tied to a device — the engine resolves it against whatever is in
@@ -914,6 +939,13 @@ Each of these cost real time; the reasoning is in the findings docs.
   id works: the autopilot engages and the ship turns to it, **with nothing
   targeted**. This is the one by-id verb in the UI layer and it is now proven.
   Confirmed to work on **stations and POIs** as well as planets.
+- **`Reticle_OnCruiseLockCourse` with `uBodyID: 0` means CLEAR** — deduced from
+  the shared-key symptoms, not from the AS3, which only shows the reticle
+  dispatching it as a fallback. The mod set a course on an untargeted body
+  (autopilot visibly on) and vanilla's `{0}`, arriving after, switched it off.
+  Corollary: **the SWF's dispatch lands AFTER a mod dispatch queued from the same
+  keypress**, even though the mod's input hook runs first — do not assume a
+  deferred dispatch wins a race with the SWF, it does not.
 - **Vanilla cannot lock a course without a target, and the engine draws the
   course as an ORANGE RING around the body's HUD blip** (tester, 2026-08-02).
   Both matter to this mod: the first is why sharing the `LockCourse` key is

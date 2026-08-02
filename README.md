@@ -45,11 +45,10 @@ codes, comma-separated), and `bLockCourse=false` leaves the fire key alone
 entirely.
 
 The course key is the one control with **no hint pill**, on purpose: the game
-already prompts you with it in cruise, so a second prompt would be noise. It is
-also the one key the mod *shares* rather than borrows — vanilla still handles it
-whenever the panel is closed, and even with the panel open the mod steps aside
-if the highlighted body is the one you already have targeted, because vanilla's
-own press is then aimed at exactly the right thing.
+already prompts you with it in cruise, so a second prompt would be noise. While
+the panel is open the mod takes that key outright — the game does not also act
+on it, so you get one course change per press, aimed at your highlighted row.
+Close the panel and it is the game's key again, unchanged.
 
 The D-pad is free to borrow because vanilla spends it on **power allocation**
 and switches that off for the whole of cruise
