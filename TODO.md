@@ -11,11 +11,19 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v1.1.0 — CONTROLLER BROWSING. CONFIRMED IN GAME 2026-08-02 ("it works").**
-**v1.1.1 (same day, built + deployed, AWAITING TEST) fixes the one thing the
-tester found: the browse pill did not follow a device swap made WHILE the panel
-was up** — see the pill note below. Functionality was never affected, display
-only.
+**v1.1.1 — CONTROLLER BROWSING, BOTH HALVES CONFIRMED IN GAME 2026-08-02 and
+PACKAGED for release.** v1.1.0 landed the feature ("it works"); v1.1.1 fixed the
+one thing the tester found — the browse pill did not follow a device swap made
+WHILE the panel was up, functionality unaffected, display only ("it swaps
+properly now"). See the pill note below for why that was a different problem
+from the one v1.1.0 solved.
+
+Archive `build/packages/ShipNavPanel-1.1.1.zip` (3.68 MB,
+`Data/SFSE/Plugins/{dll,ini,pdb}`, DLL stamped 1.1.1.0), same shape as the
+1.0.0 package. Pre-package `GetValue()` grep re-run and clean: the only two
+flags touching machinery are `bInputTap` and `bWheelFilter`, both documented
+escape hatches and both defaulting `true` in source *and* in the shipped ini.
+**Not yet uploaded to Nexus at time of writing.**
 
 Reported by users and reproduced by the tester: the panel could not be browsed
 with a controller. Not a bug — an absence. The browse pair was hardcoded to
@@ -320,9 +328,14 @@ Later, nice-to-have:
       INLINE filter-branch tree-filter silently no-opped under MSYS
       argument mangling — put filter scripts in a FILE and verify content
       hits, not just ref-rewritten messages.)
-- [ ] Flip `frstwlf/ShipNavPanel` public — **GPL obligation** once a DLL is
-      distributed (CommonLibSF is GPL-3.0-or-later). Held deliberately until
-      the Nexus page is up; history is flip-ready.
+- [x] ~~Flip `frstwlf/ShipNavPanel` public~~ — **GPL obligation** once a DLL
+      is distributed (CommonLibSF is GPL-3.0-or-later). Flipped 2026-08-01
+      once the Nexus page went up, and the flip added the missing `LICENSE`:
+      the repo claimed GPL-3.0 in `xmake.lua` and the README but shipped no
+      licence text, which is the one thing distributing a build actually
+      obliges. (`gh repo edit --visibility public` needs
+      `--accept-visibility-change-consequences` and prints nothing on
+      success.)
 - [x] ~~Decide on the PDB~~ — **it ships** (user's call, 2026-08-01). A first
       public release of a native plugin is exactly when symbolised crash logs
       are worth the ~14 MB.
