@@ -407,7 +407,34 @@ Later, nice-to-have:
       already cleared by the diff, and what is left is the mechanism — see
       Settled.
 
-- [ ] **⚗ FLY THE FAR-TRAVEL PROBE — the last untried by-id verb in this layer.**
+- [x] ~~Fly the far-travel probe.~~ **FLOWN 2026-08-03: IT WORKS — and it is the
+      wrong verb, so it is deleted.** `ShipHud_FarTravel {uValue: <row id>}`
+      fast-travels to a **station** from the panel, with nothing targeted. The
+      tester's verdict is the disposition: *"it kind of kills the whole point of
+      cruise mode."* A mod about flying somewhere should not offer a button that
+      skips the flying, so the probe, its ini switch and its captured fields are
+      all gone — **an experimental switch left in a player's ini is a promise**,
+      and this one would promise the opposite of the mod.
+
+      **⭐⭐ The finding outlives the feature, and it is the strongest evidence yet
+      for the course boundary.** Two by-id verbs, the *same row id*, different
+      answers: `ShipHud_FarTravel` resolves a station, `Reticle_OnCruiseLockCourse`
+      does not. So the course handler's refusal was never about the id being
+      unusable or unknown — the engine resolves that exact number happily one
+      event over. **`uBodyID` is body-typed, and now it is proven by contrast
+      rather than by elimination.**
+
+      ⛔ **And the UI vocabulary is now EXHAUSTED.** Every parameterised
+      UI→engine event in this movie has been tried or ruled out
+      ([PHASE1-SWF-FINDINGS.md:286](PHASE1-SWF-FINDINGS.md:286)). For a *course*
+      on a station there is one route left and it is
+      `Spaceship::TargetingMode` (vtable 450764 / 450766) — set the info target,
+      then vanilla's `{0}` reaches anything. That is a project, not a session,
+      and it is now the only one.
+
+<details><summary>the probe as it was specified</summary>
+
+- [x] **⚗ FLY THE FAR-TRAVEL PROBE — the last untried by-id verb in this layer.**
       `[Recon] bProbeFarTravel=true`. On a row the course cannot take, the course
       key instead dispatches `ShipHud_FarTravel {uValue: <row id>}` — vanilla's
       `$JUMP TO` action (`ShipReticle.as:747`), which nobody has ever sent with a
@@ -442,6 +469,8 @@ Later, nice-to-have:
       and possibly better verb than a course, and the question becomes whether it
       belongs on the same key. It does nothing → the vocabulary is exhausted and
       `Spaceship::TargetingMode` is the only route left for non-body rows.
+
+</details>
 
 - [x] ~~TT_STATION — the only row type still unmeasured.~~ **MEASURED
       2026-08-03: stations, POIs and ships all fail; planets and moons are the
@@ -1065,6 +1094,24 @@ Each of these cost real time; the reasoning is in the findings docs.
   the code REPORT its presence rather than depend on it.** The `uBodyID` pass got
   that right by accident and answered its question in one flight; the far-travel
   pass got it wrong and answered nothing.
+- **⭐⭐ `ShipHud_FarTravel {uValue: <id>}` ACCEPTS AN ARBITRARY ROW ID — proven in
+  game 2026-08-03, and it is the cleanest proof of the course boundary we have.**
+  Fast-travelling to a **station** straight from the panel works, with nothing
+  targeted. Two by-id verbs, the *same id*, opposite answers: far travel resolves
+  a station, `Reticle_OnCruiseLockCourse` does not. So the course handler was
+  never refusing an unusable or unknown number — the engine resolves that exact
+  id happily one event over. **`uBodyID` is body-typed, proven by contrast rather
+  than by elimination.** ⛔ The capability was DELETED all the same: a mod about
+  flying somewhere should not offer a button that skips the flying (tester:
+  *"it kind of kills the whole point of cruise mode"*). The finding is the keeper.
+- **⛔ THE UI VOCABULARY IS EXHAUSTED for non-body rows.** Every parameterised
+  UI→engine event in this movie has now been tried or ruled out
+  ([PHASE1-SWF-FINDINGS.md:286](PHASE1-SWF-FINDINGS.md:286)); Papyrus was checked
+  too and has no course or target native (`Game.psc`/`InputEnableLayer` expose
+  cruise *state* only, `SpaceshipReference` has combat-target getters and no
+  setter). For a course on a station the single remaining route is
+  `Spaceship::TargetingMode` (vtable 450764 / 450766): set the info target and
+  vanilla's `{0}` reaches anything. **That is the whole list. It is one item.**
 - **⭐ THE MEASURED SCOPE: planets and moons take a by-id course; stations, POIs
   and ships do not** (every type tried, 2026-08-03). Exactly what the two-route
   mechanism predicts — the first time on this feature that a prediction and a

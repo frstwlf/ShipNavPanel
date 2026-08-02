@@ -568,45 +568,6 @@ namespace
 	// (WeaponGroup1), the build is functionally the one that worked.
 	REX::TIniSetting<bool> bCourseSplice{ "Recon", "bCourseSplice", true };
 
-	// ---------------------------------------------------------------------------
-	// PROBE: `ShipHud_FarTravel` - the last untried by-id verb in this layer.
-	//
-	// The course route is settled and bounded: by-id reaches bodies, and stations,
-	// POIs and ships need the info target, which the mod cannot set. This asks
-	// whether the OTHER id-taking event reaches them instead. It is a different
-	// action - far travel, the `$JUMP TO` hold on the far-travel icon, not a
-	// cruise course - so if it works the answer is "jump to that station from the
-	// panel", which may be better than a course or may be quite wrong for the
-	// feature's feel. One flight says which.
-	//
-	// ⛔ **THE FIRST CUT OF THIS PROBE NEVER RAN, AND THE REASON IS THE LESSON.**
-	// It was gated on `bFarTravelAllowed` "which the engine publishes per row" -
-	// except it does not. That pair belongs to `TargetOnlyData`, the INFO TARGET
-	// payload, which is where the dump that named them came from; the low feed's
-	// per-entry list has `bLandingAllowed`/`bLandingDisabled` and no far-travel
-	// pair at all. **PHASE1 recorded that list in July and it was never checked
-	// before the claim was made** - the same mistake as reading `uBodyID` off the
-	// dossier and expecting it on an entry, made twice in two days.
-	// ⭐ So: **a probe gated on an unverified field is a probe that cannot run**,
-	// and it fails silently, which is the worst way for an experiment to fail.
-	// The flag is the opt-in; there is no permission check. Whether the entry
-	// carries those fields is now merely REPORTED beside the dispatch.
-	//
-	// ⚠ Two ways this could fail that are worth recognising in the log rather
-	// than re-deriving:
-	//   * vanilla sends `TargetOnlyData.uniqueID` (ShipReticle.as:417/747), the
-	//     INFO TARGET's id - and that number has been seen to DIFFER from the low
-	//     feed entry's `uniqueID` for the same target (386531 vs 385501). The mod
-	//     can only send the row's, exactly as with the course.
-	//   * vanilla dispatches it at the END of a state change and an animation
-	//     (SetState(STATE_FAR_TRAVEL) -> "FarTravelUpFinish"), so the engine may
-	//     expect the HUD to be in that state. This probe dispatches cold.
-	//
-	// ⚠ It MOVES THE PLAYER, which nothing else in this mod does. Default off,
-	// loud at startup, and only on rows the engine has already said yes to.
-	// ---------------------------------------------------------------------------
-	REX::TIniSetting<bool> bProbeFarTravel{ "Recon", "bProbeFarTravel", false };
-
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -843,15 +804,6 @@ namespace
 		// one to send. `haveBodyID` records presence, because 0 is a value.
 		std::uint32_t bodyID{ 0 };
 		bool          haveBodyID{ false };
-		// ⚠ `bFarTravelAllowed`/`bFarTravelDisabled` are NOT per-entry fields.
-		// They belong to `TargetOnlyData`, the info-target payload, which is
-		// where the dump that named them came from - and PHASE1 recorded the
-		// per-entry list long ago without them in it. Read anyway, so the log can
-		// state whether an entry carries them rather than leaving it to be
-		// assumed a second time; `haveFarTravel` is the answer, not the values.
-		bool farTravelAllowed{ false };
-		bool farTravelDisabled{ false };
-		bool haveFarTravel{ false };
 		// The cruise AUTOPILOT's current course - the per-entry
 		// bIsCruiseTargetLock the far-travel icon reads to decide whether its
 		// button offers LOCK or CLEAR (FarTravelIconBase.UpdateButton). ⚠ NOT
@@ -2067,15 +2019,6 @@ namespace
 	// atomic so the input path never takes the candidate mutex to ask. Written
 	// wherever the highlight or the candidate list changes.
 	std::atomic<bool> g_highlightCourseable{ false };
-	// Whether the highlighted row's feed entry carried the far-travel permission
-	// pair at all. ⚠ NOT a gate - the first cut of the probe gated on the VALUE,
-	// which is false for every entry because the field is not there, so the probe
-	// never dispatched once and the flight measured nothing. **A probe gated on
-	// an unverified field is a probe that cannot run.** The flag is the opt-in;
-	// this is only reported.
-	std::atomic<bool> g_highlightFarTravel{ false };
-	// A far-travel dispatch waiting to be made, by row id; 0 means none.
-	std::atomic<std::uint32_t> g_pendingFarTravelID{ 0 };
 
 	// The id of the last course the mod asked for, held until the engine reports
 	// a course - so the report can be compared with the request. 0 when nothing
@@ -2818,9 +2761,8 @@ namespace
 		g_highlightID.store(g_candidates[local[pos]].id, std::memory_order_release);
 		// Published with the highlight and under the same lock, so the input path
 		// can ask "can the mod course this row" without touching the mutex.
-		const auto& picked = g_candidates[local[pos]];
-		g_highlightCourseable.store(IsCourseableType(picked.type), std::memory_order_release);
-		g_highlightFarTravel.store(picked.haveFarTravel, std::memory_order_release);
+		g_highlightCourseable.store(IsCourseableType(g_candidates[local[pos]].type),
+			std::memory_order_release);
 	}
 
 	void TogglePanel()
@@ -2886,19 +2828,6 @@ namespace
 		// vanilla for these rows. If the two ever stop matching, the mod must
 		// still not send an id the engine cannot resolve into a destination.
 		if (!g_highlightCourseable.load(std::memory_order_acquire)) {
-			// The probe takes every row the course cannot - no permission check.
-			// The first cut had one, on a field the entries do not carry, so it
-			// was false always and the probe never ran.
-			if (bProbeFarTravel.GetValue()) {
-				g_pendingFarTravelID.store(a_id, std::memory_order_release);
-				REX::INFO("[fartravel] probe: asking for far travel to {:08X} (its feed entry {} "
-						  "the far-travel permission fields)",
-					a_id,
-					g_highlightFarTravel.load(std::memory_order_acquire) ? "DOES carry" :
-					                                                       "does NOT carry");
-				return;
-			}
-
 			static std::mutex                        s_toldMutex;
 			static std::unordered_set<std::uint32_t> s_told;
 
@@ -3153,12 +3082,11 @@ namespace
 		// through the info target and reaches what the mod's by-id one cannot, so
 		// stealing the press there would break a flow that works without the mod.
 		// See the header above g_highlightCourseable.
-		const bool actionable = g_highlightCourseable.load(std::memory_order_acquire) ||
-		                        bProbeFarTravel.GetValue();
 		const bool claiming = bLockCourse.GetValue() && bCourseSplice.GetValue() &&
 		                      g_panelOpen.load(std::memory_order_acquire) &&
 		                      g_inCruise.load(std::memory_order_acquire) &&
-		                      g_highlightID.load(std::memory_order_acquire) != 0 && actionable;
+		                      g_highlightID.load(std::memory_order_acquire) != 0 &&
+		                      g_highlightCourseable.load(std::memory_order_acquire);
 		if (!claiming) {
 			original(a_this, a_queueHead);
 			return;
@@ -3521,7 +3449,6 @@ namespace
 			// left to be audited against.
 			g_pendingCourseID.store(0, std::memory_order_release);
 			g_courseAskedID.store(0, std::memory_order_release);
-			g_pendingFarTravelID.store(0, std::memory_order_release);
 
 			// The lock's feed presence must be re-confirmed against the NEW
 			// movie's payloads before absence may clear a moon lock.
@@ -4153,12 +4080,6 @@ namespace
 			// the only readback that feature has (see Candidate::courseLocked).
 			if (entry.GetMember("bIsCruiseTargetLock", &member) && member.IsBoolean())
 				row.courseLocked = member.GetBoolean();
-			if (entry.GetMember("bFarTravelAllowed", &member) && member.IsBoolean()) {
-				row.farTravelAllowed = member.GetBoolean();
-				row.haveFarTravel = true;
-			}
-			if (entry.GetMember("bFarTravelDisabled", &member) && member.IsBoolean())
-				row.farTravelDisabled = member.GetBoolean();
 			// Galaxy data is filled in after collection, from the body table.
 			if (rows.size() <= a_index)
 				rows.resize(a_index + 1);
@@ -4978,16 +4899,13 @@ namespace
 				if (const auto highlight = g_highlightID.load(std::memory_order_acquire);
 					highlight != 0) {
 					bool courseable = false;
-					bool farTravel = false;
 					for (const auto& row : g_candidates) {
 						if (row.id == highlight) {
 							courseable = IsCourseableType(row.type);
-							farTravel = row.haveFarTravel;
 							break;
 						}
 					}
 					g_highlightCourseable.store(courseable, std::memory_order_release);
-					g_highlightFarTravel.store(farTravel, std::memory_order_release);
 				}
 
 				// Which body the autopilot is actually flying to, straight from
@@ -5408,70 +5326,6 @@ namespace
 	// (confirmed in game 2026-08-02): the ship turns and flies to whatever row the
 	// panel was sitting on, with nothing targeted first.
 	// ---------------------------------------------------------------------------
-	// ---------------------------------------------------------------------------
-	// PROBE: far travel by id. See bProbeFarTravel for what this asks and the two
-	// ways it could fail. Vanilla's shape, from ShipReticle.as:747:
-	//
-	//     BSUIDataManager.dispatchEvent(
-	//         new CustomEvent(ShipHud_FarTravel, {"uValue": FarTravelID}));
-	//
-	// with `FarTravelID` set to `TargetOnlyData.uniqueID` when the hold begins.
-	// The mod sends the ROW's id instead, because the row is what the player
-	// picked and the info target is not involved.
-	//
-	// ⚠ There is no feed readback for this one - nothing publishes "a far travel
-	// started" the way `bIsCruiseTargetLock` publishes a course - so the tester's
-	// eye IS the instrument. The log therefore states exactly what was asked for,
-	// loudly, so the two can be lined up afterwards.
-	// ---------------------------------------------------------------------------
-	void RunFarTravel()
-	{
-		using V = RE::Scaleform::GFx::Value;
-
-		const auto id = g_pendingFarTravelID.exchange(0, std::memory_order_acq_rel);
-		if (id == 0)
-			return;
-		if (!g_inCruise.load(std::memory_order_acquire)) {
-			REX::INFO("[fartravel] dropped {:08X} - not in cruise", id);
-			return;
-		}
-		if (!WorldSettled())
-			return;
-
-		const auto                     ui = RE::UI::GetSingleton();
-		static const RE::BSFixedString s_hud{ kShipHudMenu };
-		const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
-		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot) {
-			REX::WARN("[fartravel] no ship HUD movie to dispatch through");
-			return;
-		}
-		auto* root = menu->uiMovie->asMovieRoot.get();
-
-		V params;
-		root->CreateObject(&params);
-		if (!params.IsObject()) {
-			REX::WARN("[fartravel] could not build the event params");
-			return;
-		}
-		params.SetMember("uValue", V{ static_cast<double>(id) });
-
-		std::string name;
-		{
-			std::lock_guard lock{ g_candidateMutex };
-			for (const auto& row : g_candidates) {
-				if (row.id == id) {
-					name = row.name;
-					break;
-				}
-			}
-		}
-
-		if (DispatchHudEvent(root, "ShipHud_FarTravel", &params))
-			REX::WARN("[fartravel] sent ShipHud_FarTravel uValue={:08X} '{}' - watch what the ship "
-					  "does. Nothing in any feed reports a far travel, so this line and your own "
-					  "eyes are the whole measurement.",
-				id, name);
-	}
 
 	void RunLockCourse()
 	{
@@ -5887,11 +5741,8 @@ namespace
 			// the drawn panel is absent or closed, and a press made on the last
 			// frame before a close still has to go out. No lock is held at this
 			// point, which is the requirement for entering the VM.
-			if (bLockCourse.GetValue()) {
+			if (bLockCourse.GetValue())
 				RunLockCourse();
-				if (bProbeFarTravel.GetValue())
-					RunFarTravel();
-			}
 
 			// Distances are current by this point, which is what the list shows.
 			RefreshPanel();
@@ -9979,11 +9830,6 @@ namespace
 				REX::WARN("[course] bCourseSplice is OFF - the press is left in the UI's queue, so "
 						  "the game acts on it too. Only useful for the A/B against the pre-splice "
 						  "build; pair it with a key vanilla ignores in cruise.");
-			if (bProbeFarTravel.GetValue())
-				REX::WARN("[fartravel] PROBE ON - on ANY row the course cannot take, the course key "
-						  "will instead ask the game to FAR TRAVEL to it. ⚠ That MOVES YOUR SHIP, "
-						  "which nothing else in this mod does. Untried: nobody has ever sent that "
-						  "event with an id of their own choosing.");
 		}
 		else
 			REX::INFO("[course] course lock OFF - the panel points, and steering stays manual");
