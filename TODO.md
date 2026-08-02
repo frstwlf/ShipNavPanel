@@ -11,6 +11,16 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
+**Head is v1.1.2 plus two `[Experimental]` drafts (2026-08-02) — deliberately NO
+version bump.** `bAcquireTarget` and `bLockCourse` are bench work: built,
+default off, unflown, and read by nothing on the shipping path. They are the two
+ways the panel's selection could reach the engine, and each is designed to
+produce a usable ANSWER whether or not it produces a feature. Full write-up and
+flight plan: [`[Experimental]`](#experimental--the-two-engine-facing-drafts-built-both-unflown)
+below. The next release candidate decides whether they ship, get deleted, or
+stay behind the flag — an experimental switch left in a player's ini is a
+promise, so it does not just sit there.
+
 **v1.1.2 — THE TAKEOFF CRASH, FIXED AND CONFIRMED IN GAME 2026-08-02, and
 PACKAGED for release.** Taking off from a planetary surface crashed the game.
 The ship HUD movie is destroyed and rebuilt inside ~20 ms during the transition,
@@ -351,13 +361,99 @@ Later, nice-to-have:
       `bProbeStarmapFeed=true` + `sStarmapFeed=InfoTargetProvider` in the
       Custom ini dumps the payload to the log on each publish.
 
-- [ ] **Lock-course as a separate opt-in key.** Fully specified, never the
-      default confirm — it engages the cruise **autopilot**. Build a params
-      object `{uBodyID: <uniqueID>}`, construct `Shared.AS3.Events.CustomEvent`
-      (payload is the **2nd** ctor arg, lands in `params`), dispatch via
-      `BSUIDataManager.dispatchEvent`.
 - [ ] Distance formatting: the LS/km switch is abrupt, and untracked bodies show
       a dash where a real distance could be computed from orbital data.
+
+## `[Experimental]` — the two engine-facing drafts, BUILT, BOTH UNFLOWN
+
+**Written 2026-08-02, no version bump — this is bench work, not a release
+candidate.** The shipping panel does not read either flag, both default off, and
+the `[Experimental]` section of the ini is where they live. Everything else this
+plugin does is a read or a Scaleform-side draw; **these two ask the ENGINE to
+change the player's state, which nothing here has ever done.** That is why they
+are opt-in, capped, abandoned on any change of mind, and loud in the log.
+
+Both go out through the SWF's own route — `GetVariable` the class, `Invoke` the
+static, exactly as `Shared.GlobalFunc.PlayMenuSound` already does. No hook, no
+patch, no address id. `DispatchHudEvent` tries vanilla's literal shape first
+(construct the event class → `BSUIDataManager.dispatchEvent`) and falls back to
+**`BSUIDataManager.dispatchCustomEvent(type, params = null)`**, a public static
+that builds the `CustomEvent` itself — found while drafting this, and worth
+remembering: *it removes the need to construct an event class at all.* The
+`[dispatch] route:` line names which one worked, which is the first thing to read
+in the log.
+
+### 1. `bAcquireTarget` — drive vanilla's own cycle instead of pruning it
+
+The mod dispatches the same parameterless `ShipHud_Target` the player's own
+`SelectTarget` key dispatches (`ShipReticle.onTargetPressed`, as:2163), one press
+per settle window, and stops the moment `iInfoTargetIndex` resolves to the
+selection. **It bypasses nothing**: whatever heading test the engine applies is
+untouched, so this can fix *"E grabbed the body next to the one I picked"* and can
+never fix *"target the planet behind me"*.
+
+Trigger: the confirm key when it LOCKS (clearing cancels a run), or a dedicated
+`sAcquireEvent` key, which is spliced from the camera like every other panel
+control. A run is abandoned on leaving cruise, on the selection moving, and on a
+movie teardown.
+
+**Fly it for the ANSWER, not the feature.** Three terminating states, all
+findings:
+
+| log line | meaning |
+|---|---|
+| `[acquire] ACQUIRED` | the engine's target is now the panel's selection |
+| `the cycle wrapped without reaching it` | E cannot acquire that body from that heading — **this is Phase 0 §6b's open question settled live**: an enumeration filter would let the cycle reach it, a targeting filter will not |
+| `the cycle did not move` | nothing acquirable from that heading at all (consistent with §6c, "there is no list") |
+
+Test recipe: in cruise, pick a body **near the reticle with a neighbour crowding
+it** (the Venus/Mercury case from `panel_bug.png`) — that is the case the feature
+exists for. Then repeat with a body **behind the ship**, which is expected to
+wrap. Expect the E-target's blip to flicker across bodies during a run; the
+overlap pass exempts the info target, so its icon moves with it.
+
+### 2. `bLockCourse` — the one by-id verb in this layer
+
+`Reticle_OnCruiseLockCourse` carries a `uBodyID`, and vanilla sends it **two
+ways**: the reticle's own `LockCourse` handler with `0` (as:2128) and the
+far-travel icon with a real `TargetOnlyData.uniqueID` (`FarTravelIconBase.as:99`).
+So the handler is known to read an id; what the base game never exercises is **an
+id that is not the current info target**, which is exactly what this sends. It
+engages the cruise **autopilot**, not the info target — a different verb, hence
+its own key (`sLockCourseEvent`, default `Quickkey2`) and never the confirm.
+Pressing again on the same body clears it, which is vanilla's own behaviour: the
+far-travel button flips its LABEL between `$CruiseCourseLock` and
+`$CruiseCourseClear` while dispatching the identical event with the identical id.
+
+**It has its own oracle, and the oracle is the point.** A dispatch the engine
+ignores looks exactly like one it honoured, so the answer is read back off the
+feed: **`bIsCruiseTargetLock` is a PER-ENTRY field on the low-frequency
+payload** (`TargetLow`, the object `SetTargetLowInfo` is handed — not a payload
+root flag), now captured into `Candidate::courseLocked`. After a dispatch the
+mod watches that body for 3 s and logs either `the engine reports a course locked
+on '<name>' — the by-id dispatch WORKS` or `no course reported ... that silence
+IS the answer`. **Neither outcome is a silence**, which is the whole design.
+
+⚠ **The oracle's two halves live on different feeds, and that is not tidiness.**
+The success is read on the LOW feed, where the flag is — but the low feed
+publishes on target-set **changes**, so a dispatch the engine threw away can
+produce no publish at all, and a timeout waiting there would only ever run when
+the thing it is timing out on happened anyway. That is the *check that could not
+pass* in a new hat (PHASE6 §0e's other lesson). The timeout therefore rides the
+HIGH feed's tick in `RunLockCourse`, which does not stop.
+
+⚠ `bIsCruiseTargetLock` is the AUTOPILOT's state, not "is targeted". That
+misreading cost a design early on and it is the reason this is filed as a
+separate feature rather than as a way to target something.
+
+### If either flies
+
+`bAcquireTarget` earning its keep means folding it into the confirm key by
+default and retiring the flag. `bLockCourse` working means the panel has a real
+by-id verb and the whole "the mod only points" framing gets a footnote — but it
+is still the autopilot, so the README's promise does not change without a second
+think. If either fails, **delete the flag and write the finding into Settled**;
+an experimental switch left in an ini is a promise to a player.
 
 ## Release checklist
 
@@ -446,10 +542,16 @@ inherits the number. Static bodies are unaffected.
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (spliced away from the camera while open) |
 | D-pad up / down | `Up` / `Down` | move the highlight, on a controller (v1.1.0) |
 | POV toggle (**Q** here) | `TogglePOV` | lock the highlighted body, or clear it if already locked |
+| *(none by default)* | `sAcquireEvent` | `[Experimental]`, off: start an acquire run on its own press instead of on confirm |
+| *(none until `bLockCourse`)* | `Quickkey2` | `[Experimental]`, off: lock the cruise autopilot onto the highlighted body |
 
 `sConfirmEvent`, `sBrowseUpEvent` and `sBrowseDownEvent` are comma-separated
 lists sharing one walk (`MatchesEventList`); an entry is a user-event **name**
-or `#<id>`, a raw key code for a key the game leaves nameless.
+or `#<id>`, a raw key code for a key the game leaves nameless. The two
+experimental lists share that walk and that splice, and **read as empty while
+their feature is off** — a switched-off feature must not take a key away from
+the camera, from the game, or from the "that key is not one of the panel's
+controls" advice the log prints.
 
 **The browse lists carry both devices at once and that is deliberate.** A user
 event is not tied to a device — the engine resolves it against whatever is in
@@ -818,7 +920,27 @@ Each of these cost real time; the reasoning is in the findings docs.
   exists; `ShipHud_Target` is parameterless ("target what is hovered") and
   `iInfoTargetIndex` is read-only to the SWF. Would need
   `Spaceship::TargetingMode` (vtable **is** mapped: 450764, 450766 — try
-  vtable-observation before Ghidra).
+  vtable-observation before Ghidra). ⚠ Still true of TARGETING, and it is not
+  worked around by shaping the candidate data: the feed is a PUBLICATION, not an
+  input, so removing entries changes what the HUD draws and nothing about what
+  the engine considers. Anything that could filter the engine's candidates lives
+  inside `TargetingMode` — the same place "set target to X" lives, and set-target
+  is the smaller ask. The two things that ARE reachable from here are drafted
+  under `[Experimental]` above: press vanilla's own key for the player, and
+  `Reticle_OnCruiseLockCourse`, which takes a `uBodyID` but drives the AUTOPILOT.
+- **The mod can dispatch UI→engine events, and needs no event class to do it.**
+  `BSUIDataManager.dispatchCustomEvent(type, params = null)` is a public static
+  that builds the `CustomEvent` itself, so a dispatch is one `Invoke` on a class
+  resolved by `GetVariable` — the `Shared.GlobalFunc.PlayMenuSound` route
+  exactly. Constructing `flash.events.Event` / `Shared.AS3.Events.CustomEvent`
+  through `CreateObject` and calling `dispatchEvent` is vanilla's literal shape
+  and is tried first; the `[dispatch] route:` log line says which one the build
+  is actually using.
+- **`bIsCruiseTargetLock` is PER-ENTRY on the low feed** — it rides `TargetLow`,
+  the object handed to `SetTargetLowInfo`, not the payload root. So "which body
+  is the autopilot flying to" is answerable per row, which is what gives the
+  experimental lock-course key a readback. It is the AUTOPILOT's state and has
+  never meant "is targeted".
 - **Targeting picks whatever is nearest screen centre**, and that reticle is
   fixed; the mouse circle steers only. Free-look does **not** allow targeting.
 - **No cruise targeting-cone setting exists** — all 2426 GMSTs swept
