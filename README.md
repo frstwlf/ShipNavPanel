@@ -83,10 +83,11 @@ Settings live in `Data\SFSE\Plugins\ShipNavPanel.ini`; override in
 parser reads a same-line `;` comment as part of the value, so keep comments on
 their own line. If the marker ever points wrongly on your setup,
 `fArrowAngleOffset` / `bArrowInvertAngle` are the first thing to try. The log
-is at `Documents\My Games\Starfield\SFSE\Logs\ShipNavPanel.log`, and
-`bVerboseLog=true` adds the per-action trace worth attaching to a bug report
-(the `[Recon]` switches below it are the investigation instrumentation, and
-are far louder).
+is at `Documents\My Games\Starfield\SFSE\Logs\ShipNavPanel.log`. Since 1.1.2
+`bVerboseLog` is on by default, so that log already carries the per-action
+trace a bug report needs — attach it whole, no settings to change first. Set it
+to `false` for a near-silent log; the `[Recon]` switches below it are the
+investigation instrumentation and are far louder again.
 
 ## How it works, briefly
 

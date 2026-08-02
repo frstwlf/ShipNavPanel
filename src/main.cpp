@@ -69,7 +69,11 @@ namespace
 	//
 	// Rule for anything added later: if a line repeats when the player does
 	// something, it belongs behind this flag.
-	REX::TIniSetting<bool> bVerboseLog{ "Recon", "bVerboseLog", false };
+	// On by default since 1.1.2. It is the level that makes a bug report useful
+	// without making the log expensive - a line per wheel notch and per blip, not
+	// the thousands the switches below it produce. Turning it off is a choice, not
+	// the starting point.
+	REX::TIniSetting<bool> bVerboseLog{ "Recon", "bVerboseLog", true };
 
 	// The recon taps default OFF in a shipped build - they were built to answer
 	// questions that are now answered, and left on they write thousands of lines
@@ -98,6 +102,7 @@ namespace
 	// Scaleform reader: dumps the ship HUD's ActionScript data model on demand.
 	REX::TIniSetting<bool>          bScaleformReader{ "Scaleform", "bScaleformReader", false };
 	REX::TIniSetting<bool>          bInterposeTargetData{ "Scaleform", "bInterposeTargetData", true };
+	REX::TIniSetting<bool>          bGateOnFlightState{ "Scaleform", "bGateOnFlightState", true };
 	REX::TIniSetting<bool>          bScaleformSkipBoilerplate{ "Scaleform", "bScaleformSkipBoilerplate", true };
 	REX::TIniSetting<std::uint32_t> uScaleformDepth{ "Scaleform", "uScaleformDepth", 8 };
 	REX::TIniSetting<std::uint32_t> uScaleformMaxLines{ "Scaleform", "uScaleformMaxLines", 3000 };
@@ -601,6 +606,21 @@ namespace
 	// session its bearings. Each round now subscribes only what is missing.
 	std::atomic<bool> g_subscribedHigh{ false };
 	std::atomic<bool> g_subscribeFailed{ false };
+
+	// ---------------------------------------------------------------------------
+	// Movie identity, for the settle gate below.
+	//
+	// Bumped by OnMenuMovieCreated for the ship HUD only. A movie that EXISTS is
+	// not a movie that is safe to call into, and this counter is how the
+	// difference gets measured - see MovieSettled.
+	//
+	// The SFSE menu interface can be unavailable (Init warns when it is), in which
+	// case this never moves and the root pointer carries the gate alone. That is
+	// weaker - an allocator is free to hand the new movie the old one's address,
+	// which is exactly why the resets here key off the callback rather than a
+	// pointer comparison - but it degrades to "no worse than before" instead of
+	// "silently ungated".
+	std::atomic<std::uint32_t> g_movieGeneration{ 0 };
 
 	// ---------------------------------------------------------------------------
 	// Mutual exclusion for the one-shot builders.
@@ -3037,6 +3057,15 @@ namespace
 		// comparing movie pointers, which an allocator is free to recycle.
 		const char* name = a_menu->menuName.c_str();
 		if (name && std::strcmp(name, kShipHudMenu) == 0) {
+			// FIRST, before any of the re-arming below: this is the only moment
+			// the plugin is told a movie changed, and every gate that keeps a
+			// worker thread out of a half-built AS3 VM hangs off this counter.
+			// Re-arming the subscriber without also invalidating the generation
+			// is what let the 2026-08-02 takeoff crash happen - the reset made
+			// the mod eager again while nothing recorded that the movie it was
+			// about to poke was 16 ms old.
+			g_movieGeneration.fetch_add(1, std::memory_order_acq_rel);
+
 			g_interposeInstalled.store(false, std::memory_order_release);
 			g_interposeFailed.store(false, std::memory_order_release);
 			g_subscribed.store(false, std::memory_order_release);
@@ -5102,12 +5131,162 @@ namespace
 
 	HighFeedHandler g_highFeedHandler;
 
+	// ---------------------------------------------------------------------------
+	// The movie settle gate.
+	//
+	// 2026-08-02, taking off from a planetary surface: the ship HUD movie was
+	// created, probed, torn down and rebuilt inside 21 ms. The probe round that
+	// landed on the replacement called Subscribe on it from a BSJobs worker and
+	// faulted six frames deep in the AS3 VM, resolving the method through an ABC
+	// file the new movie had not finished registering. The log shows the whole
+	// verbose probe block printed TWICE 16 ms apart, which is only possible if
+	// OnMenuMovieCreated reset the attempt counter between them.
+	//
+	// WorldSettled cannot catch this and never could. It measures time since
+	// LoadingMenu closed, and a surface takeoff rebuilds the HUD during the
+	// cutscene - BEFORE any loading screen - so it reads "settled" for the entire
+	// dangerous window. The 2026-07-28 freeze was the same shape ("mid-init ...
+	// REBUILT within 50 ms") and the settle timer added for it measured the wrong
+	// clock. This one measures the movie.
+	//
+	// Neither gate replaces the other: WorldSettled says the WORLD is not mid-load,
+	// this says the MOVIE in front of us is not mid-life. Both must hold.
+	//
+	// Note what this is NOT: it is not a lock. Scaleform exposes none, and SFSE's
+	// task interface cannot help - AddTask and AddPermanentTask are dispatched
+	// from the same Command_Process hook, which the crash backtrace shows running
+	// on BSJobs workers, so "bounce it to the main thread" is not on the menu.
+	// What this does is remove the window in which the engine is provably mutating
+	// the VM underneath us. That window is where the crash lives.
+
+	// Two orders of magnitude clear of the observed rebuild gaps (21 ms here, 50 ms
+	// on 2026-07-28), and invisible in practice: nothing reads a subscription until
+	// cruise, which is many seconds after any transition that trips this.
+	constexpr std::int64_t kMovieSettleMs = 1500;
+
+	std::atomic<std::uint32_t> g_settleSeenGen{ 0 };
+	std::atomic<const void*>   g_settleSeenRoot{ nullptr };
+	std::atomic<std::int64_t>  g_settleSinceMs{ 0 };
+
+	// Has THIS movie - this generation, this root - been alive and unchanged for
+	// kMovieSettleMs? Takes the root the caller is about to use, so the answer is
+	// about that movie and not merely about "some movie being open".
+	//
+	// Only ever called under the SingleWinner claim, so the exchanges below cannot
+	// interleave with another probe round; they are atomics to stay honest about
+	// being read from whichever worker the task landed on.
+	bool MovieSettled(const void* a_root, std::uint32_t a_gen)
+	{
+		using clock = std::chrono::steady_clock;
+		const auto nowMs =
+			std::chrono::duration_cast<std::chrono::milliseconds>(clock::now().time_since_epoch()).count();
+
+		// Both exchanges, unconditionally - `||` would short-circuit past the
+		// second and leave it stale, restarting the clock again next round.
+		const bool genChanged = g_settleSeenGen.exchange(a_gen, std::memory_order_acq_rel) != a_gen;
+		const bool rootChanged = g_settleSeenRoot.exchange(a_root, std::memory_order_acq_rel) != a_root;
+
+		if (genChanged || rootChanged) {
+			// First sighting of this movie. Start its clock and refuse.
+			g_settleSinceMs.store(nowMs, std::memory_order_release);
+			// Once per movie, not once per frame of waiting - and NOT behind
+			// bVerboseLog. Two of these 16 ms apart is the signature of the
+			// takeoff rebuild, and a crash log is worth far more with that line
+			// in it than a shipped build is hurt by a handful of lines a session.
+			REX::INFO("[nav] ship HUD movie gen {} (root {:016X}) - holding {} ms before probing it",
+				a_gen, reinterpret_cast<std::uintptr_t>(a_root), kMovieSettleMs);
+			return false;
+		}
+		return (nowMs - g_settleSinceMs.load(std::memory_order_acquire)) >= kMovieSettleMs;
+	}
+
+	// ---------------------------------------------------------------------------
+	// The flight-state gate.
+	//
+	// Orthogonal to the movie gate, and NOT a substitute for it: this one says
+	// "the feeds are worth having yet", the movie gate says "this movie is safe to
+	// ask". Every rebuild in the 2026-08-02 test run - gens 2, 3 and 4 - happened
+	// while the player was flying, which is exactly a state this gate approves. It
+	// buys cost, not safety.
+	//
+	// ⚠ Sitting in the pilot seat is NOT flying. A landed ship has its HUD up and
+	// a pilot in the seat, and taking off destroys that movie and builds another -
+	// so a subscription made while landed is thrown away seconds later, and it is
+	// made in the window where a rebuild is most likely to land on top of it.
+	// The log bears this out: gen 1 subscribed at 11:13:45 and gen 2 replaced it
+	// 41 seconds later on takeoff, before anything had read a single payload.
+	//
+	// Only calls this build already runs: GetSpaceship, IsSpaceshipLanded and
+	// IsSpaceshipDocked are what LogHeartbeat has been printing all along.
+	// Deliberately NOT used:
+	//   GetSpaceshipPilot (ID 119876) - would add passenger-vs-pilot discrimination,
+	//     but has never been called here, and a relocation ID that is subtly wrong
+	//     is a crash. Poor trade for a distinction the ship HUD being open at all
+	//     already mostly makes.
+	//   IsInSpace - its bool argument has no documented meaning; LogHeartbeat
+	//     prints it BOTH ways rather than guess, which is not a thing to gate on.
+	//
+	// Fails OPEN. If the state reads wrong the mod idles and says so rather than
+	// dying, and bGateOnFlightState=false in the INI takes the layer back out
+	// without touching the movie gate underneath it.
+
+	// -1 not yet read, 0 holding, 1 clear. Logged on transition only - once per
+	// takeoff, not once per frame of sitting on a landing pad.
+	std::atomic<std::int32_t> g_flightGateState{ -1 };
+
+	bool ReadyToFly()
+	{
+		if (!bGateOnFlightState.GetValue())
+			return true;
+
+		const auto player = RE::PlayerCharacter::GetSingleton();
+		const auto ship = player ? player->GetSpaceship() : nullptr;
+		const bool clear = ship && !ship->IsSpaceshipLanded() && !ship->IsSpaceshipDocked();
+
+		const std::int32_t state = clear ? 1 : 0;
+		if (g_flightGateState.exchange(state, std::memory_order_acq_rel) != state)
+			REX::INFO("[nav] flight gate: {}",
+				clear ? "clear - flying, probing the HUD movie" :
+						"holding - no ship, or landed/docked; the feeds would be discarded on takeoff");
+
+		return clear;
+	}
+
+	// The movie can still be swapped between resolving a value out of it and
+	// invoking on that value. Re-reading the live root and comparing narrows the
+	// window to the width of the call itself - as tight as this gets without a
+	// lock the engine does not expose. Cheap enough to do before every VM call on
+	// this path, which runs at most once a frame and stops entirely once
+	// subscribed.
+	bool StillSameMovie(const void* a_root, std::uint32_t a_gen)
+	{
+		if (g_movieGeneration.load(std::memory_order_acquire) != a_gen)
+			return false;
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui)
+			return false;
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud))
+			return false;
+
+		const auto menu = ui->GetMenu(s_shipHud);
+		return menu && menu->uiMovie && menu->uiMovie->asMovieRoot &&
+			   static_cast<const void*>(menu->uiMovie->asMovieRoot.get()) == a_root;
+	}
+
 	void TryInstallSubscriber()
 	{
 		if (!bInterposeTargetData.GetValue() ||
 			(g_subscribed.load(std::memory_order_acquire) &&
 				g_subscribedHigh.load(std::memory_order_acquire)) ||
 			g_subscribeFailed.load(std::memory_order_acquire))
+			return;
+
+		// Ahead of the claim: it is three cheap native reads with no shared state,
+		// and leaving it here means the gate's log line reflects what is actually
+		// true rather than only the frames on which this thread won the exchange.
+		if (!ReadyToFly())
 			return;
 
 		// The check above is not enough on its own - see SingleWinner. Two
@@ -5133,6 +5312,15 @@ namespace
 			return;
 		auto* a_root = menu->uiMovie->asMovieRoot.get();
 
+		// ⚠ Before the attempt counter, deliberately. A movie we are still
+		// waiting on must not cost a probe - otherwise a run of transitions
+		// burns the whole 60-probe budget on movies we never actually looked
+		// at, which is the v0.0.8 mistake in a new coat.
+		const auto  gen = g_movieGeneration.load(std::memory_order_acquire);
+		const auto* rootID = static_cast<const void*>(a_root);
+		if (!MovieSettled(rootID, gen))
+			return;
+
 		// Count only probes that actually had a movie to look at. v0.0.8
 		// incremented on every frame including those before the ship HUD
 		// existed, so it burned its whole budget during the loading screen and
@@ -5147,6 +5335,13 @@ namespace
 
 		bool anyResolved = false;
 		for (const auto* path : kDataManagerPaths) {
+			// Five paths, each of them several VM calls. A rebuild landing
+			// part-way through the list would leave the remaining iterations
+			// reading a dead movie, so the check is per-iteration and not just
+			// once on the way in.
+			if (!StillSameMovie(rootID, gen))
+				return;
+
 			const bool available = a_root->IsAvailable(path);
 			RE::Scaleform::GFx::Value manager;
 			const bool resolved = a_root->GetVariable(&manager, path);
@@ -5164,6 +5359,12 @@ namespace
 					// dispatch would then run it twice, all session.
 					bool lowOK = g_subscribed.load(std::memory_order_acquire);
 					if (!lowOK) {
+						// This exact call is the 2026-08-02 crash frame. The
+						// GetVariable that produced `manager` says nothing about
+						// whether the movie still exists now.
+						if (!StillSameMovie(rootID, gen))
+							return;
+
 						RE::Scaleform::GFx::Value args[2];
 						a_root->CreateString(&args[0], kTargetFeed);
 						a_root->CreateFunction(&args[1], &g_feedHandler);
@@ -5181,6 +5382,9 @@ namespace
 					// provider was not yet registered), so its result is
 					// TRACKED and retried next round rather than shrugged at.
 					if (lowOK && !g_subscribedHigh.load(std::memory_order_acquire)) {
+						if (!StillSameMovie(rootID, gen))
+							return;
+
 						RE::Scaleform::GFx::Value hiArgs[2];
 						a_root->CreateString(&hiArgs[0], kHighFeed);
 						a_root->CreateFunction(&hiArgs[1], &g_highFeedHandler);
@@ -5196,7 +5400,10 @@ namespace
 						// The star map's body feed, if the probe is on. A
 						// failure here is informative and must not disturb the
 						// two subscriptions above, which the mod depends on.
-						if (bProbeStarmapFeed.GetValue()) {
+						// Diagnostic only, so a movie that went away just skips
+						// it and falls through to the return below - both feeds
+						// this mod depends on are already live at this point.
+						if (bProbeStarmapFeed.GetValue() && StillSameMovie(rootID, gen)) {
 							const auto&               feed = sStarmapFeed.GetValue();
 							RE::Scaleform::GFx::Value mapArgs[2];
 							a_root->CreateString(&mapArgs[0], feed.c_str());
@@ -5223,6 +5430,9 @@ namespace
 			// ever for a low feed that is NOT yet subscribed - this route must
 			// never produce a second registration of a live handler.
 			if (!g_subscribed.load(std::memory_order_acquire)) {
+				if (!StillSameMovie(rootID, gen))
+					return;
+
 				RE::Scaleform::GFx::Value args[2];
 				a_root->CreateString(&args[0], kTargetFeed);
 				a_root->CreateFunction(&args[1], &g_feedHandler);
@@ -8922,10 +9132,14 @@ namespace
 		iniStore->Init("Data/SFSE/Plugins/ShipNavPanel.ini", "Data/SFSE/Plugins/ShipNavPanelCustom.ini");
 		iniStore->Load();
 
+		// bGateOnFlightState is in here because a DISABLED gate logs nothing at
+		// all - without this line, "no flight gate lines" is ambiguous between
+		// "switched off" and "never reached".
 		REX::INFO("config: bPanel={} bInputTap={} bWheelFilter={} bHideVanillaBlips={} "
-				  "bPanelSurveyMarks={} bVerboseLog={}",
+				  "bPanelSurveyMarks={} bVerboseLog={} bGateOnFlightState={}",
 			bPanel.GetValue(), bInputTap.GetValue(), bWheelFilter.GetValue(),
-			bHideVanillaBlips.GetValue(), bPanelSurveyMarks.GetValue(), bVerboseLog.GetValue());
+			bHideVanillaBlips.GetValue(), bPanelSurveyMarks.GetValue(), bVerboseLog.GetValue(),
+			bGateOnFlightState.GetValue());
 		REX::INFO("config: sConfirmEvent='{}' (bPanelHints={}) - the footer pill resolves the key from "
 				  "the binding itself; sConfirmKeyLabel='{}' is only used if that pill cannot be built",
 			sConfirmEvent.GetValue(), bPanelHints.GetValue(), sConfirmKeyLabel.GetValue());
@@ -8952,10 +9166,17 @@ namespace
 				bSurveyCruiseKeys.GetValue(), bScaleformReader.GetValue(), bLogTargetCaptures.GetValue(),
 				bDumpPlanetRecords.GetValue(), bProbeStarmapFeed.GetValue(), bProbeSurveyVM.GetValue(),
 				bProbeVanillaChrome.GetValue(), bTestGraphicsClear.GetValue());
+		} else if (bVerboseLog.GetValue()) {
+			// The default since 1.1.2. bVerboseLog is a [Recon] switch but is
+			// deliberately NOT part of anyRecon above - it is the one level meant
+			// to be left on, so it must not drag the heavy dump in with it.
+			REX::INFO("config: per-action trace on, heavy [Recon] instrumentation off. This is the "
+					  "default and it is what a bug report wants - attach this log whole.");
 		} else {
-			REX::INFO("config: diagnostics all off. For a bug report, set bVerboseLog=true in "
-					  "ShipNavPanelCustom.ini and reproduce - that adds the per-action trace without "
-					  "the thousands of lines the [Recon] switches produce.");
+			// Only reachable if someone turned the trace off by hand.
+			REX::INFO("config: diagnostics all off, including the per-action trace. For a bug report, "
+					  "set bVerboseLog=true in ShipNavPanelCustom.ini and reproduce - that restores the "
+					  "trace without the thousands of lines the [Recon] switches produce.");
 		}
 
 		if (bProbeSurveyVM.GetValue())
