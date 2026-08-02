@@ -1972,34 +1972,52 @@ namespace
 	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
 	// ---------------------------------------------------------------------------
-	// ⚠ NO PREDICTION ABOUT WHICH ROWS THE ENGINE WILL TAKE. Dispatch, then AUDIT.
+	// ⚠ TWO ROUTES TO A COURSE, and they resolve DIFFERENT THINGS.
 	//
-	// Three gates were written here and all three were guesses dressed as rules,
-	// each built on the single row that had misbehaved and then generalised:
+	// Settled 2026-08-03 after four flights, three dead theories and one A/B:
 	//
-	//   1. "runtime (FF-prefixed) ids are unusable" - killed by the tester's log,
-	//      which showed the engine holding a course on that very id once the
-	//      contact was targeted the vanilla way. The number was always right.
-	//   2. "`uniqueID` is the wrong field, it wants a body id" - killed by
-	//      measurement: the low feed carries no per-entry `uBodyID` at all.
-	//   3. "only a celestial body can take a course by id" - killed by the
-	//      tester, who had already reported POIs and stations course-locking
-	//      fine. A gate that contradicts a direct observation is not a rule.
+	//   `{uBodyID: 0}`   - what vanilla's own key sends. "Use the CURRENT INFO
+	//                      TARGET", resolved through the targeting system, so it
+	//                      reaches anything that can be targeted at all - a POI,
+	//                      a contact, a ship.
+	//   `{uBodyID: <id>}` - what this mod sends, and what vanilla's far-travel
+	//                      button sends. Resolved as a BODY. Give it anything
+	//                      that is not one and the engine takes the course with
+	//                      nothing to fly to: no entry reports
+	//                      `bIsCruiseTargetLock`, no course marker draws, and the
+	//                      ship drifts toward the system's origin.
 	//
-	// ⚠ The third one REMOVED WORKING FUNCTIONALITY, which is worse than the bug
-	// it was meant to contain: a wrong heading is recoverable in one keypress, a
-	// capability that is gone is not. **Do not gate this on a theory again.** The
-	// engine's answer is readable - `bIsCruiseTargetLock` on the body's own feed
-	// entry - so the mod asks, watches, and says plainly when nothing came back.
+	// The mod cannot use the first route - setting the info target is the dead
+	// end Phase 0 closed - so it is by-id or nothing, and by-id means bodies.
 	//
-	// What is actually known: a course on a **sensor contact** does not take (no
-	// entry reports it, no orange indicator draws, the ship heads for the system
-	// origin), while planets do, and POIs and stations did when they were last
-	// tried. A "Sensor Contact" is vanilla's name for a contact it has not
-	// resolved yet, so "unresolved" is the obvious next hypothesis - and it stays
-	// a hypothesis until the audit has named the failing rows across a few
-	// sessions. Gate on the evidence when there is enough of it, not before.
+	// ⚠⚠ SO THE GATE IS NOT A DEAD KEY, IT IS A DELEGATION, and that is the whole
+	// point of it. On a row the mod cannot course, the press is left in the UI's
+	// queue and vanilla's `{0}` handles it: if the player has that POI targeted,
+	// the course lands correctly through the route the mod does not have. Taking
+	// the press on those rows does not merely fail - it BREAKS a flow that works
+	// without the mod. That is a worse bug than the one it was meant to prevent.
+	//
+	// ⚠ History, so the next gate is not the fifth guess: three earlier gates were
+	// built by taking the one row that had misbehaved and generalising it -
+	// FF-prefixed ids (dead: the engine holds a course on that very id when it is
+	// targeted), then the wrong id field (dead: the low feed carries no per-entry
+	// `uBodyID`), then this same type rule, which was **withdrawn** because the
+	// tester had reported POIs and stations working. That recollection was
+	// mistaken and they said so; the type rule stands, but on a mechanism now
+	// rather than on a correlation.
+	//
+	// ⚠ TT_STATION is UNCONFIRMED and is deliberately delegated. Nothing has ever
+	// course-locked one with the audit watching, so if it turns out the engine
+	// takes a station by id, widen IsCourseableType - the gate should be exactly
+	// as wide as the engine is, and no wider.
 	// ---------------------------------------------------------------------------
+	// Defined with the other target-type helpers, below the TT_* constants.
+	bool IsCourseableType(std::uint32_t a_type);
+
+	// Whether the highlighted row is one the mod can course by id, kept as an
+	// atomic so the input path never takes the candidate mutex to ask. Written
+	// wherever the highlight or the candidate list changes.
+	std::atomic<bool> g_highlightCourseable{ false };
 
 	// The id of the last course the mod asked for, held until the engine reports
 	// a course - so the report can be compared with the request. 0 when nothing
@@ -2282,6 +2300,15 @@ namespace
 	constexpr std::uint32_t kTargetTypeShip = 5;
 	constexpr std::uint32_t kTargetTypeStation = 6;
 	constexpr std::uint32_t kTargetTypePlanet = 7;
+
+	// Which rows the mod can aim the autopilot at by id: star and planet, the two
+	// the feed uses for celestial bodies (moons ride as TT_PLANET like everything
+	// else in the sky). Everything else is delegated to vanilla's target-based
+	// route - see the header above g_highlightCourseable.
+	bool IsCourseableType(std::uint32_t a_type)
+	{
+		return a_type == kTargetTypeStar || a_type == kTargetTypePlanet;
+	}
 
 	bool IsLocalBody(std::uint32_t a_type, double a_distanceMeters)
 	{
@@ -2722,6 +2749,10 @@ namespace
 		// first local body regardless of the delta.
 
 		g_highlightID.store(g_candidates[local[pos]].id, std::memory_order_release);
+		// Published with the highlight and under the same lock, so the input path
+		// can ask "can the mod course this row" without touching the mutex.
+		g_highlightCourseable.store(IsCourseableType(g_candidates[local[pos]].type),
+			std::memory_order_release);
 	}
 
 	void TogglePanel()
@@ -2783,6 +2814,22 @@ namespace
 		// for a key that does nothing, so a player pressing it repeatedly has to
 		// be able to find out why - but the fifth identical line teaches nobody
 		// anything, and the tester's log filled with them.
+		// Belt and braces with the splice gate, which already leaves the press to
+		// vanilla for these rows. If the two ever stop matching, the mod must
+		// still not send an id the engine cannot resolve into a destination.
+		if (!g_highlightCourseable.load(std::memory_order_acquire)) {
+			static std::mutex                        s_toldMutex;
+			static std::unordered_set<std::uint32_t> s_told;
+
+			std::lock_guard lock{ s_toldMutex };
+			if (s_told.size() < 32 && s_told.emplace(a_id).second)
+				REX::INFO("[course] {:08X} is not a body, so the mod leaves the key to the game: "
+						  "its own course route goes through your TARGET, which reaches things the "
+						  "mod's by-id one cannot. Target it and the same press will work.",
+					a_id);
+			return;
+		}
+
 		g_pendingCourseID.store(a_id, std::memory_order_release);
 		if (bVerboseLog.GetValue())
 			REX::INFO("[course] requested for {:08X}", a_id);
@@ -3020,14 +3067,16 @@ namespace
 		if (!original)
 			return;
 
-		// Any highlighted row may be asked for - see the header above
-		// RequestLockCourse for why the mod no longer tries to predict which the
-		// engine will take. The only requirement is that there IS a row, so an
-		// empty list does not silently eat the key.
+		// ⚠ The press is taken ONLY for a row the mod can actually course. On any
+		// other row it is left in the queue on purpose: vanilla's route goes
+		// through the info target and reaches what the mod's by-id one cannot, so
+		// stealing the press there would break a flow that works without the mod.
+		// See the header above g_highlightCourseable.
 		const bool claiming = bLockCourse.GetValue() && bCourseSplice.GetValue() &&
 		                      g_panelOpen.load(std::memory_order_acquire) &&
 		                      g_inCruise.load(std::memory_order_acquire) &&
-		                      g_highlightID.load(std::memory_order_acquire) != 0;
+		                      g_highlightID.load(std::memory_order_acquire) != 0 &&
+		                      g_highlightCourseable.load(std::memory_order_acquire);
 		if (!claiming) {
 			original(a_this, a_queueHead);
 			return;
@@ -4832,6 +4881,21 @@ namespace
 							break;
 						}
 					}
+				}
+
+				// Re-published with every rebuild, not only when the highlight
+				// moves: a row's type arrives with the feed, so a highlight set
+				// before its row existed would otherwise keep a stale answer.
+				if (const auto highlight = g_highlightID.load(std::memory_order_acquire);
+					highlight != 0) {
+					bool courseable = false;
+					for (const auto& row : g_candidates) {
+						if (row.id == highlight) {
+							courseable = IsCourseableType(row.type);
+							break;
+						}
+					}
+					g_highlightCourseable.store(courseable, std::memory_order_release);
 				}
 
 				// Which body the autopilot is actually flying to, straight from

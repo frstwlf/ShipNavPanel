@@ -21,10 +21,11 @@ flies you there. Vanilla needs something targeted before it will lock a course;
 with the panel open it aims at the highlighted row instead. Press again on the
 same body to clear. With the panel closed the key is untouched.
 
-Unresolved contacts (the "Sensor Contact" rows) are the known exception: the game
-takes the request but has nothing to fly to, so no course marker appears. Press
-again on a real destination to recover, or reach the contact the way you always
-did — target it, then use the same key with the panel closed.
+That covers **planets, moons and stars**. On any other row — stations, ships,
+contacts — the mod leaves the key alone and your press reaches the game
+untouched, because the game's own course route works through your *target* and
+gets to things the panel's route cannot. Target one and the same key still
+works, panel open or closed.
 
 For everything else the mod **points rather than targets**: Starfield's UI layer
 has no by-id "set target", so the panel steers your eyes and you acquire the

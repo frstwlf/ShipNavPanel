@@ -394,38 +394,22 @@ Later, nice-to-have:
       chokepoint for Scaleform input, which was not known before. The camera
       tap's technique generalises.
 
-- [ ] **⚠⚠ IS THE SPLICE THE VARIABLE? The one A/B nobody has run.** The tester's
-      recollection is that POIs course-locked in the `WeaponGroup1` build, and
-      **the splice is the only thing in the dispatch path that differs** — the
-      `git diff` of `RunLockCourse` across those builds is a log line, and the
-      engine never learns which key fired the event, so the key cannot be it.
+- [x] ~~Is the splice the variable?~~ **NO — A/B run 2026-08-03
+      (`bCourseSplice=false` + `sLockCourseEvent=WeaponGroup1`, i.e. the
+      pre-splice build exactly): behaviour identical.** The tester called it:
+      *"It was a case of bad memory."* So the splice is cleared, the key was
+      already cleared by the diff, and what is left is the mechanism — see
+      Settled.
 
-      ⚠ **Their own A/B could not see this, and the reason is worth keeping:**
-      they added `WeaponGroup1` back to `sLockCourseEvent` and got the same
-      failure — but the splice matches *the whole list*, so the second key came
-      under the splice too. **The variable moved with the test.** A control that
-      is applied by the same setting it is meant to control is not a control.
-
-      `[Recon] bCourseSplice=false` + `sLockCourseEvent=WeaponGroup1` reproduces
-      the pre-splice build exactly. If the POI courses then, the splice is
-      implicated and the question becomes *how* — the SWF never sees the press
-      either way, so the mechanism would not be obvious and would need its own
-      hunt. If it still fails, the recollection is the loose end, and the
-      unresolved-contact hypothesis below is what is left.
-
-- [ ] **⚠ WHICH ROWS DOES THE ENGINE ACTUALLY REFUSE?** Open, and deliberately
-      NOT gated on in the meantime — see the header above `RequestLockCourse` for
-      why three gates in a row were guesses. Known: a **sensor contact** does not
-      take (no entry reports the course, no marker, ship drifts to the system
-      origin); **planets** do; **POIs and stations** did when they were last
-      tried, which is what killed the type gate. A "Sensor Contact" is vanilla's
-      own name for a contact it has **not resolved**, so *unresolved* is the
-      obvious next hypothesis — and `Candidate::locMarkerState` /
-      `discovered` already carry that, so the gate is one line **once there is
-      enough evidence to write it**. Collect it from ordinary play: every failure
-      now prints
-      `[course] the game did not take a course on <id>`. When the failing rows
-      have a property in common across a few sessions, gate on that property.
+- [ ] **⚠ TT_STATION — the only row type still unmeasured.** The gate delegates
+      it, which is safe but may be needlessly narrow: no station has ever been
+      course-locked with the audit watching (the early "stations work" report
+      belongs to the same retracted recollection). One press settles it —
+      highlight a station with `bVerboseLog` on and read whether
+      `[course] the engine reports a course locked on '<station>'` appears or the
+      1.5 s `did not take a course` warning does. If stations take a by-id
+      course, add `kTargetTypeStation` to `IsCourseableType`: **the gate should be
+      exactly as wide as the engine is and no wider.**
 
 - [x] ~~THE LEAD: `uniqueID` may be the wrong number to send.~~ **DEAD, measured
       2026-08-03:** `[course] the feed does NOT carry a per-entry uBodyID`.
@@ -1025,17 +1009,36 @@ Each of these cost real time; the reasoning is in the findings docs.
   there.**
   ⭐ And the posture that survives all of it: **when an engine call takes an id,
   audit what came back rather than assuming it refused what it could not use.**
-- **⛔⛔ THREE GATES, THREE GUESSES — and the third one removed working
-  functionality.** Each was built on the single row that had misbehaved and then
-  generalised: FF-prefixed ids, then the wrong id field, then "only a celestial
-  body". The third was flatly contradicted by an observation already in hand
-  (the tester had reported POIs and stations course-locking fine), and shipping
-  it took away a capability that was the reason the feature earned its place.
-  ⭐ **A wrong heading costs one keypress to recover; a capability that is gone
-  costs a release to notice.** When the engine's answer is READABLE — and here it
-  is, `bIsCruiseTargetLock` on the body's own feed entry — ask and audit. Do not
-  predict. The prediction is only worth writing once the audit has named the
-  failing rows and they visibly share a property.
+- **⭐⭐ TWO ROUTES TO A COURSE, resolving DIFFERENT THINGS — this is the whole
+  story and it took four flights.** `{uBodyID: 0}` (vanilla's key) means "use the
+  **current info target**", resolved through the targeting system, so it reaches
+  anything targetable — a POI, a contact, a ship. `{uBodyID: <id>}` (the mod, and
+  vanilla's far-travel button) is resolved as a **body**; hand it anything else
+  and the engine takes the course with nothing to fly to. The mod cannot use the
+  first route, because setting the info target is the dead end Phase 0 closed.
+  So: **by-id means bodies, and that is structural, not a bug to fix.**
+- **⚠⚠ THEREFORE THE GATE IS A DELEGATION, NOT A DEAD KEY — and that reframing
+  is what makes it correct.** On a row the mod cannot course, the press is left
+  in the queue and vanilla's `{0}` handles it: with that POI targeted, the course
+  lands through the route the mod does not have. **Taking the press on those rows
+  does not merely fail, it breaks a flow that works without the mod** — a worse
+  bug than the one the gate was for, and the reason the gate is right after
+  having been withdrawn once.
+- **⛔⛔ FOUR GATES ON ONE FEATURE. The lesson is about the KIND of evidence, not
+  the amount.** FF-prefixed ids (dead: the engine holds a course on that id when
+  it is targeted), the wrong id field (dead: measured, no per-entry `uBodyID`),
+  "only a celestial body" (withdrawn on a tester report), then the same rule
+  again once that report was retracted as *"a case of bad memory"*. Each of the
+  first three took one row's behaviour and generalised it; the fourth rests on a
+  **mechanism** — two routes, one of which the mod cannot reach — which is why it
+  should stand. ⭐ **A rule that explains why the boundary is where it is
+  survives; a rule fitted to where the boundary appeared to be does not.**
+  ⭐ And the process lesson, paid for twice: **a recollection is data with no
+  timestamp.** "It worked before" outranked a diff and two measurements for three
+  rounds. The way out was not argument but an A/B that could actually move the
+  suspected variable — and note the tester's own A/B could not, because adding a
+  second key to `sLockCourseEvent` brought it under the splice as well. **A
+  control applied by the same setting it is meant to control is not a control.**
 - **⚠ `TargetOnlyData.uniqueID` and `PlanetCardInfo.uBodyID` are NOT the same
   number** — `payload.uniqueID` **386531** vs `pci.uBodyID` **385501**
   ("Masada IV", a landable target) in the 2026-08-02 dump. They agree for a
