@@ -23,7 +23,8 @@ Archive `build/packages/ShipNavPanel-1.1.1.zip` (3.68 MB,
 1.0.0 package. Pre-package `GetValue()` grep re-run and clean: the only two
 flags touching machinery are `bInputTap` and `bWheelFilter`, both documented
 escape hatches and both defaulting `true` in source *and* in the shipped ini.
-**Not yet uploaded to Nexus at time of writing.**
+**LIVE ON NEXUS with a changelog, 2026-08-02** — the second release of the mod,
+and the first update to it.
 
 Reported by users and reproduced by the tester: the panel could not be browsed
 with a controller. Not a bug — an absence. The browse pair was hardcoded to
