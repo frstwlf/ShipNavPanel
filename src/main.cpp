@@ -537,20 +537,23 @@ namespace
 	// rebuild it; the finding is in TODO's Settled list.)
 	// ---------------------------------------------------------------------------
 	REX::TIniSetting<bool> bLockCourse{ "Panel", "bLockCourse", true };
-	// **One name, both devices.** A user event is device-agnostic - the engine
-	// resolves it against whatever is in the player's hands - and `WeaponGroup1`
-	// is the primary fire control on each: left mouse button, and the right
-	// trigger on a pad (`idCode` 10, from the tester's own gamepad survey). Cruise
-	// stands the weapons down, so it is free in exactly the window the panel uses
-	// it, and it follows a rebind on either device without the mod knowing which
-	// is in use.
+	// **The game's OWN course key**, which makes this the one panel control that
+	// needs no hint of its own: vanilla already draws its `$CruiseCourseLock` prompt
+	// in cruise, and the player already knows the key. It is a name, so it follows
+	// a rebind, and it is bound on both devices (RB on a pad), so one line serves
+	// each - the same property the browse pair has.
 	//
-	// ⚠ The game prints its own "weapons unavailable" toast on that press. It
-	// does that whether the mod is installed or not - the press reaches the
-	// weapon system either way - so it is not something the mod causes or can
-	// take back. Same comma-separated list syntax as sConfirmEvent if a second
-	// key is wanted.
-	REX::TIniSetting<std::string> sLockCourseEvent{ "Panel", "sLockCourseEvent", "WeaponGroup1" };
+	// It is NOT a free key, and that is deliberate rather than tolerated. The mod
+	// does the same KIND of thing vanilla does with it, only aimed at the panel's
+	// highlight instead of the info target, and only while the panel is open - so
+	// the failure mode of a collision is "a course got set on the other body for a
+	// frame", not a lost control. The alternative tried first, `WeaponGroup1`
+	// (primary fire, idle in cruise), worked but made the game print its own
+	// "weapons unavailable" toast on every press.
+	//
+	// ⚠ Vanilla dispatches this event up to TWICE per press and the mod's makes a
+	// third - see RequestLockCourse for how the three are kept from fighting.
+	REX::TIniSetting<std::string> sLockCourseEvent{ "Panel", "sLockCourseEvent", "LockCourse" };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -1944,6 +1947,14 @@ namespace
 	// own targeting outranks the panel.
 	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
+	// The same target as a FORM ID, 0 for none - resolved against the candidate
+	// list on the tick the index arrives, because an index only means anything
+	// against the payload it was published with. The blip pass keeps using the
+	// index it already has; this exists so the course key can tell, lock-free on
+	// the input thread, whether the highlighted body is the one vanilla's own
+	// press would act on (see RequestLockCourse).
+	std::atomic<std::uint32_t> g_infoTargetID{ 0 };
+
 	// A course-lock dispatch waiting to be made, by body id; 0 means none. The
 	// input thread only ever stores here - no VM, no Scaleform, the rule that
 	// side of the mod has always kept - and the dispatch itself happens on the UI
@@ -2686,11 +2697,43 @@ namespace
 		}
 	}
 
+	// ---------------------------------------------------------------------------
 	// Queue a cruise-autopilot course change for the UI thread to dispatch.
+	//
+	// ⚠ THE KEY IS SHARED WITH VANILLA, and vanilla is not tidy with it. One press
+	// of `LockCourse` in cruise can produce TWO dispatches from the SWF: the
+	// far-travel icon's button sends the info target's real `uniqueID`
+	// (FarTravelIconBase.as:99), and then the reticle's fallback branch sends
+	// `{uBodyID: 0}` anyway - because `ProcessUserEvent` DISCARDS the button bar's
+	// return value at ShipReticle.as:2105, so consuming the press there does not
+	// suppress the fallback. The mod's is a third.
+	//
+	// The mod's lands LAST by construction, not by luck: this runs on the input
+	// thread and only stores an atomic, while the dispatch happens on the next
+	// high-feed tick. Vanilla's two go out synchronously during input processing.
+	// With one course held at a time, last write wins and the highlight is what
+	// the player ends up flying to.
+	//
+	// The single case that breaks is the highlight ALREADY BEING the info target:
+	// vanilla sets the course on it, and the mod's identical id arriving a tick
+	// later would toggle the same course straight back off - one press, nothing
+	// happens. So the mod stands aside there. It loses nothing by doing so:
+	// vanilla's own press is already aimed at exactly the body the player wanted,
+	// which is the whole reason that case is a collision in the first place.
+	// ---------------------------------------------------------------------------
 	void RequestLockCourse(std::uint32_t a_id)
 	{
 		if (!bLockCourse.GetValue() || a_id == 0)
 			return;
+
+		if (a_id == g_infoTargetID.load(std::memory_order_acquire)) {
+			if (bVerboseLog.GetValue())
+				REX::INFO("[course] standing aside for {:08X} - it is the info target, so the game's "
+						  "own press already acts on it",
+					a_id);
+			return;
+		}
+
 		g_pendingCourseID.store(a_id, std::memory_order_release);
 		if (bVerboseLog.GetValue())
 			REX::INFO("[course] requested for {:08X}", a_id);
@@ -3189,6 +3232,7 @@ namespace
 			// Any faded on-screen icons went down with the movie too.
 			g_iconsFaded.store(false, std::memory_order_release);
 			g_infoTargetIndex.store(-1, std::memory_order_release);
+			g_infoTargetID.store(0, std::memory_order_release);
 
 			// A queued keypress is a keypress the movie it was meant for no
 			// longer exists to receive.
@@ -4627,6 +4671,19 @@ namespace
 							break;
 						}
 					}
+				}
+
+				// The info target as an id, resolved against the list it was
+				// published with. Appended master-file rows sit AFTER the feed's
+				// own, so a feed index never lands on one; the fromFeed test is
+				// belt and braces, matching the blip pass's own resolution.
+				{
+					const auto infoIdx = g_infoTargetIndex.load(std::memory_order_acquire);
+					const bool inRange = infoIdx >= 0 &&
+					                     static_cast<std::size_t>(infoIdx) < g_candidates.size() &&
+					                     g_candidates[infoIdx].fromFeed;
+					g_infoTargetID.store(inRange ? g_candidates[infoIdx].id : 0,
+						std::memory_order_release);
 				}
 
 				// Which body the autopilot is actually flying to, straight from
@@ -9461,9 +9518,9 @@ namespace
 		// everything else it does is a read or a draw - so the log says plainly
 		// that it is armed and on which key.
 		if (bLockCourse.GetValue())
-			REX::INFO("[course] course lock ON ('{}') - in cruise with the panel open, that key sets "
-					  "the autopilot on the HIGHLIGHTED body and the ship turns to it. Press it "
-					  "again on the same body to clear.",
+			REX::INFO("[course] course lock ON ('{}') - in cruise WITH THE PANEL OPEN that key aims "
+					  "the autopilot at the HIGHLIGHTED body instead of the info target. With the "
+					  "panel closed it is the game's own key doing the game's own job.",
 				sLockCourseEvent.GetValue());
 		else
 			REX::INFO("[course] course lock OFF - the panel points, and steering stays manual");

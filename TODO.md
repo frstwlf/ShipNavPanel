@@ -17,13 +17,12 @@ that body. **Nothing has to be targeted first**, which is the part that matters:
 `Reticle_OnCruiseLockCourse` accepts a `uBodyID` the base game never sends —
 one that is not the current info target — so the panel finally has a verb that
 reaches the engine directly. `bLockCourse` (default **on**) and
-`sLockCourseEvent` (default **`WeaponGroup1`**) live in `[Panel]` with the rest
-of the controls. **One event covers both devices**: `WeaponGroup1` is left mouse
-button and the pad's right trigger, and cruise stands the weapons down, so it is
-idle in exactly the window the panel uses it. The game prints its own "weapons
-unavailable" toast on that press — it does so with or without the mod, since the
-press reaches the weapon system either way, and the tester's call is that it is
-a fair price.
+`sLockCourseEvent` (default **`LockCourse`** — the player's own course key) live
+in `[Panel]` with the rest of the controls. **Vanilla needs a target before it
+will lock a course; with the panel open the mod aims the same key at the
+highlighted row instead**, and with the panel closed the key is untouched. One
+event, both devices (RB on a pad), no hint pill needed because the game already
+prompts with it.
 
 Still **no version bump** — head is v1.1.2 plus this, pending a release
 candidate.
@@ -375,19 +374,28 @@ Later, nice-to-have:
 - [ ] Distance formatting: the LS/km switch is abrupt, and untracked bodies show
       a dash where a real distance could be computed from orbital data.
 
-- [ ] **A hint pill for the course key.** The footer carries browse (left) and
-      confirm (right); a third hint needs a layout decision, which is the only
-      reason this is not done. Worth noting that `WeaponGroup1` is the *easy*
-      case for a pill — **one event both devices bind**, so the vanilla button
-      re-resolves its own cap across a device swap and needs no re-driving at
-      all, unlike the browse pill (v1.1.1's lesson: a component that re-renders
-      is not a component that re-chooses).
+- [x] ~~A hint pill for the course key.~~ **Not wanted** — the key is now
+      vanilla's own `LockCourse`, which the game already prompts with in cruise,
+      so a second prompt for the same key is noise. The user's call, and it is
+      also why the shared key beat a free one.
 
 - [ ] **Show the course on the row.** `Candidate::courseLocked` is now captured
       per body, so the panel knows which row the autopilot is flying to and could
       mark it — the engine's own state rather than the mod's belief. Cheap; the
       question is what it should look like next to the survey banner in the
-      distance cell.
+      distance cell. ⚠ Worth more now than when it was first listed: with a
+      SHARED key the engine's course can be set by vanilla's press as well as the
+      mod's, so the row mark is the only place the two agree in front of the
+      player.
+
+- [ ] **⚠ VERIFY "press again clears".** It is in the ini and the README on the
+      strength of a code reading — `FarTravelIconBase.UpdateButton` flips its
+      LABEL between `$CruiseCourseLock` and `$CruiseCourseClear` while dispatching
+      the identical event with the identical id, which implies the engine toggles
+      on a repeat. Not yet watched in game. It matters more with a shared key,
+      because vanilla's own dispatches now interleave with the mod's; the
+      `[course] the engine reports ...` line (verbose, logs on change) is the
+      readout.
 
 
 ## Release checklist
@@ -477,7 +485,7 @@ inherits the number. Static bodies are unaffected.
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (spliced away from the camera while open) |
 | D-pad up / down | `Up` / `Down` | move the highlight, on a controller (v1.1.0) |
 | POV toggle (**Q** here) | `TogglePOV` | lock the highlighted body, or clear it if already locked |
-| primary fire (**LMB / RT**) | `WeaponGroup1` | set the cruise autopilot on the highlighted body, or clear it |
+| the player's course-lock key (**RB** on a pad) | `LockCourse` | aim the cruise autopilot at the highlighted body, or clear it |
 
 `sConfirmEvent`, `sBrowseUpEvent`, `sBrowseDownEvent` and `sLockCourseEvent` are
 comma-separated lists sharing one walk (`MatchesEventList`); an entry is a
@@ -487,15 +495,33 @@ as empty while `bLockCourse` is off** — a switched-off feature must not take a
 key away from the camera, from the game, or from the "that key is not one of the
 panel's controls" advice the log prints.
 
-**`WeaponGroup1` is the tester's find and it is a good one.** Primary fire is
-the same user event on both devices (LMB, and pad RT at `idCode` 10), cruise
-disables the weapons, and the mod only reads it with the panel open — so one ini
-line serves keyboard and controller with no device check anywhere, exactly as
-the browse pair does. ⚠ The game still prints its **"weapons unavailable"**
-toast: that press reaches the weapon system whether or not the mod exists, so it
-is not something the mod causes, and the camera splice cannot take it back
-(different consumer). Documented as expected behaviour in the ini so it is not
-filed as a bug.
+**The course key is SHARED with vanilla, deliberately.** It is the one control
+the mod does not borrow but overlays: with the panel closed vanilla handles it
+untouched, and with the panel open the mod aims it at the highlight instead of
+the info target. That is why it is the only control with **no hint pill** — the
+game already prompts with `$CruiseCourseLock` in cruise, and a second prompt for
+the same key is noise (item closed, not deferred).
+
+⚠ **Vanilla dispatches this event up to TWICE per press and the mod's makes a
+third.** `ShipReticle.ProcessUserEvent` **discards the button bar's return value**
+([as:2105](../../Extracted/scripts/shipreticle/scripts/ShipReticle.as:2105)), so
+the far-travel icon consuming the press does *not* suppress the reticle's
+`{uBodyID: 0}` fallback — vanilla sends the info target's real id and then 0.
+The mod's lands **last by construction, not by luck**: the input thread only
+stores an atomic and the dispatch happens on the next high-feed tick, while
+vanilla's two go out synchronously inside input processing. One course is held
+at a time, so last write wins.
+
+**The one case that breaks is the highlight already BEING the info target** —
+vanilla sets the course on it and the mod's identical id, arriving a tick later,
+would toggle the same course straight back off. `RequestLockCourse` stands aside
+there, and loses nothing by it: vanilla's own press is already aimed at exactly
+the body the player meant, which is *why* that case collides at all.
+
+Earlier choice, kept in the history for its reasoning: `WeaponGroup1` (primary
+fire — one event on both devices, idle in cruise) worked, but the game printed
+its own "weapons unavailable" toast on every press. A shared key whose collision
+is a one-frame course flicker beat a free key with a permanent cosmetic cost.
 
 **The browse lists carry both devices at once and that is deliberate.** A user
 event is not tied to a device — the engine resolves it against whatever is in
@@ -887,6 +913,32 @@ Each of these cost real time; the reasoning is in the findings docs.
   target's `uniqueID` (far-travel icon). Passing an arbitrary highlighted body's
   id works: the autopilot engages and the ship turns to it, **with nothing
   targeted**. This is the one by-id verb in the UI layer and it is now proven.
+  Confirmed to work on **stations and POIs** as well as planets.
+- **Vanilla cannot lock a course without a target, and the engine draws the
+  course as an ORANGE RING around the body's HUD blip** (tester, 2026-08-02).
+  Both matter to this mod: the first is why sharing the `LockCourse` key is
+  mostly collision-free (vanilla's press does nothing when nothing is
+  targeted), and the second is a trap — **the mod HIDES vanilla blips in
+  cruise**, so a course set on a body that is neither the highlight nor the lock
+  would have its ring hidden with its blip. Two things keep that from biting:
+  the panel keeps highlight+lock blips while it is open, and the course is
+  normally set on the highlight. If the course and the lock are ever allowed to
+  diverge for longer, the course body has to join the blip pass's exempt set
+  beside the quest markers and the E-target.
+- **Dash rows are effectively extinct** (tester, 2026-08-02): since moons stopped
+  being listed under their parent unconditionally, an untracked row is
+  essentially never seen — the feed carries the system's planets. Any argument
+  of the form "the marker covers bodies the feed does not" is therefore
+  defending an empty set; do not lean on it again.
+- **`Cancel` is NOT usable as a panel control.** It reads as free in the AS3 —
+  `ShipReticle.ProcessUserEvent` consumes it only in `STATE_MONOCLE`, not in
+  cruise — but on keyboard and mouse it is taken above the reticle (Escape), so
+  a design resting on it works on a pad and dies on KBM. Tested 2026-08-02, and
+  it killed an otherwise good three-state scheme (confirm locks, confirm again
+  sets course, Cancel unlocks). **If a "back out" control is ever needed again,
+  the answer is a HOLD on a key the mod already owns**, not a second key: the
+  input walk already reads `heldDownSecs`, and vanilla has hold-hint components
+  (`ReleaseHoldComboButtonData`, which drives the Cruise button itself).
 - **⛔ Driving vanilla's target cycle is a DEAD END — built, flown, deleted
   (2026-08-02). Do not rebuild it.** `bAcquireTarget` dispatched the same
   parameterless `ShipHud_Target` the player's own key sends, once per settle

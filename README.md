@@ -15,10 +15,11 @@ and nothing changes — which is also how you clear a locked target without
 picking another. Outside cruise the mod is idle and the scanner key keeps its
 vanilla job.
 
-**Or just set a course.** Highlight a row, press fire — left mouse button, or
-the right trigger on a controller, both idle while cruising — and the cruise
-autopilot flies you there. Nothing has to be targeted first; press again on the
-same body to clear the course.
+**Or just set a course.** Highlight a row and press your normal **course-lock
+key** — the one the game already prompts you with in cruise — and the autopilot
+flies you there. Vanilla needs something targeted before it will lock a course;
+with the panel open it aims at the highlighted row instead. Press again on the
+same body to clear. With the panel closed the key is untouched.
 
 For everything else the mod **points rather than targets**: Starfield's UI layer
 has no by-id "set target", so the panel steers your eyes and you acquire the
@@ -33,7 +34,7 @@ possible — the full story is in the phase documents below.
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (hidden from the camera while the panel is open) |
 | D-pad up / down | `Up` / `Down` | move the highlight, on a controller |
 | POV toggle | `TogglePOV` | lock the highlighted body — or clear it, if already locked |
-| primary fire (LMB / RT) | `WeaponGroup1` | set the cruise autopilot on the highlighted body — or clear it |
+| your course-lock key (RB on a pad) | `LockCourse` | set the cruise autopilot on the highlighted body — or clear it |
 
 Every key is matched by **user-event name**, so rebinding just works, and one
 list serves both devices because a user event is not tied to one — the engine
@@ -43,10 +44,12 @@ your actual bindings. Every control is configurable (`sConfirmEvent`,
 codes, comma-separated), and `bLockCourse=false` leaves the fire key alone
 entirely.
 
-Primary fire is free for the same reason the D-pad is: cruise stands your
-weapons down. The game does print its own **"weapons unavailable"** message on
-that press — it does that with or without this mod installed, since the press
-reaches the weapon system either way.
+The course key is the one control with **no hint pill**, on purpose: the game
+already prompts you with it in cruise, so a second prompt would be noise. It is
+also the one key the mod *shares* rather than borrows — vanilla still handles it
+whenever the panel is closed, and even with the panel open the mod steps aside
+if the highlighted body is the one you already have targeted, because vanilla's
+own press is then aimed at exactly the right thing.
 
 The D-pad is free to borrow because vanilla spends it on **power allocation**
 and switches that off for the whole of cruise
