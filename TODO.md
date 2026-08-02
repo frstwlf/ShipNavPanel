@@ -11,6 +11,61 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
+**v1.1.2 — THE TAKEOFF CRASH, FIXED AND CONFIRMED IN GAME 2026-08-02, and
+PACKAGED for release.** Taking off from a planetary surface crashed the game.
+The ship HUD movie is destroyed and rebuilt inside ~20 ms during the transition,
+and the subscribe bootstrap — which runs on a BSJobs worker, not the main
+thread — called into the replacement's AS3 VM while it was still registering its
+ABC file. `WorldSettled` could not catch it and never could: it measures time
+since `LoadingMenu` closed, and a surface takeoff rebuilds the HUD during the
+cutscene, *before* any loading screen, so it read "settled" for the whole
+dangerous window. The 2026-07-28 freeze was the same shape; the settle timer
+added for it was measuring the wrong clock.
+
+Three parts, all in `TryInstallSubscriber`: `g_movieGeneration` (bumped by
+`OnMenuMovieCreated` ahead of the re-arm stores) gives the gates an identity to
+key off; `MovieSettled` holds a movie 1500 ms from first sighting, checked
+before the probe budget is touched; `StillSameMovie` revalidates generation and
+live root ahead of every VM call on the path. On top of those, `ReadyToFly`
+skips the probe while landed or docked — **sitting in the pilot seat is not
+flying**, and a subscription made on the pad is discarded by the takeoff rebuild
+seconds later, made in the window a rebuild is most likely to land on.
+
+⚠ SFSE offers **no main-thread bounce**. `AddTask` and `AddPermanentTask` are
+both dispatched from the same `Command_Process` hook, which the crash backtrace
+shows running on BSJobs workers — the "executed on the Main thread" comment in
+`PluginAPI.h` is wrong for Starfield. So the fix removes the *window*, not the
+thread. It is not a lock and does not pretend to be one; Scaleform exposes none.
+
+`ReadyToFly` deliberately uses only calls this build already ran (`GetSpaceship`
+/ `IsSpaceshipLanded` / `IsSpaceshipDocked`). `GetSpaceshipPilot` (id 119876)
+would add passenger-vs-pilot discrimination but has never been called here, and
+a subtly wrong relocation id is a crash — a poor trade for a distinction the
+ship HUD being open already mostly makes. `IsInSpace` is out for its own reason:
+its bool argument has no documented meaning.
+
+**It fixed the function too, not just the stability.** The pre-fix "route
+exhausted" failure — which left the mod silently inert — was an artifact of
+probing a half-built movie, not a missing route. Post-fix, every generation
+subscribes to both feeds on the first path that resolves.
+
+Verified across two sessions: 3 and 4 HUD rebuilds, covering takeoff,
+landing/docking and grav jumps, no crash. `bVerboseLog` now defaults **on** with
+this release (a report filed without it usually has to be filed twice, and it
+costs tens of lines a session, not thousands), and the startup line that
+announced "diagnostics all off" no longer contradicts itself when the trace is
+running.
+
+Archive `build/packages/ShipNavPanel-1.1.2.zip` (3.71 MB,
+`Data/SFSE/Plugins/{dll,ini,pdb}`, DLL stamped 1.1.2.0), same shape as the 1.0.0
+and 1.1.1 packages. Pre-package `GetValue()` grep re-run and clean: `Register`
+and `AddPermanentTask` are both unconditional, and the flags touching machinery
+are now three — `bInputTap`, `bWheelFilter` and the new `bGateOnFlightState` —
+all defaulting `true` in source *and* in the shipped ini. Note that
+`bGateOnFlightState` fails in the safer direction than the other two: `false`
+removes the gate and restores the older, more permissive behaviour rather than
+producing an inert build.
+
 **v1.1.1 — CONTROLLER BROWSING, BOTH HALVES CONFIRMED IN GAME 2026-08-02 and
 PACKAGED for release.** v1.1.0 landed the feature ("it works"); v1.1.1 fixed the
 one thing the tester found — the browse pill did not follow a device swap made
