@@ -555,6 +555,19 @@ namespace
 	// press. It stays the fallback if taking this key ever proves worse.
 	REX::TIniSetting<std::string> sLockCourseEvent{ "Panel", "sLockCourseEvent", "LockCourse" };
 
+	// Turns the UI splice off while leaving the feature on - the A/B that
+	// separates "the mod's dispatch" from "the mod taking the press away from the
+	// SWF". It exists because those two arrived in the same commit and have never
+	// been varied independently: the build where POIs course-locked had no
+	// splice, and every build since has had one. **Adding a second key to
+	// sLockCourseEvent does NOT isolate this** - the splice matches the whole
+	// list, so a new key comes under it too, which is exactly how the tester's
+	// own A/B ended up carrying the variable along with it.
+	//
+	// With this false and sLockCourseEvent set to a key vanilla ignores in cruise
+	// (WeaponGroup1), the build is functionally the one that worked.
+	REX::TIniSetting<bool> bCourseSplice{ "Recon", "bCourseSplice", true };
+
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -3011,7 +3024,7 @@ namespace
 		// RequestLockCourse for why the mod no longer tries to predict which the
 		// engine will take. The only requirement is that there IS a row, so an
 		// empty list does not silently eat the key.
-		const bool claiming = bLockCourse.GetValue() &&
+		const bool claiming = bLockCourse.GetValue() && bCourseSplice.GetValue() &&
 		                      g_panelOpen.load(std::memory_order_acquire) &&
 		                      g_inCruise.load(std::memory_order_acquire) &&
 		                      g_highlightID.load(std::memory_order_acquire) != 0;
@@ -9733,11 +9746,16 @@ namespace
 		// The course lock is the mod's only outward word to the engine -
 		// everything else it does is a read or a draw - so the log says plainly
 		// that it is armed and on which key.
-		if (bLockCourse.GetValue())
+		if (bLockCourse.GetValue()) {
 			REX::INFO("[course] course lock ON ('{}') - in cruise WITH THE PANEL OPEN that key aims "
 					  "the autopilot at the HIGHLIGHTED body instead of the info target. With the "
 					  "panel closed it is the game's own key doing the game's own job.",
 				sLockCourseEvent.GetValue());
+			if (!bCourseSplice.GetValue())
+				REX::WARN("[course] bCourseSplice is OFF - the press is left in the UI's queue, so "
+						  "the game acts on it too. Only useful for the A/B against the pre-splice "
+						  "build; pair it with a key vanilla ignores in cruise.");
+		}
 		else
 			REX::INFO("[course] course lock OFF - the panel points, and steering stays manual");
 

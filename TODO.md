@@ -394,6 +394,25 @@ Later, nice-to-have:
       chokepoint for Scaleform input, which was not known before. The camera
       tap's technique generalises.
 
+- [ ] **⚠⚠ IS THE SPLICE THE VARIABLE? The one A/B nobody has run.** The tester's
+      recollection is that POIs course-locked in the `WeaponGroup1` build, and
+      **the splice is the only thing in the dispatch path that differs** — the
+      `git diff` of `RunLockCourse` across those builds is a log line, and the
+      engine never learns which key fired the event, so the key cannot be it.
+
+      ⚠ **Their own A/B could not see this, and the reason is worth keeping:**
+      they added `WeaponGroup1` back to `sLockCourseEvent` and got the same
+      failure — but the splice matches *the whole list*, so the second key came
+      under the splice too. **The variable moved with the test.** A control that
+      is applied by the same setting it is meant to control is not a control.
+
+      `[Recon] bCourseSplice=false` + `sLockCourseEvent=WeaponGroup1` reproduces
+      the pre-splice build exactly. If the POI courses then, the splice is
+      implicated and the question becomes *how* — the SWF never sees the press
+      either way, so the mechanism would not be obvious and would need its own
+      hunt. If it still fails, the recollection is the loose end, and the
+      unresolved-contact hypothesis below is what is left.
+
 - [ ] **⚠ WHICH ROWS DOES THE ENGINE ACTUALLY REFUSE?** Open, and deliberately
       NOT gated on in the meantime — see the header above `RequestLockCourse` for
       why three gates in a row were guesses. Known: a **sensor contact** does not
