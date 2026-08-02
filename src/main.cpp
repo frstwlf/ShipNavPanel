@@ -505,65 +505,52 @@ namespace
 	REX::TIniSetting<bool> bSelectionWinsOverlap{ "Panel", "bSelectionWinsOverlap", true };
 
 	// ---------------------------------------------------------------------------
-	// [Experimental] - the two ways the panel's selection can reach the ENGINE.
+	// COURSE LOCK - the panel's selection reaching the ENGINE, by id.
 	//
-	// Everything above this line only POINTS. That is the pivot the whole mod
-	// rests on: there is no by-id "set target" in the UI layer - ShipHud_Target is
-	// parameterless ("target whatever is hovered", ShipReticle.as:2163) and
-	// iInfoTargetIndex is read-only to the SWF - so the panel marks a body and the
-	// player acquires it themselves.
+	// **CONFIRMED IN GAME 2026-08-02: this works, straight off the highlighted
+	// row.** No targeting involved, nothing to select first - the key sets the
+	// cruise autopilot on the body under the highlight and the ship turns to face
+	// it. It is the one by-id verb this layer has, and finding that it accepts an
+	// id vanilla never sends is the single biggest result since the blip pivot.
 	//
-	// These two are drafts of the routes that DO exist. Both default off, both are
-	// UNFLOWN, and nothing in the shipping panel reads either of them.
+	// `Reticle_OnCruiseLockCourse` carries a `uBodyID`, and vanilla sends it two
+	// ways: the reticle's own LockCourse handler with 0 (ShipReticle.as:2128) and
+	// the far-travel icon with a real `TargetOnlyData.uniqueID`
+	// (FarTravelIconBase.as:99). What the base game never sends is an id that is
+	// not the current info target - which is exactly what this sends, and the
+	// engine honours it.
 	//
-	//   1. bAcquireTarget - DRIVE VANILLA'S OWN CYCLE rather than prune it. The
-	//      mod dispatches the same ShipHud_Target event the SelectTarget key
-	//      dispatches, one press at a time, and stops the moment the engine's info
-	//      target IS the selection. ⚠ It cannot reach further than the key can:
-	//      whatever heading test the engine applies is untouched, so this fixes
-	//      "E grabbed the body next to the one I picked", never "target the planet
-	//      behind me". If the cycle comes all the way round without reaching the
-	//      selection, the run says so and stops - which is itself the measurement
-	//      Phase 0 wanted (is the restriction an enumeration filter or a targeting
-	//      filter?) and the reason this is worth flying even if it never ships.
-	//   2. bLockCourse - the ONE by-id verb in this layer.
-	//      Reticle_OnCruiseLockCourse carries a uBodyID, and vanilla's own
-	//      far-travel icon passes a REAL uniqueID through it
-	//      (FarTravelIconBase.as:99) while the reticle's own LockCourse handler
-	//      passes 0 - so the engine handler is known to accept a body id, and only
-	//      "a body that is not the current info target" is unexercised. It engages
-	//      the cruise AUTOPILOT, not the info target: a different verb from
-	//      targeting, which is why it gets its own key and is never the confirm.
-	//      (bIsCruiseTargetLock is the autopilot's state, not "is targeted" - that
-	//      reading cost this project a design once.)
+	// ⚠ This is the AUTOPILOT, not the info target. `bIsCruiseTargetLock` is that
+	// autopilot's state and has never meant "is targeted"; the two were confused
+	// once here and it cost a design. Pressing the key again on the same body
+	// clears the course, which is vanilla's own behaviour - its far-travel button
+	// flips its LABEL between $CruiseCourseLock and $CruiseCourseClear while
+	// dispatching the identical event with the identical id.
 	//
-	// ⚠ Both make the mod SPEAK to the engine for the first time. Everything else
-	// it does is a read, or a draw on the Scaleform side; these ask the game to
-	// change the player's state. Hence: opt-in, capped, loud in the log, and
-	// abandoned the moment the player's selection moves underneath them.
+	// (Its sibling experiment, `bAcquireTarget` - press the game's own target key
+	// for the player until the info target IS the selection - was built, flown and
+	// REMOVED the same day. It worked exactly as designed and the design was the
+	// problem: one press moved the target to a neighbour, the next moved nothing,
+	// and the run reported `nothing acquirable from this heading`. That is Phase 0
+	// 6b/6c answered from the cockpit - cruise acquires by POINTING, so pressing
+	// the key faster reaches nothing the key could not already reach. Do not
+	// rebuild it; the finding is in TODO's Settled list.)
 	// ---------------------------------------------------------------------------
-	REX::TIniSetting<bool> bAcquireTarget{ "Experimental", "bAcquireTarget", false };
-	// Empty means the CONFIRM key starts a run when it locks a body (clearing
-	// cancels one). Name a key here to keep confirm purely mod-side and acquire on
-	// its own press - same list syntax as sConfirmEvent, and it is spliced from
-	// the camera exactly as the other panel controls are.
-	REX::TIniSetting<std::string> sAcquireEvent{ "Experimental", "sAcquireEvent", "" };
-	// The cap. A run is at most this many synthetic presses; the wrap detector
-	// normally stops it long before, and the cap only catches a cycle that keeps
-	// producing new targets forever.
-	REX::TIniSetting<std::uint32_t> uAcquireMaxSteps{ "Experimental", "uAcquireMaxSteps", 12 };
-	// How long a step waits for the LOW feed to publish the new info target
-	// before deciding nothing happened. The feed publishes on target-set CHANGES,
-	// not on a clock, so this timer is only the fallback - a run that is working
-	// steps as fast as the engine answers.
-	REX::TIniSetting<float> fAcquireStepSeconds{ "Experimental", "fAcquireStepSeconds", 0.35f };
-
-	REX::TIniSetting<bool> bLockCourse{ "Experimental", "bLockCourse", false };
-	// Free in cruise per the Phase 0 key survey. Pressing it again on the same
-	// body clears the course, which is vanilla's own behaviour: its far-travel
-	// button flips its LABEL between $CruiseCourseLock and $CruiseCourseClear
-	// while dispatching the identical event with the identical id.
-	REX::TIniSetting<std::string> sLockCourseEvent{ "Experimental", "sLockCourseEvent", "Quickkey2" };
+	REX::TIniSetting<bool> bLockCourse{ "Panel", "bLockCourse", true };
+	// **One name, both devices.** A user event is device-agnostic - the engine
+	// resolves it against whatever is in the player's hands - and `WeaponGroup1`
+	// is the primary fire control on each: left mouse button, and the right
+	// trigger on a pad (`idCode` 10, from the tester's own gamepad survey). Cruise
+	// stands the weapons down, so it is free in exactly the window the panel uses
+	// it, and it follows a rebind on either device without the mod knowing which
+	// is in use.
+	//
+	// ⚠ The game prints its own "weapons unavailable" toast on that press. It
+	// does that whether the mod is installed or not - the press reaches the
+	// weapon system either way - so it is not something the mod causes or can
+	// take back. Same comma-separated list syntax as sConfirmEvent if a second
+	// key is wanted.
+	REX::TIniSetting<std::string> sLockCourseEvent{ "Panel", "sLockCourseEvent", "WeaponGroup1" };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -793,9 +780,10 @@ namespace
 		// The cruise AUTOPILOT's current course - the per-entry
 		// bIsCruiseTargetLock the far-travel icon reads to decide whether its
 		// button offers LOCK or CLEAR (FarTravelIconBase.UpdateButton). ⚠ NOT
-		// "is targeted": that misreading cost a design early on. Captured for
-		// the experimental lock-course key, which otherwise has no way of
-		// knowing whether its dispatch landed.
+		// "is targeted": that misreading cost a design early on. This is the
+		// engine's own word for where the course-lock key put the autopilot,
+		// which is the only thing that can tell a dispatch that landed from one
+		// that was quietly dropped.
 		bool courseLocked{ false };
 		// Derived at display time.
 		bool isMoon{ false };
@@ -1956,29 +1944,12 @@ namespace
 	// own targeting outranks the panel.
 	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
-	// The same target as a FORM ID, 0 for none - resolved against the candidate
-	// list on the tick the index arrives, because an index is only meaningful
-	// against the payload it was published with. The blip pass keeps using the
-	// index it already has; this exists so the experimental acquire loop can
-	// compare the engine's target with a panel row, which an index cannot do.
-	std::atomic<std::uint32_t> g_infoTargetID{ 0 };
-
-	// [Experimental] Acquire-run plumbing. The input thread only ever stores
-	// here - no VM, no Scaleform, the rule that side of the mod has always kept -
-	// and the run itself lives on the UI thread, exactly as the panel sounds do.
-	std::atomic<std::uint32_t> g_acquireWantedID{ 0 };
-	std::atomic<bool>          g_acquireRequested{ false };
-	std::atomic<bool>          g_acquireCancel{ false };
-
-	// [Experimental] A lock-course dispatch waiting to be made, by body id;
-	// 0 means none. Vanilla toggles by re-sending the same id, so 0 is never a
-	// value this needs to carry.
+	// A course-lock dispatch waiting to be made, by body id; 0 means none. The
+	// input thread only ever stores here - no VM, no Scaleform, the rule that
+	// side of the mod has always kept - and the dispatch itself happens on the UI
+	// thread, exactly as the panel sounds do. Vanilla toggles a course by
+	// re-sending the same id, so 0 is never a value this needs to carry.
 	std::atomic<std::uint32_t> g_pendingCourseID{ 0 };
-	// The body a lock-course dispatch is waiting on an answer about. The answer
-	// is bIsCruiseTargetLock on that body's next feed entry - the engine's own
-	// word for whether the autopilot took the course, which is the only thing
-	// that can tell a working dispatch from a silently ignored one.
-	std::atomic<std::uint32_t> g_courseWatchID{ 0 };
 
 	// The locked body's feed presence, CONFIRMED since the last movie
 	// teardown - the id of the lock that has actually been seen in a live
@@ -2367,18 +2338,16 @@ namespace
 		std::string browseUp;
 		std::string browseDown;
 		std::string confirm;
-		// The two experimental keys, read as EMPTY while their feature is off.
-		// An empty list matches nothing, so a switched-off feature cannot take a
-		// key away from the camera, from the game, or from the "that key is not
-		// one of the panel's controls" advice below.
-		std::string acquire;
+		// Read as EMPTY while the feature is off. An empty list matches nothing,
+		// so a switched-off feature cannot take a key away from the camera, from
+		// the game, or from the "that key is not one of the panel's controls"
+		// advice below.
 		std::string lockCourse;
 
 		static EventLists Read()
 		{
 			return EventLists{ sBrowseUpEvent.GetValue(), sBrowseDownEvent.GetValue(),
 				sConfirmEvent.GetValue(),
-				bAcquireTarget.GetValue() ? sAcquireEvent.GetValue() : std::string{},
 				bLockCourse.GetValue() ? sLockCourseEvent.GetValue() : std::string{} };
 		}
 
@@ -2390,7 +2359,6 @@ namespace
 			return MatchesEventList(browseUp, a_userEvent, a_idCode) ||
 			       MatchesEventList(browseDown, a_userEvent, a_idCode) ||
 			       MatchesEventList(confirm, a_userEvent, a_idCode) ||
-			       MatchesEventList(acquire, a_userEvent, a_idCode) ||
 			       MatchesEventList(lockCourse, a_userEvent, a_idCode);
 		}
 	};
@@ -2718,32 +2686,14 @@ namespace
 		}
 	}
 
-	// [Experimental] Ask the acquire loop to walk vanilla's own target cycle onto
-	// a body. Input-thread side of the feature, and it is deliberately nothing
-	// but atomics: the run needs the AS3 VM, and the VM belongs to the UI thread.
-	void RequestAcquire(std::uint32_t a_id, const char* a_why)
-	{
-		if (!bAcquireTarget.GetValue() || a_id == 0)
-			return;
-		g_acquireWantedID.store(a_id, std::memory_order_release);
-		g_acquireCancel.store(false, std::memory_order_release);
-		g_acquireRequested.store(true, std::memory_order_release);
-		REX::INFO("[acquire] run requested for {:08X} ({})", a_id, a_why);
-	}
-
-	void CancelAcquire()
-	{
-		if (bAcquireTarget.GetValue())
-			g_acquireCancel.store(true, std::memory_order_release);
-	}
-
-	// [Experimental] Queue a cruise-autopilot course change for the UI thread.
+	// Queue a cruise-autopilot course change for the UI thread to dispatch.
 	void RequestLockCourse(std::uint32_t a_id)
 	{
 		if (!bLockCourse.GetValue() || a_id == 0)
 			return;
 		g_pendingCourseID.store(a_id, std::memory_order_release);
-		REX::INFO("[course] lock-course requested for {:08X}", a_id);
+		if (bVerboseLog.GetValue())
+			REX::INFO("[course] requested for {:08X}", a_id);
 	}
 
 	// The confirm key is a toggle on the highlighted row: lock it, or clear it
@@ -2757,21 +2707,12 @@ namespace
 			return;
 		}
 
-		// With sAcquireEvent empty the confirm key drives the experiment too:
-		// locking asks for the acquire run, clearing calls one off. A configured
-		// acquire key takes that job instead and leaves confirm purely mod-side.
-		const bool confirmAcquires = bAcquireTarget.GetValue() && sAcquireEvent.GetValue().empty();
-
 		if (g_lockedID.load(std::memory_order_acquire) == highlight) {
 			g_lockedID.store(0, std::memory_order_release);
-			if (confirmAcquires)
-				CancelAcquire();
 			REX::INFO("[panel] cleared {:08X} - no target on the HUD", highlight);
 		} else {
 			g_lockedID.store(highlight, std::memory_order_release);
 			REX::INFO("[panel] locked {:08X}", highlight);
-			if (confirmAcquires)
-				RequestAcquire(highlight, "confirm key");
 		}
 	}
 
@@ -2902,13 +2843,11 @@ namespace
 							REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
 					} else if (MatchesEventList(lists.confirm, userEvent, button->idCode)) {
 						ConfirmHighlight();
-					} else if (MatchesEventList(lists.acquire, userEvent, button->idCode)) {
-						// Deliberately the HIGHLIGHT, not the lock: with its own
-						// key the run is "acquire what I am looking at", and
-						// asking the player to confirm first would make the key
-						// a second confirm rather than a separate verb.
-						RequestAcquire(g_highlightID.load(std::memory_order_acquire), "acquire key");
 					} else if (MatchesEventList(lists.lockCourse, userEvent, button->idCode)) {
+						// The HIGHLIGHT, not the lock: setting a course is its
+						// own verb and needs no target chosen first. That is the
+						// whole reason it is worth having - straight off the row
+						// under the bar.
 						RequestLockCourse(g_highlightID.load(std::memory_order_acquire));
 					} else {
 						// Everything else pressed while the panel is open, once
@@ -3250,17 +3189,10 @@ namespace
 			// Any faded on-screen icons went down with the movie too.
 			g_iconsFaded.store(false, std::memory_order_release);
 			g_infoTargetIndex.store(-1, std::memory_order_release);
-			g_infoTargetID.store(0, std::memory_order_release);
 
-			// [Experimental] A request outlives nothing: a run in flight was
-			// aimed at a world the player has since left, and a queued keypress
-			// is a keypress the movie it was meant for no longer exists to
-			// receive. The run's own state clears on the cancel it reads next
-			// tick.
-			g_acquireRequested.store(false, std::memory_order_release);
-			g_acquireCancel.store(true, std::memory_order_release);
+			// A queued keypress is a keypress the movie it was meant for no
+			// longer exists to receive.
 			g_pendingCourseID.store(0, std::memory_order_release);
-			g_courseWatchID.store(0, std::memory_order_release);
 
 			// The lock's feed presence must be re-confirmed against the NEW
 			// movie's payloads before absence may clear a moon lock.
@@ -3880,7 +3812,7 @@ namespace
 			if (entry.GetMember("bMarkerDiscovered", &member) && member.IsBoolean())
 				row.discovered = member.GetBoolean();
 			// The autopilot's course, per body - read whether or not the
-			// experimental key is on, because it costs one GetMember and it is
+			// course-lock key is on, because it costs one GetMember and it is
 			// the only readback that feature has (see Candidate::courseLocked).
 			if (entry.GetMember("bIsCruiseTargetLock", &member) && member.IsBoolean())
 				row.courseLocked = member.GetBoolean();
@@ -4697,38 +4629,29 @@ namespace
 					}
 				}
 
-				// The info target as an id, resolved against the list it was
-				// published with. Appended master-file rows sit AFTER the feed's
-				// own, so a feed index never lands on one; the fromFeed test is
-				// belt and braces, matching the blip pass's own resolution.
-				{
-					const auto infoIdx = g_infoTargetIndex.load(std::memory_order_acquire);
-					const bool inRange = infoIdx >= 0 &&
-					                     static_cast<std::size_t>(infoIdx) < g_candidates.size() &&
-					                     g_candidates[infoIdx].fromFeed;
-					g_infoTargetID.store(inRange ? g_candidates[infoIdx].id : 0,
-						std::memory_order_release);
-				}
-
-				// [Experimental] The lock-course oracle, positive half. A
-				// dispatch the engine ignores looks exactly like one it
-				// honoured, so the answer is read back off the feed: the body's
-				// own bIsCruiseTargetLock. ⚠ Only the SUCCESS is detectable
-				// here - this feed publishes on target-set CHANGES, so an
-				// ignored dispatch may produce no publish at all and anything
-				// waiting on one would be a check that cannot fail. The timeout
-				// therefore lives on the high feed's tick, in RunLockCourse.
-				if (const auto watch = g_courseWatchID.load(std::memory_order_acquire); watch != 0) {
+				// Which body the autopilot is actually flying to, straight from
+				// the engine. Logged on CHANGE only, and behind the verbose
+				// flag, because it repeats with a player action - but it is the
+				// engine's own word rather than the mod's belief, which is what
+				// makes it worth a line at all when a course goes wrong.
+				if (bVerboseLog.GetValue()) {
+					static std::uint32_t s_lastCourse = 0;
+					std::uint32_t        course = 0;
+					std::string_view     courseName;
 					for (const auto& row : g_candidates) {
-						if (row.id != watch || !row.fromFeed)
-							continue;
-						if (row.courseLocked) {
-							REX::INFO("[course] the engine reports a course locked on '{}' ({:08X}) - "
-									  "the by-id dispatch WORKS",
-								row.name, watch);
-							g_courseWatchID.store(0, std::memory_order_release);
+						if (row.fromFeed && row.courseLocked) {
+							course = row.id;
+							courseName = row.name;
+							break;
 						}
-						break;
+					}
+					if (course != s_lastCourse) {
+						s_lastCourse = course;
+						if (course != 0)
+							REX::INFO("[course] the engine reports a course locked on '{}' ({:08X})",
+								courseName, course);
+						else
+							REX::INFO("[course] the engine reports no course locked");
 					}
 				}
 			}
@@ -5011,30 +4934,29 @@ namespace
 	StarmapProbeHandler g_starmapProbeHandler;
 
 	// ---------------------------------------------------------------------------
-	// [Experimental] SPEAKING to the engine.
+	// SPEAKING to the engine.
 	//
-	// Read the settings block first - it says what each of these two can and
-	// cannot do, and why neither is the shipping panel's business. This section is
-	// the machinery.
+	// Everything else this plugin does is a read or a Scaleform-side draw. This is
+	// the one place it asks the game to change the player's state, and the route
+	// is the SWF's own: BSUIDataManager is a class of public statics, reached
+	// exactly the way Shared.GlobalFunc is reached for PlayMenuSound - GetVariable
+	// the class, Invoke the method. Nothing hooked, nothing patched, no address
+	// ids, and what comes out is indistinguishable from the event the reticle
+	// dispatches when the player presses the key themselves.
 	//
-	// The route is the SWF's own: BSUIDataManager is a class of public statics,
-	// reached exactly the way Shared.GlobalFunc is reached for PlayMenuSound -
-	// GetVariable the class, Invoke the method. Nothing hooked, nothing patched,
-	// no address ids, and the event that comes out is indistinguishable from the
-	// one the reticle dispatches when the player presses the key themselves.
-	//
-	// ⚠ All of it runs on the UI thread, driven from the high-frequency feed
-	// handler beside RefreshPanel. Not the per-frame task (a cross-thread
-	// Scaleform call is the v0.1.3 crash) and not the input thread (same reason,
-	// and the reason the input side does nothing but store an atomic).
+	// ⚠ It runs on the UI thread, driven from the high-frequency feed handler
+	// beside RefreshPanel. Not the per-frame task (a cross-thread Scaleform call
+	// is the v0.1.3 crash) and not the input thread (same reason, and the reason
+	// the input side does nothing but store an atomic).
 	// ---------------------------------------------------------------------------
 
 	// Which route the last dispatch took: 0 none yet, 1 = constructing the event
 	// class and calling dispatchEvent (vanilla's own shape), 2 = the
-	// dispatchCustomEvent helper. Latched once it falls back, so a class that will
-	// not construct is not re-attempted on every press - and logged on change,
-	// because "flash builtins do not come back through CreateObject" is a fact the
-	// next feature needing an event will want.
+	// dispatchCustomEvent helper. **Route 1 is CONFIRMED in game** - a
+	// `flash.events.Event` does come back from CreateObject, which had been the
+	// open question, since every other class this mod constructs is a GAME class.
+	// The fallback stays because it costs nothing and it is latched: a class that
+	// will not construct is not re-attempted on every press.
 	std::atomic<std::uint32_t> g_dispatchRoute{ 0 };
 
 	bool DispatchHudEvent(RE::Scaleform::GFx::ASMovieRootBase* a_root, const char* a_type,
@@ -5094,219 +5016,22 @@ namespace
 		return true;
 	}
 
-	// The synthetic press: the same event ShipReticle.onTargetPressed dispatches,
-	// with the same payload (none). The engine cannot tell it from the player's
-	// own SelectTarget key - which is exactly the point. No cone is bypassed and
-	// no candidate list is edited; the mod presses the key, the engine decides.
-	bool DispatchTargetCycle()
-	{
-		const auto                     ui = RE::UI::GetSingleton();
-		static const RE::BSFixedString s_hud{ kShipHudMenu };
-		const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
-		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot) {
-			REX::WARN("[acquire] no ship HUD movie to dispatch through");
-			return false;
-		}
-		return DispatchHudEvent(menu->uiMovie->asMovieRoot.get(), "ShipHud_Target", nullptr);
-	}
 
 	// ---------------------------------------------------------------------------
-	// The acquire run.
-	//
-	// One synthetic press per settle window, stopping the moment the engine's info
-	// target IS the selection. The answer to a press arrives on the LOW feed,
-	// which publishes on target-set CHANGES rather than on a clock, so the loop
-	// waits for the info target to MOVE and only falls back to the timer when it
-	// does not.
-	//
-	// Three ways to stop, and all three are findings rather than failures:
-	//   * the target became the selection            - the feature works
-	//   * the cycle returned to a target it already showed us, without ever
-	//     reaching the selection                     - E cannot get there from
-	//                                                  here, which is the Phase 0
-	//                                                  question answered live
-	//   * the target did not move at all             - the cycle is empty, i.e.
-	//                                                  nothing is acquirable from
-	//                                                  this heading
-	//
-	// The step cap is the backstop for a cycle that keeps producing new targets
-	// forever. ⚠ A run must never outlive the intent behind it, so it is
-	// abandoned the moment the player leaves cruise or moves their selection: this
-	// presses a key on the player's behalf, and nothing that does that should be
-	// able to keep pressing it after they have changed their mind.
-	// ---------------------------------------------------------------------------
-	void RunTargetAcquire()
-	{
-		using clock = std::chrono::steady_clock;
-		constexpr std::size_t kMaxVisited = 24;
-
-		static bool              s_active = false;
-		static std::uint32_t     s_wanted = 0;
-		static std::uint32_t     s_steps = 0;
-		static std::uint32_t     s_stalls = 0;
-		static std::uint32_t     s_lastSeen = 0;
-		static clock::time_point s_lastStep{};
-		static std::uint32_t     s_visited[kMaxVisited]{};
-		static std::size_t       s_visitedCount = 0;
-
-		const auto finish = [&](const char* a_outcome) {
-			REX::INFO("[acquire] {} - wanted {:08X}, info target {:08X}, {} press(es) sent",
-				a_outcome, s_wanted, g_infoTargetID.load(std::memory_order_acquire), s_steps);
-			s_active = false;
-			s_wanted = 0;
-			s_steps = 0;
-			s_stalls = 0;
-			s_visitedCount = 0;
-			s_lastStep = clock::time_point{};
-		};
-
-		if (g_acquireCancel.exchange(false, std::memory_order_acq_rel) && s_active)
-			finish("cancelled");
-
-		if (g_acquireRequested.exchange(false, std::memory_order_acq_rel)) {
-			if (s_active)
-				finish("superseded");
-			s_wanted = g_acquireWantedID.load(std::memory_order_acquire);
-			// Nothing is a valid body, and a run for "nothing" would read the
-			// engine's "no target" as a match on its first tick.
-			if (s_wanted == 0)
-				return;
-			s_active = true;
-			s_steps = 0;
-			s_stalls = 0;
-			s_lastSeen = g_infoTargetID.load(std::memory_order_acquire);
-			// The target we START on counts as visited, or the wrap is detected a
-			// whole lap plus one press late. Zero is seeded too: "no target" is a
-			// state the cycle can genuinely come back to.
-			s_visited[0] = s_lastSeen;
-			s_visitedCount = 1;
-			s_lastStep = clock::time_point{};  // first press goes out immediately
-		}
-
-		if (!s_active)
-			return;
-
-		if (!bAcquireTarget.GetValue()) {
-			finish("abandoned - the feature was switched off mid-run");
-			return;
-		}
-		if (!g_inCruise.load(std::memory_order_acquire)) {
-			finish("abandoned - left cruise");
-			return;
-		}
-		// The lock is the committed selection, so a run outlives browsing but not
-		// a change of mind. With a dedicated acquire key there is no lock to
-		// check against - the run was started from the highlight - so that case
-		// watches the highlight instead.
-		const bool fromConfirm = sAcquireEvent.GetValue().empty();
-		const auto owner = fromConfirm ? g_lockedID.load(std::memory_order_acquire) :
-		                                 g_highlightID.load(std::memory_order_acquire);
-		if (owner != s_wanted) {
-			finish("abandoned - the selection changed");
-			return;
-		}
-
-		const auto info = g_infoTargetID.load(std::memory_order_acquire);
-		if (info == s_wanted) {
-			finish("ACQUIRED");
-			return;
-		}
-
-		const auto now = clock::now();
-		const bool moved = info != s_lastSeen;
-		if (moved) {
-			s_lastSeen = info;
-			s_stalls = 0;
-			for (std::size_t i = 0; i < s_visitedCount; ++i) {
-				if (s_visited[i] == info) {
-					finish("the cycle wrapped without reaching it - E cannot acquire this body "
-						   "from the current heading");
-					return;
-				}
-			}
-			if (s_visitedCount < kMaxVisited)
-				s_visited[s_visitedCount++] = info;
-			if (bVerboseLog.GetValue())
-				REX::INFO("[acquire] step {} moved the info target to {:08X}", s_steps, info);
-		}
-
-		// The press gate. ⚠ A moved target is the signal to press AGAIN, but it
-		// must not be able to press every frame: this runs on the HIGH feed, and
-		// a synthetic keypress whose rate is set by a feed's publish rate is a
-		// bug waiting for the day something makes that feed churn. So a quick
-		// answer buys a quick next press, never a free one.
-		constexpr float kMinGapSeconds = 0.1f;
-		const float     window = std::max(0.05f, fAcquireStepSeconds.GetValue());
-		if (s_lastStep != clock::time_point{}) {
-			const float waited = std::chrono::duration<float>(now - s_lastStep).count();
-			if (moved) {
-				if (waited < kMinGapSeconds)
-					return;
-			} else if (waited < window) {
-				return;  // the press is still in flight
-			} else if (++s_stalls >= 2) {
-				// Two windows with nothing happening: the engine is not
-				// answering this key here, which for a heading with nothing
-				// acquirable is the expected result rather than a fault.
-				finish("the cycle did not move - nothing acquirable from this heading");
-				return;
-			}
-		}
-
-		if (s_steps >= std::max(1u, uAcquireMaxSteps.GetValue())) {
-			finish("gave up - step cap reached");
-			return;
-		}
-		// A movie mid-rebuild is the one thing that turns a VM call into a crash
-		// (the v1.1.2 takeoff fix), and this call is rare enough that the full
-		// gate costs nothing worth counting.
-		if (!WorldSettled())
-			return;
-
-		++s_steps;
-		s_lastStep = now;
-		if (!DispatchTargetCycle())
-			finish("stopped - the press could not be dispatched");
-	}
-
-	// ---------------------------------------------------------------------------
-	// The lock-course dispatch: the one event in this layer that takes a body id.
+	// The course-lock dispatch: the one event in this layer that takes a body id,
+	// and the mod's only outward word to the engine.
 	//
 	// Vanilla sends it two ways - the reticle's own LockCourse handler with
-	// uBodyID 0, and the far-travel icon with the info target's real uniqueID - so
-	// the handler is known to read the id. What is NOT exercised by the base game
-	// is an id that is not the current info target, and that is precisely what
-	// this sends. Whether the engine honours it is what the flight is for; the
-	// answer comes back as bIsCruiseTargetLock on the body's own feed entry.
+	// uBodyID 0 (ShipReticle.as:2128), and the far-travel icon with the info
+	// target's real uniqueID (FarTravelIconBase.as:99) - so the handler was known
+	// to read the id. **The unknown was whether it would accept an id vanilla
+	// never sends, i.e. a body that is not the current info target. It does**
+	// (confirmed in game 2026-08-02): the ship turns and flies to whatever row the
+	// panel was sitting on, with nothing targeted first.
 	// ---------------------------------------------------------------------------
 	void RunLockCourse()
 	{
 		using V = RE::Scaleform::GFx::Value;
-		using clock = std::chrono::steady_clock;
-
-		// The watch's timeout, on THIS tick rather than beside the readback in
-		// the low feed. The low feed publishes on target-set CHANGES, so a
-		// dispatch the engine threw away might produce no publish at all - and a
-		// timeout that only runs when the thing it is timing out on happens is
-		// the check that could not pass, wearing a different hat. The high feed
-		// does not stop, so this always fires.
-		{
-			static std::uint32_t     s_watching = 0;
-			static clock::time_point s_since{};
-			const auto               watch = g_courseWatchID.load(std::memory_order_acquire);
-			if (watch != s_watching) {
-				s_watching = watch;
-				s_since = clock::now();
-			}
-			if (watch != 0 && std::chrono::duration<float>(clock::now() - s_since).count() > 3.0f) {
-				REX::INFO("[course] no course reported on {:08X} after 3 s - the engine either "
-						  "refused an id it does not send itself, or clears its own lock. "
-						  "That silence IS the answer for this route.",
-					watch);
-				g_courseWatchID.store(0, std::memory_order_release);
-				s_watching = 0;
-			}
-		}
 
 		const auto id = g_pendingCourseID.exchange(0, std::memory_order_acq_rel);
 		if (id == 0)
@@ -5338,12 +5063,11 @@ namespace
 		}
 		params.SetMember("uBodyID", V{ static_cast<double>(id) });
 
-		if (DispatchHudEvent(root, "Reticle_OnCruiseLockCourse", &params)) {
-			g_courseWatchID.store(id, std::memory_order_release);
-			REX::INFO("[course] sent Reticle_OnCruiseLockCourse uBodyID={:08X} - watching the feed "
-					  "for the engine's answer",
-				id);
-		}
+		// One line per press, so it goes behind the verbose flag with the rest of
+		// the per-action trace. The engine's own answer - which body it says the
+		// course is on - is logged on change beside the candidate rebuild.
+		if (DispatchHudEvent(root, "Reticle_OnCruiseLockCourse", &params) && bVerboseLog.GetValue())
+			REX::INFO("[course] sent Reticle_OnCruiseLockCourse uBodyID={:08X}", id);
 	}
 
 	class HighFeedHandler : public RE::Scaleform::GFx::FunctionHandler
@@ -5651,14 +5375,11 @@ namespace
 				}
 			}
 
-			// [Experimental] The two engine-facing features, both no-ops unless
-			// their flag is on and a key has asked for something. Here rather
-			// than in RefreshPanel because that returns early when the drawn
-			// panel is absent or closed, and a run has to be able to finish
-			// after the panel is put away. No lock is held at this point, which
-			// is the requirement for entering the VM.
-			if (bAcquireTarget.GetValue())
-				RunTargetAcquire();
+			// The course-lock dispatch, a no-op unless a key has asked for one.
+			// Here rather than in RefreshPanel because that returns early when
+			// the drawn panel is absent or closed, and a press made on the last
+			// frame before a close still has to go out. No lock is held at this
+			// point, which is the requirement for entering the VM.
 			if (bLockCourse.GetValue())
 				RunLockCourse();
 
@@ -9736,25 +9457,16 @@ namespace
 		if (!bWheelFilter.GetValue())
 			REX::WARN("bWheelFilter is off - scrolling the list will also swing your point of view");
 
-		// [Experimental] Both of these make the mod ask the ENGINE for something,
-		// which nothing else in this plugin does - so a log that does not say
-		// they are on is a log that cannot be read. Stated as a WARN for that
-		// reason, not because either is expected to misbehave.
-		if (bAcquireTarget.GetValue()) {
-			const auto key = sAcquireEvent.GetValue();
-			REX::WARN("[acquire] EXPERIMENTAL and unflown: {} will make the mod press the game's own "
-					  "target key for you, up to {} time(s), until the info target is the body you "
-					  "picked. It cannot reach a body the key itself cannot reach - watch for "
-					  "'the cycle wrapped', which is that answer.",
-				key.empty() ? std::string{ "the confirm key" } : std::format("'{}'", key),
-				uAcquireMaxSteps.GetValue());
-		}
+		// The course lock is the mod's only outward word to the engine -
+		// everything else it does is a read or a draw - so the log says plainly
+		// that it is armed and on which key.
 		if (bLockCourse.GetValue())
-			REX::WARN("[course] EXPERIMENTAL and unflown: '{}' will ask the engine to lock the cruise "
-					  "AUTOPILOT onto the highlighted body (not to target it). Press again on the "
-					  "same body to clear. Watch for the '[course] the engine reports' line - its "
-					  "absence is the finding.",
+			REX::INFO("[course] course lock ON ('{}') - in cruise with the panel open, that key sets "
+					  "the autopilot on the HIGHLIGHTED body and the ship turns to it. Press it "
+					  "again on the same body to clear.",
 				sLockCourseEvent.GetValue());
+		else
+			REX::INFO("[course] course lock OFF - the panel points, and steering stays manual");
 
 		if (bSurveyCruiseKeys.GetValue())
 			REX::INFO("[survey] cruise key survey ON - enter cruise, then press every key you can spare. "

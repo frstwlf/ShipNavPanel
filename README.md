@@ -15,9 +15,14 @@ and nothing changes — which is also how you clear a locked target without
 picking another. Outside cruise the mod is idle and the scanner key keeps its
 vanilla job.
 
-The mod **points rather than targets**: Starfield's UI layer has no by-id
-"set target", so the panel steers your eyes and you acquire the target
-yourself (E, by default). That reframing is what makes the whole thing
+**Or just set a course.** Highlight a row, press fire — left mouse button, or
+the right trigger on a controller, both idle while cruising — and the cruise
+autopilot flies you there. Nothing has to be targeted first; press again on the
+same body to clear the course.
+
+For everything else the mod **points rather than targets**: Starfield's UI layer
+has no by-id "set target", so the panel steers your eyes and you acquire the
+target yourself (E, by default). That reframing is what made the whole thing
 possible — the full story is in the phase documents below.
 
 ## Controls (defaults)
@@ -28,13 +33,20 @@ possible — the full story is in the phase documents below.
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (hidden from the camera while the panel is open) |
 | D-pad up / down | `Up` / `Down` | move the highlight, on a controller |
 | POV toggle | `TogglePOV` | lock the highlighted body — or clear it, if already locked |
+| primary fire (LMB / RT) | `WeaponGroup1` | set the cruise autopilot on the highlighted body — or clear it |
 
 Every key is matched by **user-event name**, so rebinding just works, and one
 list serves both devices because a user event is not tied to one — the engine
 resolves it against whatever you are holding. The panel's hint pills render
-your actual bindings. All three controls are configurable (`sConfirmEvent`,
-`sBrowseUpEvent`, `sBrowseDownEvent` — names or raw `#id` codes,
-comma-separated).
+your actual bindings. Every control is configurable (`sConfirmEvent`,
+`sBrowseUpEvent`, `sBrowseDownEvent`, `sLockCourseEvent` — names or raw `#id`
+codes, comma-separated), and `bLockCourse=false` leaves the fire key alone
+entirely.
+
+Primary fire is free for the same reason the D-pad is: cruise stands your
+weapons down. The game does print its own **"weapons unavailable"** message on
+that press — it does that with or without this mod installed, since the press
+reaches the weapon system either way.
 
 The D-pad is free to borrow because vanilla spends it on **power allocation**
 and switches that off for the whole of cruise
