@@ -15,11 +15,15 @@ and nothing changes — which is also how you clear a locked target without
 picking another. Outside cruise the mod is idle and the scanner key keeps its
 vanilla job.
 
-**Or just set a course.** Highlight a row and press your normal **course-lock
-key** — the one the game already prompts you with in cruise — and the autopilot
-flies you there. Vanilla needs something targeted before it will lock a course;
-with the panel open it aims at the highlighted row instead. Press again on the
-same body to clear. With the panel closed the key is untouched.
+**Or just set a course.** Highlight a **planet or moon** and press your normal
+**course-lock key** — the one the game already prompts you with in cruise — and
+the autopilot flies you there. Vanilla needs something targeted before it will
+lock a course; with the panel open it aims at the highlighted row instead. Press
+again on the same body to clear. With the panel closed the key is untouched.
+
+Stations, ships and spawned contacts are left alone: the autopilot is aimed at a
+*body*, and those are not bodies. Fly to them the way you always did — target
+them, then use the same key with the panel closed.
 
 For everything else the mod **points rather than targets**: Starfield's UI layer
 has no by-id "set target", so the panel steers your eyes and you acquire the

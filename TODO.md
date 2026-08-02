@@ -394,7 +394,23 @@ Later, nice-to-have:
       chokepoint for Scaleform input, which was not known before. The camera
       tap's technique generalises.
 
-- [ ] **⭐ THE LEAD: `uniqueID` MAY BE THE WRONG NUMBER TO SEND.** The
+- [ ] **⚠ TT_STATION — the one open case.** The type gate allows `TT_STAR` and
+      `TT_PLANET` only, but an early flight reported *stations* course-locking
+      fine, which the gate does not allow for and which was never rechecked with
+      the audit watching. Settle it: `[Recon] bCourseAnyRow=true`, course-lock a
+      station, and read whether the feed comes back reporting the course on that
+      station's own row or the 3-second `NO body in the feed reports a course`
+      warning fires. If stations take it, add `kTargetTypeStation` to
+      `IsCourseableType` — the gate exists to be exactly as wide as the engine is.
+
+- [x] ~~THE LEAD: `uniqueID` may be the wrong number to send.~~ **DEAD, measured
+      2026-08-03:** `[course] the feed does NOT carry a per-entry uBodyID`.
+      `uniqueID` is the only id a low-feed entry has, so there was never another
+      field to prefer. Kept below for the retraction it forced.
+
+<details><summary>The lead, and why it looked good</summary>
+
+The
       `InfoTargetProvider` dump caught the two ids disagreeing on one target —
       `payload.uniqueID` = **386531** against `PlanetCardInfo.uBodyID` =
       **385501** ("Masada IV"). So the id a target is *known by* and the id of
@@ -408,38 +424,23 @@ Later, nice-to-have:
       the target and the body are the same thing. One landable target was enough
       to break it. **Two agreeing samples are not a rule.**
 
-      The build now reads a per-entry `uBodyID` if the feed has one and prefers
-      it, and says which on the first dispatch:
-      `[course] the feed DOES/does NOT carry a per-entry uBodyID`. If it does,
-      that is very likely the whole bug and the runtime-id guard can go. If it
-      does not, dump a low-feed entry's full schema (`bLogTargetCaptures=true`)
-      and look for any other id-shaped field beside `uniqueID`.
+      The build reads a per-entry `uBodyID` if the feed has one and prefers it,
+      saying which on the first dispatch — and the answer came back **does NOT
+      carry** one. The dossier's `uBodyID` and a feed entry's `uniqueID` simply
+      live on different payloads.
 
-- [ ] **⚠ CHARACTERISE THE SUBSTITUTION — the id was never the problem.** The
-      first guess was that a runtime (FF-prefixed) id is unusable. **The tester's
-      log killed it**: with the contact targeted the vanilla way,
-      `[course] the engine reports a course locked on 'Sensor Contact'
-      (FF015BCB)` — and `FF015BCB` is exactly the id the panel row carries. The
-      mod has the right number, the engine holds a course on that body, and a
-      runtime id is representable end to end. What fails is the **by-id dispatch
-      for a body that is not a celestial one**; vanilla reaches it through the
-      info target instead.
+</details>
 
-      So the guard stands on its EFFECT, not its explanation, and it has a cost
-      the same log shows: declining the row leaves the press to vanilla, and
-      **vanilla does nothing there** — its path needs an info target and the
-      panel's highlight is not one. The tester pressed and nothing happened. A
-      dead key on contact rows, traded for a wrong destination.
-
-      `[Recon] bCourseRuntimeIDs` lifts the guard so the audit can do its job —
-      **a guard that blocks its own verification is one nobody can improve.**
-      With it on, set courses on every kind of row and collect
-      `[course] asked the engine for X and it locked a course on 'Y' instead`.
-      What that should settle: is the substitute always the system's star, or
-      the nearest body? Do *stations* (which the tester reported working early
-      on) substitute too? Is the real rule `uTargetType`-shaped rather than
-      id-shaped — in which case the guard should read the row's type, which the
-      candidate already carries.
+- [x] ~~Characterise the substitution.~~ **CLOSED 2026-08-03 — there is no
+      substitution.** Three flights and two dead theories; the resolution is in
+      Settled and in the header above `g_highlightCourseable`. Short version: the
+      engine takes the course with an **unresolved destination**. Nothing holds
+      it, nothing draws it — the tester's own eye is what settled it, *"there is
+      no orange autopilot indicator; the ship points that way is the only visible
+      indication"* — and the heading that falls out is the system's origin, which
+      is where the star sits. "It locked onto the star" was the appearance, not
+      the mechanism, and every theory built on picking a *substitute body* was
+      chasing something that never happened.
 
 - [ ] **⚠ VERIFY "press again clears".** It is in the ini and the README on the
       strength of a code reading — `FarTravelIconBase.UpdateButton` flips its
@@ -975,25 +976,31 @@ Each of these cost real time; the reasoning is in the findings docs.
   id works: the autopilot engages and the ship turns to it, **with nothing
   targeted**. This is the one by-id verb in the UI layer and it is now proven.
   Confirmed to work on **stations and POIs** as well as planets.
-- **⚠⚠ THE ENGINE SUBSTITUTES RATHER THAN REFUSES.** Given a `uBodyID` it cannot
-  use, `Reticle_OnCruiseLockCourse` does not fail — it locks a course on a
-  *different* body. Course-locking a **sensor contact** from the panel put the
-  autopilot on the system's STAR (Masada, 2026-08-02).
-  ⭐ The general lesson, the same shape as v0.18.2's optimistic fallback one layer
-  down: **when an engine call takes an id, assume it can silently answer about a
-  different object, and audit the result** — the mod compares what it asked for
-  against what the feed reports and WARNs on a mismatch.
-  ⚠ **The id is NOT the reason, and my first write-up of this was wrong.** It
-  said runtime (FF-prefixed) ids are unusable. The tester's log killed that:
-  `[course] the engine reports a course locked on 'Sensor Contact' (FF015BCB)`
-  after targeting the same contact the vanilla way — and `FF015BCB` is exactly
-  the id the panel row carries. The mod has the right number, the engine holds a
-  course on that body, and a runtime id is representable throughout. **What fails
-  is the by-id dispatch for a body that is not a celestial one**; vanilla reaches
-  those through the info target. Also dead with it: the "signed int32" reading,
-  which was only ever a way to explain a boundary that turned out not to be
-  where the fault is. The guard is kept on its **effect** and the real rule is
-  still open work.
+- **⚠⚠ `uBodyID` MEANS uBodyID: only a CELESTIAL BODY takes a course by id.**
+  Given anything else, `Reticle_OnCruiseLockCourse` neither refuses nor
+  substitutes — it takes the course with an **unresolved destination**. No entry
+  reports `bIsCruiseTargetLock`, **no orange course indicator draws**, and the
+  ship simply heads for the system's origin, which is where the star sits. So a
+  POI, ship or station cannot be reached this way at all; vanilla gets to them
+  through the info target (`{uBodyID: 0}`), a route this mod cannot take because
+  setting the info target is the dead end Phase 0 closed.
+  **Three flights, two theories buried, and both were mine:**
+  1. *"Runtime FF-prefixed ids are unusable."* Dead — the same contact targeted
+     the vanilla way produced `the engine reports a course locked on 'Sensor
+     Contact' (FF015BCB)`, exactly the id the row carries. The number was right.
+     (The "signed int32" reading dies with it; it only ever existed to explain a
+     boundary that was not where the fault was.)
+  2. *"`uniqueID` is the wrong FIELD, the event wants the dossier's `uBodyID`."*
+     Dead — measured: **the low feed carries no per-entry `uBodyID`**.
+     `uniqueID` is the only id an entry has.
+  ⭐⭐ **What actually settled it was the tester noticing what was NOT on screen**
+  — no orange indicator — which reframed "it locked onto the star" from a
+  mechanism into an appearance. Every theory above was an attempt to explain a
+  *substitute body* that was never chosen. **When a symptom is described by what
+  something looks like, find out what is missing before theorising about what is
+  there.**
+  ⭐ And the posture that survives all of it: **when an engine call takes an id,
+  audit what came back rather than assuming it refused what it could not use.**
 - **⚠ `TargetOnlyData.uniqueID` and `PlanetCardInfo.uBodyID` are NOT the same
   number** — `payload.uniqueID` **386531** vs `pci.uBodyID` **385501**
   ("Masada IV", a landable target) in the 2026-08-02 dump. They agree for a
