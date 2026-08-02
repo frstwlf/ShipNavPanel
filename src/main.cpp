@@ -789,6 +789,16 @@ namespace
 		// HUD: they have a name and a place in the tree, but no bearing and no
 		// distance, so the arrow cannot point at one.
 		bool fromFeed{ true };
+		// ⚠ A SECOND ID, and the reason this exists: `uniqueID` is not
+		// necessarily what a course-lock wants. The InfoTargetProvider dump
+		// caught the two disagreeing on one target - `payload.uniqueID`
+		// **386531** against `PlanetCardInfo.uBodyID` **385501** ("Masada IV") -
+		// so the id a target is KNOWN by and the id of the BODY it is are
+		// different numbers, and `Reticle_OnCruiseLockCourse`'s parameter is
+		// spelled uBodyID. If the feed entry carries such a field, that is the
+		// one to send. `haveBodyID` records presence, because 0 is a value.
+		std::uint32_t bodyID{ 0 };
+		bool          haveBodyID{ false };
 		// The cruise AUTOPILOT's current course - the per-entry
 		// bIsCruiseTargetLock the far-travel icon reads to decide whether its
 		// button offers LOCK or CLEAR (FarTravelIconBase.UpdateButton). ⚠ NOT
@@ -1991,8 +2001,20 @@ namespace
 
 	// The id of the last course the mod asked for, held until the engine reports
 	// a course - so the report can be compared with the request. 0 when nothing
-	// is outstanding.
+	// is outstanding, with the steady-clock tick it was asked at.
+	//
+	// ⚠ THE AUDIT HAS A BLIND SPOT AND IT NEEDS A TIMEOUT TO SEE IT. The only
+	// readback is `bIsCruiseTargetLock` on a low-feed ENTRY, so a course the
+	// engine puts on something the feed does not carry - the system's own star,
+	// for one - reports as *no course at all*, and a comparison that only runs
+	// when a course appears would then never run. That is this project's third
+	// check-that-could-not-pass, and the second on this very feature: the same
+	// timeout was written for the first flight, deleted as scaffolding when the
+	// feature looked solved, and is now the only thing that can see the failure.
+	// **A diagnostic is not scaffolding just because the happy path stopped
+	// needing it.**
 	std::atomic<std::uint32_t> g_courseAskedID{ 0 };
+	std::atomic<std::int64_t>  g_courseAskedTicks{ 0 };
 
 	// A course-lock dispatch waiting to be made, by body id; 0 means none. The
 	// input thread only ever stores here - no VM, no Scaleform, the rule that
@@ -4001,6 +4023,14 @@ namespace
 			}
 			if (entry.GetMember("bMarkerDiscovered", &member) && member.IsBoolean())
 				row.discovered = member.GetBoolean();
+			// See Candidate::bodyID. Read whether or not it turns out to exist:
+			// if it does not, nothing changes and the log says so once, which is
+			// the answer to "is uniqueID the wrong number for a course".
+			if (entry.GetMember("uBodyID", &member) &&
+				(member.IsNumber() || member.IsInt() || member.IsUInt())) {
+				row.bodyID = static_cast<std::uint32_t>(AsNumber(member));
+				row.haveBodyID = true;
+			}
 			// The autopilot's course, per body - read whether or not the
 			// course-lock key is on, because it costs one GetMember and it is
 			// the only readback that feature has (see Candidate::courseLocked).
@@ -5241,12 +5271,60 @@ namespace
 	{
 		using V = RE::Scaleform::GFx::Value;
 
-		const auto id = g_pendingCourseID.exchange(0, std::memory_order_acq_rel);
-		if (id == 0)
+		// The audit's timeout, on the HIGH feed's tick because it does not stop -
+		// unlike the low feed, which publishes on target-set changes and can stay
+		// silent for exactly the dispatch that went wrong. See g_courseAskedID.
+		if (const auto asked = g_courseAskedID.load(std::memory_order_acquire); asked != 0) {
+			const auto askedAt = std::chrono::steady_clock::time_point{
+				std::chrono::steady_clock::duration{ g_courseAskedTicks.load(std::memory_order_acquire) }
+			};
+			if (std::chrono::duration<float>(std::chrono::steady_clock::now() - askedAt).count() > 3.0f) {
+				g_courseAskedID.store(0, std::memory_order_release);
+				REX::WARN("[course] asked the engine for {:08X} and 3 s later NO body in the feed "
+						  "reports a course. Either it took none, or it locked one onto something "
+						  "the target feed does not carry - the system's own star being the "
+						  "obvious candidate, and the one this cannot see.",
+					asked);
+			}
+		}
+
+		const auto rowID = g_pendingCourseID.exchange(0, std::memory_order_acq_rel);
+		if (rowID == 0)
 			return;
 		if (!g_inCruise.load(std::memory_order_acquire)) {
-			REX::INFO("[course] dropped {:08X} - not in cruise", id);
+			REX::INFO("[course] dropped {:08X} - not in cruise", rowID);
 			return;
+		}
+
+		// Which number to send. `uniqueID` is what a target is KNOWN by; the
+		// event's parameter is spelled uBodyID, and the InfoTargetProvider dump
+		// caught those two disagreeing (386531 vs 385501 for Masada IV). So if
+		// the feed hands out a body id per entry, prefer it - and say so, because
+		// "the field does not exist" is just as much the answer as a number is.
+		std::uint32_t id = rowID;
+		std::uint32_t type = 0;
+		std::string   name;
+		bool          haveBodyID = false;
+		{
+			std::lock_guard lock{ g_candidateMutex };
+			for (const auto& row : g_candidates) {
+				if (row.id != rowID)
+					continue;
+				type = row.type;
+				name = row.name;
+				haveBodyID = row.haveBodyID;
+				if (row.haveBodyID)
+					id = row.bodyID;
+				break;
+			}
+		}
+
+		{
+			static std::atomic<bool> s_saidWhichField{ false };
+			if (!s_saidWhichField.exchange(true, std::memory_order_acq_rel))
+				REX::INFO("[course] the feed {} a per-entry uBodyID, so courses are sent by {}",
+					haveBodyID ? "DOES carry" : "does NOT carry",
+					haveBodyID ? "it" : "uniqueID");
 		}
 		if (!WorldSettled())
 			return;  // dropped rather than queued: it was a keypress, and a stale one helps nobody
@@ -5276,9 +5354,15 @@ namespace
 		// course is on - is logged on change beside the candidate rebuild, and
 		// audited against this id there.
 		if (DispatchHudEvent(root, "Reticle_OnCruiseLockCourse", &params)) {
-			g_courseAskedID.store(id, std::memory_order_release);
+			// The AUDIT expects the course to come back on the ROW's id, which is
+			// how the feed marks it, whichever number went out.
+			g_courseAskedID.store(rowID, std::memory_order_release);
+			g_courseAskedTicks.store(
+				std::chrono::steady_clock::now().time_since_epoch().count(),
+				std::memory_order_release);
 			if (bVerboseLog.GetValue())
-				REX::INFO("[course] sent Reticle_OnCruiseLockCourse uBodyID={:08X}", id);
+				REX::INFO("[course] sent uBodyID={:08X} for row {:08X} '{}' (uTargetType={})",
+					id, rowID, name, type);
 		}
 	}
 

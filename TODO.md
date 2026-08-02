@@ -394,6 +394,27 @@ Later, nice-to-have:
       chokepoint for Scaleform input, which was not known before. The camera
       tap's technique generalises.
 
+- [ ] **⭐ THE LEAD: `uniqueID` MAY BE THE WRONG NUMBER TO SEND.** The
+      `InfoTargetProvider` dump caught the two ids disagreeing on one target —
+      `payload.uniqueID` = **386531** against `PlanetCardInfo.uBodyID` =
+      **385501** ("Masada IV"). So the id a target is *known by* and the id of
+      the *body it is* are different numbers, and the event's parameter is
+      spelled **uBodyID**. Vanilla's far-travel button sends
+      `TargetOnlyData.uniqueID`; the mod sends the low feed entry's `uniqueID`;
+      nobody has established that either is a body id.
+      ⚠ This also **re-opens** a question I closed a day too early. Two earlier
+      dumps showed `payload.uniqueID == pci.uBodyID`, and I wrote "closed — the
+      mod is not sending a wrong id". Both samples were a *bare planet*, where
+      the target and the body are the same thing. One landable target was enough
+      to break it. **Two agreeing samples are not a rule.**
+
+      The build now reads a per-entry `uBodyID` if the feed has one and prefers
+      it, and says which on the first dispatch:
+      `[course] the feed DOES/does NOT carry a per-entry uBodyID`. If it does,
+      that is very likely the whole bug and the runtime-id guard can go. If it
+      does not, dump a low-feed entry's full schema (`bLogTargetCaptures=true`)
+      and look for any other id-shaped field beside `uniqueID`.
+
 - [ ] **⚠ CHARACTERISE THE SUBSTITUTION — the id was never the problem.** The
       first guess was that a runtime (FF-prefixed) id is unusable. **The tester's
       log killed it**: with the contact targeted the vanilla way,
@@ -973,11 +994,22 @@ Each of these cost real time; the reasoning is in the findings docs.
   which was only ever a way to explain a boundary that turned out not to be
   where the fault is. The guard is kept on its **effect** and the real rule is
   still open work.
-- **The `uniqueID` on the low feed and on `TargetOnlyData` are the SAME number**,
-  at least for a planet: the `InfoTargetProvider` dump reads
-  `payload.uniqueID = 385509` and `pci.uBodyID = 385509` for Masada VII, matching
-  the row. So the "maybe the mod is sending the wrong id" theory is closed for
-  bodies — it was never an id problem.
+- **⚠ `TargetOnlyData.uniqueID` and `PlanetCardInfo.uBodyID` are NOT the same
+  number** — `payload.uniqueID` **386531** vs `pci.uBodyID` **385501**
+  ("Masada IV", a landable target) in the 2026-08-02 dump. They agree for a
+  *bare planet* (385509 and 385507 in the previous session), which is exactly why
+  this was written up as "closed, same number" and had to be retracted a day
+  later. **Two agreeing samples are not a rule — pick the sample that can
+  disagree.** Live question: which of the two the course-lock actually wants.
+- **⚠⚠ THE AUDIT'S ONLY READBACK IS PER-ENTRY, so it is blind to a course on
+  anything the feed does not carry** — the system's own star included, which is
+  precisely the failure being chased. Caught when a flight with the guard lifted
+  dispatched twice and the log said *nothing at all*: no course reported, no
+  mismatch, silence. **Third check-that-could-not-pass in this project and the
+  second on this feature**: the timeout that covers it was written for the first
+  flight, deleted as scaffolding once the feature looked solved, and is now the
+  only instrument that can see the fault. **A diagnostic is not scaffolding
+  because the happy path stopped needing it.**
 - **`Reticle_OnCruiseLockCourse` with `uBodyID: 0` most likely means "use the
   CURRENT INFO TARGET"**, which merely *looks* like CLEAR when nothing is
   targeted. First written up here as "clear" on the strength of the shared-key
