@@ -7,8 +7,9 @@ the ini and the log; the two names are the same mod.
 An Elite-Dangerous-style navigation panel for Starfield's cruise mode. Press
 the ship scanner key while cruising and a panel lists **every body in the
 current system** — planets, moons (nested under their planet), stations and
-points of interest — wearing the game's own map icons. The mouse wheel moves
-the highlight, a confirm key locks a body, and the game's **own HUD marker**
+points of interest — wearing the game's own map icons. The mouse wheel (or the
+D-pad on a controller) moves the highlight, a confirm key locks a body, and the
+game's **own HUD marker**
 points at it, updating live as you steer. Close the panel without confirming
 and nothing changes — which is also how you clear a locked target without
 picking another. Outside cruise the mod is idle and the scanner key keeps its
@@ -25,11 +26,21 @@ possible — the full story is in the phase documents below.
 |---|---|---|
 | ship scanner | `SHMonocle` | open / close the panel (cruise only) |
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (hidden from the camera while the panel is open) |
+| D-pad up / down | `Up` / `Down` | move the highlight, on a controller |
 | POV toggle | `TogglePOV` | lock the highlighted body — or clear it, if already locked |
 
-Every key is matched by **user-event name**, so rebinding just works; the
-panel's hint pills render your actual bindings. The confirm key is
-configurable (`sConfirmEvent` — names or raw `#id` codes, comma-separated).
+Every key is matched by **user-event name**, so rebinding just works, and one
+list serves both devices because a user event is not tied to one — the engine
+resolves it against whatever you are holding. The panel's hint pills render
+your actual bindings. All three controls are configurable (`sConfirmEvent`,
+`sBrowseUpEvent`, `sBrowseDownEvent` — names or raw `#id` codes,
+comma-separated).
+
+The D-pad is free to borrow because vanilla spends it on **power allocation**
+and switches that off for the whole of cruise
+(`PowerAllocationComponent.InitiateCruiseMode` → `EnableInput(false)`), which
+is the only state this panel exists in. Confirmed in game: browsing the list
+does not move a power bar.
 
 ## What it looks like
 

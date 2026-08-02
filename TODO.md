@@ -11,11 +11,52 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v1.0.0 — the release build.** Everything below is confirmed in game. The
-v0.18.x arc closed 2026-07-31 (duplicate-name work on the baked two-contact
-save; reveal-state labels across several random POI spawns in normal play,
-every one wearing its proper name), and Phase 6's survey marks closed
-2026-08-01 with save exposure measured at nil.
+**v1.1.0 — CONTROLLER BROWSING (2026-08-02, built + deployed, AWAITING TEST).**
+Everything else below is confirmed in game.
+
+Reported by users and reproduced by the tester: the panel could not be browsed
+with a controller. Not a bug — an absence. The browse pair was hardcoded to
+`ZoomIn`/`ZoomOut`, which are **mouse** bindings, so on a pad the branch was
+never reached. Their own log shows what the D-pad reports instead:
+
+```
+[panel] key id=1 reports 'Up' and is not one of the panel's controls
+[panel] key id=2 reports 'Down' and is not one of the panel's controls
+```
+
+- **`sBrowseUpEvent` / `sBrowseDownEvent`** (new), same list shape and rules as
+  `sConfirmEvent`, defaulting to `ZoomIn,Up` and `ZoomOut,Down`. **One list
+  serves both devices** because a user event is device-agnostic — the engine
+  resolves it against whatever the player is holding — so the wheel browses on
+  KBM, the D-pad browses on a pad, and neither needs a setting changed. No
+  device gating, by the user's call. The list walk was lifted out of
+  `MatchesConfirmEvent` into `MatchesEventList`, and all three lists are now
+  read **once per input-queue walk** rather than once per event.
+- **The D-pad is free in cruise, and this is why**: vanilla spends `Up`/`Down`
+  on power allocation, and `SpaceshipHudMenu` wires
+  `Reticle_CruiseModeInitiate` → `PowerAllocationComponent.InitiateCruiseMode`,
+  which calls `EnableInput(false)`; `MinimalButton.HandleButtonHit` then returns
+  `Enabled && bEnabled` and gates the callback on the same test. So the whole of
+  cruise — the only state this panel exists in — has the D-pad switched off
+  already. **Confirmed in game by the tester: browsing moves no power bar.**
+- **The browse pill is now dressed per device.** It showed *nothing* on a
+  controller, because a pill's cap is resolved by the vanilla component against
+  the current device and `ZoomIn` has no pad binding to resolve.
+  `sPanelBrowsePillEvent` / `sPanelBrowsePillEventPad` (`ZoomIn` / `Up,Down`),
+  chosen by reading vanilla's own `uiController` off `Reticle_mc` and re-driven
+  with `SetButtonData` **once per panel open** — never per tick, because
+  per-notch VM work on the live list is what cost the wheel its smoothness in
+  v0.9.1. The pad entry is a list, which `ButtonBaseData` takes as an Array of
+  `UserEventData` — vanilla's own two-way-hint idiom (`$SELECT SYSTEM` is
+  driven by `[Left, Right]`) — so the cap reads as the D-pad pair.
+- Also confirmed by the tester: the **confirm pill already resolved correctly**
+  on a pad, so `TogglePOV` has a controller binding and locking works.
+
+**v1.0.0 — the release build.** The v0.18.x arc closed 2026-07-31
+(duplicate-name work on the baked two-contact save; reveal-state labels across
+several random POI spawns in normal play, every one wearing its proper name),
+and Phase 6's survey marks closed 2026-08-01 with save exposure measured at
+nil.
 
 **Release pass, 2026-08-01** — version 1.0.0, and three changes with it:
 
@@ -39,8 +80,8 @@ every one wearing its proper name), and Phase 6's survey marks closed
 - The startup config dump now prints the diagnostics block only when
   something is on, and says where `bVerboseLog` is when nothing is.
 
-- **The panel**: in cruise the scanner key opens/closes it, the wheel moves
-  the highlight (spliced away from the camera), `TogglePOV` — or anything in
+- **The panel**: in cruise the scanner key opens/closes it, the wheel or the
+  D-pad moves the highlight (spliced away from the camera), `TogglePOV` — or anything in
   the `sConfirmEvent` list — locks the highlighted body or clears an existing
   lock. Closing without confirming changes nothing, which is how a target is
   cleared without picking another. It lists the whole system, moons nested
@@ -56,9 +97,13 @@ every one wearing its proper name), and Phase 6's survey marks closed
   on an openness state machine, and the cockpit-glass Matrix3D tilt.
 - **Hint pills**, all resolving the player's real bindings: the scanner pill
   on the HUD (panel closed), the confirm pill in the footer (first named
-  `sConfirmEvent` entry), and the wheel pill wearing the game's own
-  MOUSEWHEELUP cap — kept by the user's call, drawn glyph as automatic
-  fallback.
+  `sConfirmEvent` entry), and the browse pill — wearing the game's own
+  MOUSEWHEELUP cap on keyboard and mouse (kept by the user's call, drawn glyph
+  as automatic fallback) and the D-pad pair on a controller (v1.1.0). ⚠ **A
+  pill can only draw a binding the CURRENT DEVICE has**; an event the device
+  does not bind renders an empty cap, which is how the browse hint came to be
+  invisible on a pad for a whole release. Anything pill-driven needs a
+  per-device answer, unlike the events themselves.
 - **Blip management** (v0.8 arc): ring blips hide only while the panel is
   open (highlight+lock kept) or a lock exists (only it kept) — idle cruise is
   fully vanilla. The selection wins overlaps both directions (quest and
@@ -309,10 +354,30 @@ inherits the number. Static bodies are unaffected.
 |---|---|---|
 | scanner | `SHMonocle` | open / close the panel |
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (spliced away from the camera while open) |
+| D-pad up / down | `Up` / `Down` | move the highlight, on a controller (v1.1.0) |
 | POV toggle (**Q** here) | `TogglePOV` | lock the highlighted body, or clear it if already locked |
 
-`sConfirmEvent` is a comma-separated list; an entry is a user-event **name** or
-`#<id>`, a raw key code for a key the game leaves nameless.
+`sConfirmEvent`, `sBrowseUpEvent` and `sBrowseDownEvent` are comma-separated
+lists sharing one walk (`MatchesEventList`); an entry is a user-event **name**
+or `#<id>`, a raw key code for a key the game leaves nameless.
+
+**The browse lists carry both devices at once and that is deliberate.** A user
+event is not tied to a device — the engine resolves it against whatever is in
+the player's hands — so `ZoomIn,Up` means "the wheel, or the D-pad, whichever
+you have". No device check anywhere, by the user's call: if someone has bound
+a keyboard key to the ship HUD's `Up`, browsing with it is the right answer,
+not a collision.
+
+⚠ **On a gamepad an `#id` is NOT a virtual-key code.** It is Bethesda's own pad
+code, and the tester's log maps the ship set exactly: D-pad up **1**, down
+**2** (so left **4**, right **8**), LS click **64** (`Boosters`), RB **512**
+(`LockCourse`), A **4096** (`SelectTarget`), X **16384** (`XButton`), Y
+**32768** (`WeaponGroup3`) — and **RT is 10** (`WeaponGroup1`), which is the
+tell: `0x000A` is not a producible button mask, so the triggers occupy the two
+values a mask cannot reach (LT 9, RT 10). Nothing in the matcher checks
+`deviceType`, so an id matches any device reporting that number; the
+unnamed-press-only rule is what keeps that harmless, and every event shipped is
+named.
 
 **The default is `TogglePOV`, and it is chosen for being a name.** A key that
 already drives the camera is a fair candidate because the confirm key is spliced
@@ -359,6 +424,34 @@ and prints the entry to paste into `sConfirmEvent`.
 ## Settled — do not re-derive
 
 Each of these cost real time; the reasoning is in the findings docs.
+
+- **Controller facts, from the tester's log and the exported AS3 (2026-08-02).**
+  - The ship HUD's D-pad is the user events **`Up`/`Down`/`Left`/`Right`**, and
+    the exe carries the hint keys `!Up_ShipHUD`/`!Down_ShipHUD`/… to prove it
+    (`!<UserEvent>_<Context>` at file offsets 81108720–81108768, beside
+    `!RepairShip_ShipHUD` and `!Cancel_ShipHUD`). Their only ship-HUD consumers
+    are `PowerAllocationComponent` — **off for the whole of cruise** — and
+    `ShipHudQuickContainer`, which only lives while the loot panel is open.
+  - ⚠ **On a gamepad, vanilla's EXIT CRUISE is bound to `SHMonocle` — this
+    mod's own open key** (`ShipReticle.as:401`, enabled whenever
+    `CruiseModeHUDActive`, `:1291-1293`; on KBM it is the separate `Cruise`
+    event instead, `:402`). It is a **`HoldButton`**, and `HoldButton
+    .HandleUserEvent` only acts once the hold timer completes — so a *tap* is
+    free and opens the panel, while a *hold* drops cruise. Nothing to fix, but
+    do not "free up" the scanner key on a pad without knowing this.
+  - `ButtonBaseData(label, param2)` takes a `UserEventData` **or an Array** of
+    them (`:16-31`) — the two-way hint idiom, and the only way to get a paired
+    cap.
+- **The known-better route for "is this event bound, and on what?"** is the
+  **`ControlMapData` feed**: `BSDisplayObject.as:101` subscribes it through the
+  same `BSUIDataManager.Subscribe` this mod already uses, and it carries
+  `vMappedEvents` (`strUserEventName`, `strButtonName`, `aButtonName`,
+  `sContextName`) plus `uiController`. `ButtonKeyHelper.GetButtonNameForEvent`
+  answers off exactly that and returns **empty for an unbound event**. v1.1.0
+  did *not* take this route — per-device ini keys plus vanilla's `uiController`
+  were proportionate for one pill, and a third subscription on the load path is
+  not free (see the v0.7.4 race and the load freeze). Reach for the feed if a
+  future feature needs to *discover* bindings rather than pick between two.
 
 - **The ship HUD's target feed cannot tell a moon from a planet.** Moons arrive
   typed `TT_PLANET`, identical to planets, and nothing in the entry names a

@@ -22,6 +22,7 @@
 #include <format>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -115,7 +116,7 @@ namespace
 	REX::TIniSetting<bool> bPanel{ "Panel", "bPanel", true };
 
 	// A comma-separated LIST of user-event names and `#<id>` key codes - see
-	// MatchesConfirmEvent for the syntax and for why it is a list at all.
+	// MatchesEventList for the syntax and for why it is a list at all.
 	//
 	// **The POV toggle, and it is chosen for being a NAME.** The confirm key is
 	// spliced out of the camera's queue while the panel is open, exactly as the
@@ -124,7 +125,7 @@ namespace
 	//
 	// It is deliberately not `#67` (C), which worked and was safer in one
 	// respect: C carries no user event in cruise, so nothing could collide with
-	// it. But an id cannot follow a rebind, and `MatchesConfirmEvent` therefore
+	// it. But an id cannot follow a rebind, and `MatchesEventList` therefore
 	// stands aside the moment the game names that key - which means a player who
 	// binds anything to C loses the confirm entirely, with nothing on screen to
 	// say why. A name resolves wherever the player has put it. The tester made
@@ -139,6 +140,30 @@ namespace
 	//   `StarbornPower` - the name C reports on its RELEASE. The panel acts on
 	//   the press, which reports `ExitShip`, and in cruise neither appears.
 	REX::TIniSetting<std::string> sConfirmEvent{ "Panel", "sConfirmEvent", "TogglePOV" };
+
+	// The browse keys, in the same list shape as sConfirmEvent (v1.1.0). Until
+	// now the pair was hardcoded to the mouse wheel, which is why the panel
+	// could not be browsed on a controller AT ALL: `ZoomIn`/`ZoomOut` are mouse
+	// bindings, so on a pad they are never reported and the branch could never
+	// run. Nothing was broken - there was simply no event.
+	//
+	// `Up`/`Down` are the ship HUD's own D-pad events. Vanilla spends them on
+	// power allocation and DISABLES that for the whole of cruise
+	// (SpaceshipHudMenu wires Reticle_CruiseModeInitiate to
+	// PowerAllocationComponent.InitiateCruiseMode, which calls
+	// EnableInput(false); MinimalButton.HandleButtonHit then returns
+	// `Enabled && bEnabled` and gates the callback on the same test). So in
+	// cruise they are free in exactly the way `SHMonocle` is - confirmed in
+	// game: the D-pad does not touch power allocation while cruising.
+	//
+	// One list serves both devices because a user event is device-agnostic -
+	// the engine resolves it against whatever the player is holding - so this
+	// follows rebinds on either without the mod needing to know which is in
+	// use. Entries take the same `#<id>` form as sConfirmEvent, with the same
+	// unnamed-press-only rule; on a gamepad an id is the Bethesda pad code
+	// (D-pad up 1, down 2, left 4, right 8), NOT a virtual-key code.
+	REX::TIniSetting<std::string> sBrowseUpEvent{ "Panel", "sBrowseUpEvent", "ZoomIn,Up" };
+	REX::TIniSetting<std::string> sBrowseDownEvent{ "Panel", "sBrowseDownEvent", "ZoomOut,Down" };
 
 	// The control hint along the bottom. The label is a separate setting because
 	// the mod knows the confirm key's user-event NAME, not which physical key it
@@ -191,6 +216,21 @@ namespace
 	// but the tester keeps it as the honest "whatever someone bound POV
 	// cycling to". The drawn grey glyph remains its fallback.
 	REX::TIniSetting<float> fPanelBrowsePillX{ "Panel", "fPanelBrowsePillX", 100.0f };
+	// Which event the browse pill WEARS, per device (v1.1.0). The cap is
+	// resolved by the vanilla component against whatever the player is
+	// currently holding, so an event with no binding there renders an EMPTY
+	// cap - which is why the hardcoded `ZoomIn` pill showed nothing at all on
+	// a controller. These are separate from sBrowseUpEvent/sBrowseDownEvent
+	// because that list is deliberately device-agnostic and a pill cannot be:
+	// it has to name one device's binding to draw anything.
+	//
+	// The pad entry is a LIST, which `ButtonBaseData` accepts as an Array of
+	// UserEventData - vanilla's own idiom for a two-way hint, as its
+	// "$SELECT SYSTEM" pill is driven by [Left, Right] - so the cap reads as
+	// the D-pad's up/down pair rather than a lone arrow.
+	REX::TIniSetting<std::string> sPanelBrowsePillEvent{ "Panel", "sPanelBrowsePillEvent", "ZoomIn" };
+	REX::TIniSetting<std::string> sPanelBrowsePillEventPad{ "Panel", "sPanelBrowsePillEventPad",
+		"Up,Down" };
 	// The highlighted row's text steps up to this colour while the bar is
 	// on it - the same trick vanilla's Selected frame plays (v0.16.2).
 	REX::TIniSetting<std::uint32_t> uPanelTextColorHighlight{ "Panel", "uPanelTextColorHighlight",
@@ -1984,6 +2024,11 @@ namespace
 	// call; the drawn glyph is its fallback).
 	RE::Scaleform::GFx::Value g_panelConfirmPill;
 	RE::Scaleform::GFx::Value g_panelBrowsePill;
+	// Which device the browse pill is currently DRESSED for (v1.1.0): 0 none
+	// yet, 1 keyboard and mouse, 2 gamepad. Atomic because the pill is built
+	// from the per-frame task and re-dressed from the feed's refresh, which
+	// are not the same thread; it holds a choice, never a Scaleform value.
+	std::atomic<int> g_panelBrowsePillDevice{ 0 };
 	// Which rows currently wear the highlight text colour, so a moved
 	// highlight recolours exactly the two rows that changed.
 	bool g_panelRowBright[kPanelMaxRowsHard]{};
@@ -2136,17 +2181,25 @@ namespace
 	// the right thing to describe. A name still wins wherever the engine
 	// supplies one, which is why the default carries both.
 	//
-	// Ids are virtual-key codes - 67 is C, 84 is T, 9 is Tab, 13 is Enter - so
-	// `#67` means the C key on any layout that agrees with that, which is more
-	// portable than a name the context refuses to give.
-	bool MatchesConfirmEvent(const char* a_userEvent, std::uint32_t a_idCode)
+	// On a KEYBOARD ids are virtual-key codes - 67 is C, 84 is T, 9 is Tab, 13
+	// is Enter - so `#67` means the C key on any layout that agrees with that,
+	// which is more portable than a name the context refuses to give. On a
+	// GAMEPAD they are Bethesda's own pad codes instead (D-pad up 1, down 2,
+	// left 4, right 8, LS click 64, RB 512, A 4096, X 16384, Y 32768, and the
+	// triggers at 9 and 10 - values a real button mask cannot produce, which is
+	// how the triggers fit). ⚠ Nothing here checks the DEVICE, so an id entry
+	// matches any device reporting that number: `#1` is D-pad up AND whatever
+	// else reports 1. The unnamed-press-only rule below is what keeps that from
+	// mattering in practice, and every event this mod ships with is named.
+	//
+	// The list walk is shared with the browse keys (v1.1.0) - same shape, same
+	// rules - so it takes the configured string rather than reading one.
+	bool MatchesEventList(std::string_view a_configured, const char* a_userEvent,
+		std::uint32_t a_idCode)
 	{
-		// Held by value: GetValue() returns a copy, so a view over a temporary
-		// would dangle before it was ever compared.
-		const std::string configured = sConfirmEvent.GetValue();
-		const bool        named = a_userEvent && a_userEvent[0];
+		const bool named = a_userEvent && a_userEvent[0];
 
-		std::string_view rest{ configured };
+		std::string_view rest{ a_configured };
 		while (!rest.empty()) {
 			const auto comma = rest.find(',');
 			auto       entry = rest.substr(0, comma);
@@ -2193,16 +2246,32 @@ namespace
 		return false;
 	}
 
-	// The mouse wheel, which the cruise survey found arriving undisabled. It
-	// drives the camera's point of view rather than anything about flight.
-	constexpr const char* kWheelUpEvent = "ZoomIn";
-	constexpr const char* kWheelDownEvent = "ZoomOut";
-
-	bool IsWheelEvent(const char* a_userEvent)
+	// The three configured lists, read ONCE per input-queue walk rather than
+	// once per event. They were per-event GetValue() string copies before the
+	// browse keys became configurable, and three of those on every button of
+	// every frame is a cost worth not paying on the path the wheel rides.
+	struct EventLists
 	{
-		return a_userEvent && (std::strcmp(a_userEvent, kWheelUpEvent) == 0 ||
-								  std::strcmp(a_userEvent, kWheelDownEvent) == 0);
-	}
+		std::string browseUp;
+		std::string browseDown;
+		std::string confirm;
+
+		static EventLists Read()
+		{
+			return EventLists{ sBrowseUpEvent.GetValue(), sBrowseDownEvent.GetValue(),
+				sConfirmEvent.GetValue() };
+		}
+
+		// The mouse wheel by default, and on a controller the D-pad. Matching
+		// one list against both is what lets a single ini line serve either
+		// device - see sBrowseUpEvent.
+		bool IsPanelControl(const char* a_userEvent, std::uint32_t a_idCode) const
+		{
+			return MatchesEventList(browseUp, a_userEvent, a_idCode) ||
+			       MatchesEventList(browseDown, a_userEvent, a_idCode) ||
+			       MatchesEventList(confirm, a_userEvent, a_idCode);
+		}
+	};
 
 	const char* DeviceName(RE::InputEvent::DeviceType a_type)
 	{
@@ -2606,6 +2675,7 @@ namespace
 		const bool logInput = bLogInput.GetValue();
 		const bool logHeld = bLogInputHeldFrames.GetValue();
 		const bool logOther = bLogInputNonButton.GetValue();
+		const auto lists = EventLists::Read();
 
 		for (const RE::InputEvent* event = a_head; event; event = event->next) {
 			if (event->eventType != RE::InputEvent::EventType::kButton) {
@@ -2656,17 +2726,22 @@ namespace
 					OnTriggerPressed();
 				} else if (g_panelOpen.load(std::memory_order_acquire) &&
 						   g_inCruise.load(std::memory_order_acquire)) {
-					// The wheel is spliced away from the camera elsewhere; here
-					// it is simply read. One notch is one step.
-					if (named && std::strcmp(userEvent, kWheelUpEvent) == 0) {
+					// The browse keys are spliced away from the camera
+					// elsewhere; here they are simply read. One press - or one
+					// wheel notch - is one step, because this whole block only
+					// runs on `firstFrame`, so holding a D-pad direction does
+					// NOT scroll the list. That is deliberate: vanilla has a
+					// RepeatingButtonData for hold-to-repeat and this is not
+					// it.
+					if (MatchesEventList(lists.browseUp, userEvent, button->idCode)) {
 						MoveHighlight(-1);
 						if (bVerboseLog.GetValue())
 							REX::INFO("[panel] highlight up -> {:08X}", g_highlightID.load(std::memory_order_acquire));
-					} else if (named && std::strcmp(userEvent, kWheelDownEvent) == 0) {
+					} else if (MatchesEventList(lists.browseDown, userEvent, button->idCode)) {
 						MoveHighlight(1);
 						if (bVerboseLog.GetValue())
 							REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
-					} else if (MatchesConfirmEvent(userEvent, button->idCode)) {
+					} else if (MatchesEventList(lists.confirm, userEvent, button->idCode)) {
 						ConfirmHighlight();
 					} else {
 						// Everything else pressed while the panel is open, once
@@ -2754,6 +2829,9 @@ namespace
 			return;
 		}
 
+		// Read once, not once per event - see EventLists.
+		const auto lists = EventLists::Read();
+
 		// Every link changed is recorded with the value it held, and they are
 		// put back in reverse order - which is what makes repeated edits to the
 		// same node (consecutive wheel notches) unwind correctly.
@@ -2785,8 +2863,12 @@ namespace
 				//
 				// A no-op for a confirm key the camera never wanted - C is
 				// nameless here and does nothing to the view - so this costs
-				// nothing when it is not needed.
-				drop = IsWheelEvent(name) || MatchesConfirmEvent(name, button->idCode);
+				// nothing when it is not needed. The same is true of the D-pad
+				// browse events, which the camera has no interest in either;
+				// they go through this list for the same reason the confirm
+				// does, so that a player who moves browse ONTO a camera key
+				// gets the wheel's own protection rather than a swinging view.
+				drop = lists.IsPanelControl(name, button->idCode);
 			}
 
 			if (drop && fixCount < kMaxFixes) {
@@ -3039,6 +3121,7 @@ namespace
 			g_scannerHintFailed.store(false, std::memory_order_release);
 			g_panelConfirmPill = RE::Scaleform::GFx::Value{};
 			g_panelBrowsePill = RE::Scaleform::GFx::Value{};
+			g_panelBrowsePillDevice.store(0, std::memory_order_release);
 			for (auto& bright : g_panelRowBright)
 				bright = false;
 			for (auto& dist : g_panelDists)
@@ -6458,6 +6541,128 @@ namespace
 		       a_class == PlanetClass::kIceGiant;
 	}
 
+	// ---------------------------------------------------------------------------
+	// Which device is the player actually holding (v1.1.0).
+	//
+	// `uiController` is a public getter on `Shared.AS3.BSDisplayObject`, so every
+	// vanilla clip in the movie carries one and the engine keeps it current
+	// across a device swap - it is fed by the same `ControlMapData` subscription
+	// every button uses. This is vanilla's OWN authority for the question: the
+	// reticle branches on exactly this expression to choose between its gamepad
+	// and keyboard cruise hints (ShipReticle.CruiseReticleButtonBaseData).
+	//
+	// Read off `Reticle_mc`, the stable clip the rest of this mod already leans
+	// on, and by the same GetVariable-a-getter route as `CruiseModeHUDActive`.
+	// `PLATFORM_PC_KB_MOUSE` is 0 and `PLATFORM_INVALID` is uint.MAX_VALUE; an
+	// invalid or unreadable value returns nothing so the caller keeps whatever it
+	// already chose rather than guessing a device and dressing the pill wrong.
+	std::optional<bool> UsingGamepad(RE::Scaleform::GFx::ASMovieRootBase* a_root,
+		const std::string& a_reticlePath)
+	{
+		RE::Scaleform::GFx::Value v;
+		if (!a_root->GetVariable(&v, (a_reticlePath + ".uiController").c_str()))
+			return std::nullopt;
+		// It is an AS3 `uint`, and GFx hands those back as kUInt rather than
+		// kNumber - testing IsNumber() alone would have rejected every read and
+		// left the pill permanently in whatever dress it was built with, which
+		// is exactly the silent half-dead feature this mod keeps learning to
+		// avoid. AsNumber takes all three numeric types.
+		if (!v.IsNumber() && !v.IsInt() && !v.IsUInt())
+			return std::nullopt;
+		const double raw = AsNumber(v);
+		if (!(raw >= 0.0) || raw >= 4294967295.0)
+			return std::nullopt;  // PLATFORM_INVALID, or nothing sensible
+		return raw > 0.0;         // PLATFORM_PC_KB_MOUSE is 0; everything else is a pad
+	}
+
+	// The `ButtonBaseData` a pill is driven by. `a_events` is a comma-separated
+	// list: one entry passes a bare `UserEventData`, several pass an Array of
+	// them, which is what vanilla's own two-way hints do and what makes a D-pad
+	// cap read as up+down rather than a single arrow.
+	bool BuildPillData(RE::Scaleform::GFx::ASMovieRootBase* a_root, const std::string& a_label,
+		const std::string& a_events, RE::Scaleform::GFx::Value& a_out)
+	{
+		using V = RE::Scaleform::GFx::Value;
+
+		std::vector<V> events;
+		std::string_view rest{ a_events };
+		while (!rest.empty()) {
+			const auto comma = rest.find(',');
+			auto       entry = rest.substr(0, comma);
+			rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+
+			constexpr std::string_view kSpace = " \t";
+			if (const auto from = entry.find_first_not_of(kSpace); from != std::string_view::npos)
+				entry.remove_prefix(from);
+			else
+				continue;
+			if (const auto to = entry.find_last_not_of(kSpace); to != std::string_view::npos)
+				entry = entry.substr(0, to + 1);
+			// A `#id` entry has no binding for the component to resolve, so it
+			// can never produce a cap - skip it rather than draw an empty one.
+			if (entry.front() == '#')
+				continue;
+
+			V name;
+			a_root->CreateString(&name, std::string{ entry }.c_str());
+			V ued;
+			a_root->CreateObject(&ued,
+				"Shared.Components.ButtonControls.ButtonData.UserEventData", &name, 1);
+			if (ued.IsObject())
+				events.push_back(ued);
+		}
+
+		if (events.empty())
+			return false;
+
+		V userEvents = events.front();
+		if (events.size() > 1) {
+			// Filled with AS3's own `push` rather than `Value::PushBack`: the
+			// latter is one of the few Value methods routed through an Address
+			// Library id, and this mod's rule is to spend ids only where there
+			// is no vtable or script route. `CreateArray` is a plain vtable
+			// slot beside `CreateObject`, so only the fill needed rethinking.
+			//
+			// Falls back to the single first event if either step fails - a
+			// one-key cap is a smaller loss than no pill.
+			V arr;
+			a_root->CreateArray(&arr);
+			if (arr.IsArray()) {
+				bool filled = true;
+				for (const auto& e : events)
+					filled = arr.Invoke("push", nullptr, &e, 1) && filled;
+				if (filled)
+					userEvents = arr;
+			}
+		}
+
+		V args[2];
+		a_root->CreateString(&args[0], a_label.c_str());
+		args[1] = userEvents;
+		a_root->CreateObject(&a_out,
+			"Shared.Components.ButtonControls.ButtonData.ButtonBaseData", args, 2);
+		return a_out.IsObject();
+	}
+
+	// The browse pill's event list for the device in use.
+	std::string BrowsePillEvents(bool a_gamepad)
+	{
+		return a_gamepad ? sPanelBrowsePillEventPad.GetValue() : sPanelBrowsePillEvent.GetValue();
+	}
+
+	// Its label, tokenised, falling back to the English phrase the drawn glyph
+	// has always carried. Shared so that a pill re-dressed mid-session cannot
+	// drift from the one built at startup.
+	std::string BrowsePillLabel()
+	{
+		std::string label = sPanelBrowseLabel.GetValue();
+		if (!label.empty() && label.front() == '$') {
+			const std::string translated = TranslateToken(label.c_str());
+			label = translated.empty() ? std::string{ "wheel to browse" } : translated;
+		}
+		return label;
+	}
+
 	void TryCreatePanel()
 	{
 		if (!bPanel.GetValue() || g_panelReady.load(std::memory_order_acquire) ||
@@ -6633,23 +6838,9 @@ namespace
 		// button driven by a user event, parented to the panel, display-only.
 		// The component centres its label+key assembly on its origin.
 		const auto makePill = [&](RE::Scaleform::GFx::Value& a_out, const std::string& a_label,
-								   const char* a_event, double a_x, double a_y) {
-			RE::Scaleform::GFx::Value ued;
-			{
-				V eventName;
-				root->CreateString(&eventName, a_event);
-				root->CreateObject(&ued,
-					"Shared.Components.ButtonControls.ButtonData.UserEventData", &eventName, 1);
-			}
+								   const std::string& a_events, double a_x, double a_y) {
 			RE::Scaleform::GFx::Value data;
-			if (ued.IsObject()) {
-				V dataArgs[2];
-				root->CreateString(&dataArgs[0], a_label.c_str());
-				dataArgs[1] = ued;
-				root->CreateObject(&data,
-					"Shared.Components.ButtonControls.ButtonData.ButtonBaseData", dataArgs, 2);
-			}
-			if (!data.IsObject())
+			if (!BuildPillData(root, a_label, a_events, data))
 				return false;
 			root->CreateObject(&a_out, "BasicButton_Filled");
 			if (!(a_out.IsObject() || a_out.IsDisplayObject())) {
@@ -6676,21 +6867,25 @@ namespace
 			return true;
 		};
 
-		// The wheel hint as a pill, KEPT with eyes open (v0.16.2, the
-		// tester's call): its cap can only render the binding NAME -
-		// "MOUSEWHEELUP", the component has no wheel art - but that is the
-		// honest display for whatever someone bound POV cycling to. The
-		// drawn grey glyph below is its fallback.
-		std::string browse = sPanelBrowseLabel.GetValue();
-		if (!browse.empty() && browse.front() == '$') {
-			const std::string translated = TranslateToken(browse.c_str());
-			browse = translated.empty() ? std::string{ "wheel to browse" } : translated;
-		}
-		bool browsePillOk = false;
+		// The browse hint as a pill. On keyboard and mouse its cap can only
+		// render the binding NAME - "MOUSEWHEELUP", the component has no
+		// wheel art - and that stays, KEPT with eyes open (v0.16.2, the
+		// tester's call), as the honest display for whatever someone bound
+		// POV cycling to. On a controller the same pill was BLANK, because
+		// `ZoomIn` has no pad binding for the component to resolve; v1.1.0
+		// dresses it for the device instead, and the D-pad has real art.
+		const std::string browse = BrowsePillLabel();
+		bool              browsePillOk = false;
 		if (hints) {
-			browsePillOk = makePill(g_panelBrowsePill, browse, "ZoomIn",
+			// Unknown at build time means keyboard and mouse, which is what
+			// the pill has always assumed; RefreshPanel re-dresses it on the
+			// first open either way, so a wrong guess here lasts no time.
+			const bool pad = UsingGamepad(root, reticlePath).value_or(false);
+			browsePillOk = makePill(g_panelBrowsePill, browse, BrowsePillEvents(pad),
 				static_cast<double>(fPanelBrowsePillX.GetValue()), hintTop + hintHeight * 0.5);
-			if (!browsePillOk)
+			if (browsePillOk)
+				g_panelBrowsePillDevice.store(pad ? 2 : 1, std::memory_order_release);
+			else
 				REX::WARN("[panel] browse pill could not be built - the drawn wheel glyph stays");
 		}
 
@@ -7218,7 +7413,7 @@ namespace
 			}
 			if (!confirmEventName.empty()) {
 				confirmPillOk = makePill(g_panelConfirmPill, sPanelConfirmLabel.GetValue(),
-					confirmEventName.c_str(),
+					confirmEventName,
 					width - static_cast<double>(fPanelConfirmPillRightPad.GetValue()),
 					hintTop + hintHeight * 0.5);
 				if (!confirmPillOk)
@@ -7882,6 +8077,46 @@ namespace
 				setVis(g_panelHintRight, true);
 				setVis(g_panelConfirmPill, true);
 				setVis(g_panelBrowsePill, true);
+				// Re-dress the browse pill if the player has changed device
+				// since it was built (v1.1.0). Once per OPEN, never per tick:
+				// this is VM work, and the last time per-notch VM work rode
+				// the live list it cost the wheel its smoothness. Vanilla
+				// re-drives its own staged buttons exactly this way
+				// (ShipReticle re-calls SetButtonData whenever cruise state
+				// flips), so a second SetButtonData on a staged pill is its
+				// own idiom rather than a new trick.
+				if (g_panelBrowsePill.IsObject() || g_panelBrowsePill.IsDisplayObject()) {
+					const auto                     ui = RE::UI::GetSingleton();
+					static const RE::BSFixedString s_hud{ kShipHudMenu };
+					const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
+					if (menu && menu->uiMovie && menu->uiMovie->asMovieRoot) {
+						auto*             pillRoot = menu->uiMovie->asMovieRoot.get();
+						const char*       rp = menu->GetRootPath();
+						const std::string reticlePath =
+							std::string{ rp ? rp : "root" } + ".Reticle_mc";
+						if (const auto pad = UsingGamepad(pillRoot, reticlePath)) {
+							const int   want = *pad ? 2 : 1;
+							const char* which = *pad ? "the controller" : "keyboard and mouse";
+							if (g_panelBrowsePillDevice.load(std::memory_order_acquire) != want) {
+								// Stamped whether or not the re-dress lands.
+								// The settings are read once per session, so a
+								// failure here would fail identically on every
+								// open, and retrying it forever is VM work
+								// that can never come good.
+								g_panelBrowsePillDevice.store(want, std::memory_order_release);
+								RE::Scaleform::GFx::Value data;
+								if (BuildPillData(pillRoot, BrowsePillLabel(),
+										BrowsePillEvents(*pad), data) &&
+									g_panelBrowsePill.Invoke("SetButtonData", nullptr, &data, 1))
+									REX::INFO("[panel] browse pill re-dressed for {}", which);
+								else
+									REX::WARN("[panel] browse pill could not be re-dressed for {} "
+											  "- it keeps the cap it had",
+										which);
+							}
+						}
+					}
+				}
 			} else if (anim == PanelAnim::kOpening || anim == PanelAnim::kClosing) {
 				setVis(g_panelTitle, false);
 				setVis(g_panelHint, false);
