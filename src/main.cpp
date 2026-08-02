@@ -1947,6 +1947,38 @@ namespace
 	// own targeting outranks the panel.
 	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
+	// ---------------------------------------------------------------------------
+	// ⚠ THE ENGINE SUBSTITUTES RATHER THAN REFUSES.
+	//
+	// Course-locking a **sensor contact** put the autopilot on the system's STAR
+	// (tester, Masada, 2026-08-02) - while the same contact, targeted the vanilla
+	// way with the panel closed, takes a course correctly. Planets work; the
+	// stations and POIs tested earlier worked.
+	//
+	// The dividing line that fits every observation is the FF PREFIX. A sensor
+	// contact is a runtime-created form, so its id is >= 0xFF000000; planets and
+	// static POIs carry ordinary mod-index ids. Whether the engine is failing a
+	// body-type lookup or reading the id as a SIGNED int (0xFF01C601 is negative
+	// in int32, and every id that works is comfortably positive) is not settled -
+	// but both readings predict the same boundary, and the boundary is what the
+	// mod has to act on.
+	//
+	// So the mod does not offer a course on a runtime id. It does not swallow the
+	// press either: the key is left to vanilla for those rows, which handles them
+	// through the info target and gets it right. Silence would be worse - it is
+	// the same trap as v0.18.2's optimistic fallback, one layer down.
+	//
+	// The audit in the low-feed handler is the backstop for whatever this rule
+	// does not predict: if the engine locks a course on a body the mod did not
+	// ask for, that is a WARN and not a quiet wrong turn.
+	// ---------------------------------------------------------------------------
+	constexpr std::uint32_t kFirstRuntimeFormID = 0xFF000000;
+
+	// The id of the last course the mod asked for, held until the engine reports
+	// a course - so the report can be compared with the request. 0 when nothing
+	// is outstanding.
+	std::atomic<std::uint32_t> g_courseAskedID{ 0 };
+
 	// A course-lock dispatch waiting to be made, by body id; 0 means none. The
 	// input thread only ever stores here - no VM, no Scaleform, the rule that
 	// side of the mod has always kept - and the dispatch itself happens on the UI
@@ -2704,6 +2736,17 @@ namespace
 		if (!bLockCourse.GetValue() || a_id == 0)
 			return;
 
+		// Belt and braces with the splice gate, which already declines to claim
+		// the key for these rows - if that ever stops matching this, the mod must
+		// still not send an id the engine will silently swap for another body.
+		if (a_id >= kFirstRuntimeFormID) {
+			REX::INFO("[course] not offering a course on {:08X} - a runtime contact, and the engine "
+					  "answers those by locking onto something else entirely. The key is left to "
+					  "the game, which handles them through the target.",
+				a_id);
+			return;
+		}
+
 		g_pendingCourseID.store(a_id, std::memory_order_release);
 		if (bVerboseLog.GetValue())
 			REX::INFO("[course] requested for {:08X}", a_id);
@@ -2941,10 +2984,16 @@ namespace
 		if (!original)
 			return;
 
+		// ⚠ The highlighted row decides whether the key is claimed at all. A
+		// runtime contact (FF-prefixed) is one the engine answers by locking onto
+		// a different body, so the mod declines the row and leaves the press to
+		// vanilla, which reaches those through the info target and gets it right.
+		// See the header above kFirstRuntimeFormID.
+		const auto highlight = g_highlightID.load(std::memory_order_acquire);
 		const bool claiming = bLockCourse.GetValue() &&
 		                      g_panelOpen.load(std::memory_order_acquire) &&
 		                      g_inCruise.load(std::memory_order_acquire) &&
-		                      g_highlightID.load(std::memory_order_acquire) != 0;
+		                      highlight != 0 && highlight < kFirstRuntimeFormID;
 		if (!claiming) {
 			original(a_this, a_queueHead);
 			return;
@@ -3303,8 +3352,10 @@ namespace
 			g_infoTargetIndex.store(-1, std::memory_order_release);
 
 			// A queued keypress is a keypress the movie it was meant for no
-			// longer exists to receive.
+			// longer exists to receive, and an outstanding request has nothing
+			// left to be audited against.
 			g_pendingCourseID.store(0, std::memory_order_release);
+			g_courseAskedID.store(0, std::memory_order_release);
 
 			// The lock's feed presence must be re-confirmed against the NEW
 			// movie's payloads before absence may clear a moon lock.
@@ -4742,14 +4793,18 @@ namespace
 				}
 
 				// Which body the autopilot is actually flying to, straight from
-				// the engine. Logged on CHANGE only, and behind the verbose
-				// flag, because it repeats with a player action - but it is the
-				// engine's own word rather than the mod's belief, which is what
-				// makes it worth a line at all when a course goes wrong.
-				if (bVerboseLog.GetValue()) {
-					static std::uint32_t s_lastCourse = 0;
-					std::uint32_t        course = 0;
-					std::string_view     courseName;
+				// the engine - its own word rather than the mod's belief.
+				//
+				// ⚠ This is also the AUDIT. The engine does not refuse an id it
+				// cannot use: it SUBSTITUTES, and the tester caught it doing so
+				// (a sensor contact's id came back as a course on the system's
+				// star). A wrong destination that says nothing is the worst
+				// outcome this feature has, so a substitution is a WARN even
+				// though it repeats with a player action, while agreement stays
+				// behind the verbose flag with the rest of the trace.
+				{
+					std::uint32_t    course = 0;
+					std::string_view courseName;
 					for (const auto& row : g_candidates) {
 						if (row.fromFeed && row.courseLocked) {
 							course = row.id;
@@ -4757,13 +4812,27 @@ namespace
 							break;
 						}
 					}
-					if (course != s_lastCourse) {
-						s_lastCourse = course;
-						if (course != 0)
-							REX::INFO("[course] the engine reports a course locked on '{}' ({:08X})",
-								courseName, course);
-						else
-							REX::INFO("[course] the engine reports no course locked");
+
+					if (const auto asked = g_courseAskedID.load(std::memory_order_acquire);
+						asked != 0 && course != 0) {
+						g_courseAskedID.store(0, std::memory_order_release);
+						if (course != asked)
+							REX::WARN("[course] asked the engine for {:08X} and it locked a course on "
+									  "'{}' ({:08X}) instead - it substituted a body it could use for "
+									  "one it could not",
+								asked, courseName, course);
+					}
+
+					if (bVerboseLog.GetValue()) {
+						static std::uint32_t s_lastCourse = 0;
+						if (course != s_lastCourse) {
+							s_lastCourse = course;
+							if (course != 0)
+								REX::INFO("[course] the engine reports a course locked on '{}' ({:08X})",
+									courseName, course);
+							else
+								REX::INFO("[course] the engine reports no course locked");
+						}
 					}
 				}
 			}
@@ -5177,9 +5246,13 @@ namespace
 
 		// One line per press, so it goes behind the verbose flag with the rest of
 		// the per-action trace. The engine's own answer - which body it says the
-		// course is on - is logged on change beside the candidate rebuild.
-		if (DispatchHudEvent(root, "Reticle_OnCruiseLockCourse", &params) && bVerboseLog.GetValue())
-			REX::INFO("[course] sent Reticle_OnCruiseLockCourse uBodyID={:08X}", id);
+		// course is on - is logged on change beside the candidate rebuild, and
+		// audited against this id there.
+		if (DispatchHudEvent(root, "Reticle_OnCruiseLockCourse", &params)) {
+			g_courseAskedID.store(id, std::memory_order_release);
+			if (bVerboseLog.GetValue())
+				REX::INFO("[course] sent Reticle_OnCruiseLockCourse uBodyID={:08X}", id);
+		}
 	}
 
 	class HighFeedHandler : public RE::Scaleform::GFx::FunctionHandler

@@ -388,22 +388,20 @@ Later, nice-to-have:
       mod's, so the row mark is the only place the two agree in front of the
       player.
 
-- [ ] **⚠ FLIGHT-TEST THE SPLICE — it is the first time this mod has taken an
-      event away from the SWF.** The camera tap proved the technique on
-      `PlayerCamera`; whether unlinking at `RE::UI` also hides an event from a
-      MENU's `ProcessUserEvent` has never been tested here, and the one prior
-      datum points the other way (writing `disabled = true` at `RE::UI` did not
-      suppress *flight* input — different consumer, and a flag is not a splice,
-      so it is weak evidence either way). What to watch, with `bVerboseLog` on:
+- [x] ~~Flight-test the splice.~~ **CONFIRMED IN GAME 2026-08-02 ("it works").**
+      Unlinking at `RE::UI` *does* hide an event from a menu's
+      `ProcessUserEvent` — so the receiver that feeds the menus is a real
+      chokepoint for Scaleform input, which was not known before. The camera
+      tap's technique generalises.
 
-      - `[course] hid N 'LockCourse' event(s) from the UI` — the splice ran.
-      - No target, highlight B, press → the autopilot should come on **and stay
-        on**. If it still switches off, the splice did not reach the SWF and the
-        fallback is `sLockCourseEvent=WeaponGroup1`.
-      - Target on A, highlight B, press → the course should go to **B**.
-      - Highlight the body you already have targeted and press → it must still
-        work; the stand-aside rule that used to cover that case is gone.
-      - Close the panel and press → vanilla's own behaviour, unchanged.
+- [ ] **⚠ CONFIRM THE RUNTIME-ID BOUNDARY.** The substitution guard is built on
+      one observation (a sensor contact) plus the ids of the things that work,
+      and the FF prefix is the line that fits both. What would sharpen it:
+      a **static** POI or landing site (non-FF id) must still take a course from
+      the panel, and any *other* row that comes back as a substitution should now
+      say so in the log by itself — `[course] asked the engine for X and it
+      locked a course on 'Y' instead`. If that WARN ever fires for a non-FF id,
+      the boundary is wrong and the real rule is body-type, not id-range.
 
 - [ ] **⚠ VERIFY "press again clears".** It is in the ini and the README on the
       strength of a code reading — `FarTravelIconBase.UpdateButton` flips its
@@ -939,13 +937,44 @@ Each of these cost real time; the reasoning is in the findings docs.
   id works: the autopilot engages and the ship turns to it, **with nothing
   targeted**. This is the one by-id verb in the UI layer and it is now proven.
   Confirmed to work on **stations and POIs** as well as planets.
-- **`Reticle_OnCruiseLockCourse` with `uBodyID: 0` means CLEAR** — deduced from
-  the shared-key symptoms, not from the AS3, which only shows the reticle
-  dispatching it as a fallback. The mod set a course on an untargeted body
-  (autopilot visibly on) and vanilla's `{0}`, arriving after, switched it off.
-  Corollary: **the SWF's dispatch lands AFTER a mod dispatch queued from the same
+- **⚠⚠ THE ENGINE SUBSTITUTES RATHER THAN REFUSES.** Given a `uBodyID` it cannot
+  use, `Reticle_OnCruiseLockCourse` does not fail — it locks a course on a
+  *different* body. Course-locking a **sensor contact** from the panel put the
+  autopilot on the system's STAR (Masada, 2026-08-02), while the same contact
+  targeted the vanilla way took a course correctly. **The dividing line that fits
+  every observation is the FF PREFIX**: a sensor contact is runtime-created, so
+  its id is >= `0xFF000000`; planets and static POIs carry ordinary mod-index
+  ids. Whether the engine is failing a body-type lookup or reading the id as a
+  SIGNED int (`0xFF01C601` is negative in int32; every id that works is
+  comfortably positive) is **not settled** — but both readings predict the same
+  boundary. The mod therefore declines the row rather than sending the id, and
+  leaves the key to vanilla there, which reaches those through the info target.
+  ⭐ The general lesson, and it is the same shape as v0.18.2's optimistic
+  fallback one layer down: **when an engine call takes an id, assume it can
+  silently answer about a different object, and audit the result** — the mod now
+  compares what it asked for against what the feed reports and WARNs on a
+  mismatch.
+- **`Reticle_OnCruiseLockCourse` with `uBodyID: 0` most likely means "use the
+  CURRENT INFO TARGET"**, which merely *looks* like CLEAR when nothing is
+  targeted. First written up here as "clear" on the strength of the shared-key
+  flicker (the mod set a course on an untargeted body, vanilla's `{0}` arrived
+  after and switched it off) — but the sensor-contact finding makes the weaker
+  claim the better one: vanilla can put a course on a POI, and if `{0}` were
+  literally "clear" then the only path left would be the far-travel button's
+  by-id dispatch, which is the very path that fails for a runtime id. "Use the
+  current target" explains both. **Not proven either way**; what is proven is the
+  observed behaviour with no target, which both readings predict.
+  ⚠ A third possibility this raises and nobody has closed: the far-travel button
+  sends **`TargetOnlyData.uniqueID`**, and `TargetOnlyData` is a *different
+  object* from the low-feed entry (`SetTargetLowInfo`'s param2 vs param1 — it is
+  the `InfoTargetProvider` payload). If those two `uniqueID`s differ for a POI,
+  then the mod has simply been sending the wrong number and the FF boundary is a
+  coincidence. Cheap to settle: target a contact, and compare the
+  `InfoTargetProvider` probe's `uniqueID` with the panel row's id.
+- **The SWF's dispatch lands AFTER a mod dispatch queued from the same
   keypress**, even though the mod's input hook runs first — do not assume a
-  deferred dispatch wins a race with the SWF, it does not.
+  deferred dispatch wins a race with the SWF, it does not. That is what forced
+  the splice.
 - **Vanilla cannot lock a course without a target, and the engine draws the
   course as an ORANGE RING around the body's HUD blip** (tester, 2026-08-02).
   Both matter to this mod: the first is why sharing the `LockCourse` key is
