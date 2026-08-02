@@ -407,6 +407,36 @@ Later, nice-to-have:
       already cleared by the diff, and what is left is the mechanism — see
       Settled.
 
+- [ ] **⚗ FLY THE FAR-TRAVEL PROBE — the last untried by-id verb in this layer.**
+      `[Recon] bProbeFarTravel=true`. On a row the course cannot take, the course
+      key instead dispatches `ShipHud_FarTravel {uValue: <row id>}` — vanilla's
+      `$JUMP TO` action (`ShipReticle.as:747`), which nobody has ever sent with a
+      destination of their own choosing.
+
+      **⭐ Why this one is worth a flight where the last three gates were not:
+      the engine publishes the permission per row.** `bFarTravelAllowed` /
+      `bFarTravelDisabled` ride the low feed beside every entry, so the probe
+      offers the verb *only where the game has already granted it* — the boundary
+      is known in ADVANCE for the first time on this feature, instead of being
+      reconstructed from failures.
+
+      ⚠ **Save first: it moves the ship**, which nothing else in this mod does.
+      ⚠ **No feed reports a far travel**, so unlike the course there is no audit —
+      the `[fartravel] sent` line plus what the ship does is the whole
+      measurement.
+
+      Two ways it can fail that should be recognised rather than re-derived:
+      vanilla sends `TargetOnlyData.uniqueID` (the info target's id, which has
+      been seen to differ from the row's — 386531 vs 385501), and vanilla
+      dispatches only at the end of `SetState(STATE_FAR_TRAVEL)` plus an
+      animation, so the engine may expect that state. The probe sends the row's
+      id, cold.
+
+      Outcomes: it works → the panel gains "jump to that station", a different
+      and possibly better verb than a course, and the question becomes whether it
+      belongs on the same key. It does nothing → the vocabulary is exhausted and
+      `Spaceship::TargetingMode` is the only route left for non-body rows.
+
 - [x] ~~TT_STATION — the only row type still unmeasured.~~ **MEASURED
       2026-08-03: stations, POIs and ships all fail; planets and moons are the
       only working destinations.** `IsCourseableType` is now `TT_PLANET` alone
