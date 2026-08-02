@@ -555,6 +555,15 @@ namespace
 	// press. It stays the fallback if taking this key ever proves worse.
 	REX::TIniSetting<std::string> sLockCourseEvent{ "Panel", "sLockCourseEvent", "LockCourse" };
 
+	// Lifts the runtime-id guard (see kFirstRuntimeFormID). It lives in [Recon]
+	// because it exists to MEASURE the thing the guard is guessing at: with the
+	// guard on, the mod never dispatches a runtime id, so the audit that would
+	// characterise what the engine does with one can never fire. A guard that
+	// blocks its own verification is a guard nobody can improve, and this is the
+	// way out of that - turn it on, set courses on contacts, and read the
+	// `[course] asked the engine for ...` warnings.
+	REX::TIniSetting<bool> bCourseRuntimeIDs{ "Recon", "bCourseRuntimeIDs", false };
+
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
 	// hit costs nothing and a miss teaches nothing. The authoritative list of
@@ -1948,29 +1957,35 @@ namespace
 	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
 	// ---------------------------------------------------------------------------
-	// ⚠ THE ENGINE SUBSTITUTES RATHER THAN REFUSES.
+	// ⚠ THE ENGINE SUBSTITUTES RATHER THAN REFUSES - and the id is NOT the reason.
 	//
-	// Course-locking a **sensor contact** put the autopilot on the system's STAR
-	// (tester, Masada, 2026-08-02) - while the same contact, targeted the vanilla
-	// way with the panel closed, takes a course correctly. Planets work; the
-	// stations and POIs tested earlier worked.
+	// Course-locking a **sensor contact** from the panel put the autopilot on the
+	// system's STAR (tester, Masada, 2026-08-02). The first guess was that the
+	// contact's runtime (FF-prefixed) id was unusable. **The tester's log killed
+	// that**: with the panel closed and the same contact targeted the vanilla way,
 	//
-	// The dividing line that fits every observation is the FF PREFIX. A sensor
-	// contact is a runtime-created form, so its id is >= 0xFF000000; planets and
-	// static POIs carry ordinary mod-index ids. Whether the engine is failing a
-	// body-type lookup or reading the id as a SIGNED int (0xFF01C601 is negative
-	// in int32, and every id that works is comfortably positive) is not settled -
-	// but both readings predict the same boundary, and the boundary is what the
-	// mod has to act on.
+	//     [course] the engine reports a course locked on 'Sensor Contact' (FF015BCB)
 	//
-	// So the mod does not offer a course on a runtime id. It does not swallow the
-	// press either: the key is left to vanilla for those rows, which handles them
-	// through the info target and gets it right. Silence would be worse - it is
-	// the same trap as v0.18.2's optimistic fallback, one layer down.
+	// and FF015BCB is exactly the id the panel row carries. So the mod has the
+	// right number, the engine holds a course on that very body, and a runtime id
+	// is representable throughout. What fails is the **by-id dispatch** for a body
+	// that is not a celestial one - vanilla reaches it through the INFO TARGET
+	// instead (`{uBodyID: 0}`), which is the same conclusion from the other end.
 	//
-	// The audit in the low-feed handler is the backstop for whatever this rule
-	// does not predict: if the engine locks a course on a body the mod did not
-	// ask for, that is a WARN and not a quiet wrong turn.
+	// The guard below therefore stands on its EFFECT, not on its explanation: an
+	// id in this class has been seen to produce a course on the wrong body, and a
+	// wrong destination that says nothing is the worst outcome this feature has
+	// (the v0.18.2 optimistic-fallback trap, one layer down).
+	//
+	// ⚠ But it costs something real, and the same log shows it: declining the row
+	// leaves the press to vanilla, and vanilla does NOTHING there, because its own
+	// path needs an info target and the panel's highlight is not one. The tester
+	// pressed and nothing happened. So this is a dead key on contact rows, traded
+	// for a wrong destination - better, not good.
+	//
+	// `bCourseRuntimeIDs` lifts it for measurement, because the audit in the
+	// low-feed handler is the only thing that can characterise what the engine
+	// really substitutes and when, and it cannot fire while nothing is dispatched.
 	// ---------------------------------------------------------------------------
 	constexpr std::uint32_t kFirstRuntimeFormID = 0xFF000000;
 
@@ -2739,11 +2754,22 @@ namespace
 		// Belt and braces with the splice gate, which already declines to claim
 		// the key for these rows - if that ever stops matching this, the mod must
 		// still not send an id the engine will silently swap for another body.
-		if (a_id >= kFirstRuntimeFormID) {
-			REX::INFO("[course] not offering a course on {:08X} - a runtime contact, and the engine "
-					  "answers those by locking onto something else entirely. The key is left to "
-					  "the game, which handles them through the target.",
-				a_id);
+		//
+		// Logged once per body rather than once per press: it is the explanation
+		// for a key that does nothing, so a player pressing it repeatedly has to
+		// be able to find out why - but the fifth identical line teaches nobody
+		// anything, and the tester's log filled with them.
+		if (a_id >= kFirstRuntimeFormID && !bCourseRuntimeIDs.GetValue()) {
+			static std::mutex                       s_toldMutex;
+			static std::unordered_set<std::uint32_t> s_told;
+
+			std::lock_guard lock{ s_toldMutex };
+			if (s_told.size() < 32 && s_told.emplace(a_id).second)
+				REX::INFO("[course] no course offered on {:08X} - the game only takes a course by id "
+						  "for a body with a fixed place in the system, and answers for anything "
+						  "else by locking onto something it can reach. Target it and use the key "
+						  "with the panel closed.",
+					a_id);
 			return;
 		}
 
@@ -2990,10 +3016,11 @@ namespace
 		// vanilla, which reaches those through the info target and gets it right.
 		// See the header above kFirstRuntimeFormID.
 		const auto highlight = g_highlightID.load(std::memory_order_acquire);
+		const bool courseable = highlight < kFirstRuntimeFormID || bCourseRuntimeIDs.GetValue();
 		const bool claiming = bLockCourse.GetValue() &&
 		                      g_panelOpen.load(std::memory_order_acquire) &&
 		                      g_inCruise.load(std::memory_order_acquire) &&
-		                      highlight != 0 && highlight < kFirstRuntimeFormID;
+		                      highlight != 0 && courseable;
 		if (!claiming) {
 			original(a_this, a_queueHead);
 			return;

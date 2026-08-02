@@ -394,14 +394,31 @@ Later, nice-to-have:
       chokepoint for Scaleform input, which was not known before. The camera
       tap's technique generalises.
 
-- [ ] **⚠ CONFIRM THE RUNTIME-ID BOUNDARY.** The substitution guard is built on
-      one observation (a sensor contact) plus the ids of the things that work,
-      and the FF prefix is the line that fits both. What would sharpen it:
-      a **static** POI or landing site (non-FF id) must still take a course from
-      the panel, and any *other* row that comes back as a substitution should now
-      say so in the log by itself — `[course] asked the engine for X and it
-      locked a course on 'Y' instead`. If that WARN ever fires for a non-FF id,
-      the boundary is wrong and the real rule is body-type, not id-range.
+- [ ] **⚠ CHARACTERISE THE SUBSTITUTION — the id was never the problem.** The
+      first guess was that a runtime (FF-prefixed) id is unusable. **The tester's
+      log killed it**: with the contact targeted the vanilla way,
+      `[course] the engine reports a course locked on 'Sensor Contact'
+      (FF015BCB)` — and `FF015BCB` is exactly the id the panel row carries. The
+      mod has the right number, the engine holds a course on that body, and a
+      runtime id is representable end to end. What fails is the **by-id dispatch
+      for a body that is not a celestial one**; vanilla reaches it through the
+      info target instead.
+
+      So the guard stands on its EFFECT, not its explanation, and it has a cost
+      the same log shows: declining the row leaves the press to vanilla, and
+      **vanilla does nothing there** — its path needs an info target and the
+      panel's highlight is not one. The tester pressed and nothing happened. A
+      dead key on contact rows, traded for a wrong destination.
+
+      `[Recon] bCourseRuntimeIDs` lifts the guard so the audit can do its job —
+      **a guard that blocks its own verification is one nobody can improve.**
+      With it on, set courses on every kind of row and collect
+      `[course] asked the engine for X and it locked a course on 'Y' instead`.
+      What that should settle: is the substitute always the system's star, or
+      the nearest body? Do *stations* (which the tester reported working early
+      on) substitute too? Is the real rule `uTargetType`-shaped rather than
+      id-shaped — in which case the guard should read the row's type, which the
+      candidate already carries.
 
 - [ ] **⚠ VERIFY "press again clears".** It is in the ini and the README on the
       strength of a code reading — `FarTravelIconBase.UpdateButton` flips its
@@ -940,20 +957,27 @@ Each of these cost real time; the reasoning is in the findings docs.
 - **⚠⚠ THE ENGINE SUBSTITUTES RATHER THAN REFUSES.** Given a `uBodyID` it cannot
   use, `Reticle_OnCruiseLockCourse` does not fail — it locks a course on a
   *different* body. Course-locking a **sensor contact** from the panel put the
-  autopilot on the system's STAR (Masada, 2026-08-02), while the same contact
-  targeted the vanilla way took a course correctly. **The dividing line that fits
-  every observation is the FF PREFIX**: a sensor contact is runtime-created, so
-  its id is >= `0xFF000000`; planets and static POIs carry ordinary mod-index
-  ids. Whether the engine is failing a body-type lookup or reading the id as a
-  SIGNED int (`0xFF01C601` is negative in int32; every id that works is
-  comfortably positive) is **not settled** — but both readings predict the same
-  boundary. The mod therefore declines the row rather than sending the id, and
-  leaves the key to vanilla there, which reaches those through the info target.
-  ⭐ The general lesson, and it is the same shape as v0.18.2's optimistic
-  fallback one layer down: **when an engine call takes an id, assume it can
-  silently answer about a different object, and audit the result** — the mod now
-  compares what it asked for against what the feed reports and WARNs on a
-  mismatch.
+  autopilot on the system's STAR (Masada, 2026-08-02).
+  ⭐ The general lesson, the same shape as v0.18.2's optimistic fallback one layer
+  down: **when an engine call takes an id, assume it can silently answer about a
+  different object, and audit the result** — the mod compares what it asked for
+  against what the feed reports and WARNs on a mismatch.
+  ⚠ **The id is NOT the reason, and my first write-up of this was wrong.** It
+  said runtime (FF-prefixed) ids are unusable. The tester's log killed that:
+  `[course] the engine reports a course locked on 'Sensor Contact' (FF015BCB)`
+  after targeting the same contact the vanilla way — and `FF015BCB` is exactly
+  the id the panel row carries. The mod has the right number, the engine holds a
+  course on that body, and a runtime id is representable throughout. **What fails
+  is the by-id dispatch for a body that is not a celestial one**; vanilla reaches
+  those through the info target. Also dead with it: the "signed int32" reading,
+  which was only ever a way to explain a boundary that turned out not to be
+  where the fault is. The guard is kept on its **effect** and the real rule is
+  still open work.
+- **The `uniqueID` on the low feed and on `TargetOnlyData` are the SAME number**,
+  at least for a planet: the `InfoTargetProvider` dump reads
+  `payload.uniqueID = 385509` and `pci.uBodyID = 385509` for Masada VII, matching
+  the row. So the "maybe the mod is sending the wrong id" theory is closed for
+  bodies — it was never an id problem.
 - **`Reticle_OnCruiseLockCourse` with `uBodyID: 0` most likely means "use the
   CURRENT INFO TARGET"**, which merely *looks* like CLEAR when nothing is
   targeted. First written up here as "clear" on the strength of the shared-key
