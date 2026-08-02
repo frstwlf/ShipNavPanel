@@ -11,8 +11,11 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v1.1.0 — CONTROLLER BROWSING (2026-08-02, built + deployed, AWAITING TEST).**
-Everything else below is confirmed in game.
+**v1.1.0 — CONTROLLER BROWSING. CONFIRMED IN GAME 2026-08-02 ("it works").**
+**v1.1.1 (same day, built + deployed, AWAITING TEST) fixes the one thing the
+tester found: the browse pill did not follow a device swap made WHILE the panel
+was up** — see the pill note below. Functionality was never affected, display
+only.
 
 Reported by users and reproduced by the tester: the panel could not be browsed
 with a controller. Not a bug — an absence. The browse pair was hardcoded to
@@ -44,11 +47,25 @@ never reached. Their own log shows what the D-pad reports instead:
   the current device and `ZoomIn` has no pad binding to resolve.
   `sPanelBrowsePillEvent` / `sPanelBrowsePillEventPad` (`ZoomIn` / `Up,Down`),
   chosen by reading vanilla's own `uiController` off `Reticle_mc` and re-driven
-  with `SetButtonData` **once per panel open** — never per tick, because
-  per-notch VM work on the live list is what cost the wheel its smoothness in
-  v0.9.1. The pad entry is a list, which `ButtonBaseData` takes as an Array of
-  `UserEventData` — vanilla's own two-way-hint idiom (`$SELECT SYSTEM` is
-  driven by `[Left, Right]`) — so the cap reads as the D-pad pair.
+  with `SetButtonData`. The pad entry is a list, which `ButtonBaseData` takes as
+  an Array of `UserEventData` — vanilla's own two-way-hint idiom
+  (`$SELECT SYSTEM` is driven by `[Left, Right]`) — so the cap reads as the
+  D-pad pair.
+  - ⚠ **v1.1.1: it has to follow a swap made mid-panel, so it rides the 0.25 s
+    text cadence, not the panel-open transition.** v1.1.0 re-dressed once per
+    open, reasoning from v0.9.1 that VM work on the live list is what costs the
+    wheel its smoothness — but the tester swaps device with the panel *up*, and
+    the confirm pill follows that while ours did not. **The two are not
+    comparable work:** v0.9.1 was per-notch work on every row of a live list;
+    this is one `GetVariable` four times a second, on the same tick that already
+    does per-row `SetText` and `textWidth` measures, with the `SetButtonData`
+    firing only on an actual change. Being right about a hazard is not the same
+    as that hazard applying.
+  - **Why the confirm pill needed none of this**: it is driven by ONE event both
+    devices bind, so the component re-resolves its own cap off its own
+    `ControlMapData` subscription. **A component that re-renders is not a
+    component that re-chooses** — the browse pill needs a *different event* per
+    device, and only the mod can decide that.
 - Also confirmed by the tester: the **confirm pill already resolved correctly**
   on a pad, so `TogglePOV` has a controller binding and locking works.
 

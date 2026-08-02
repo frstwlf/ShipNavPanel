@@ -6663,6 +6663,65 @@ namespace
 		return label;
 	}
 
+	// ---------------------------------------------------------------------------
+	// Keep the browse pill wearing the device the player is actually holding.
+	//
+	// **The confirm pill needs none of this, and that difference is the whole
+	// point.** It is driven by ONE event that both devices bind, so the vanilla
+	// component re-resolves its own cap when the control map changes and follows
+	// a device swap by itself - it subscribes `ControlMapData` in its own ctor.
+	// The browse pill cannot: the wheel and the D-pad are DIFFERENT events, so
+	// following a swap means handing the component a different event, and only
+	// the mod can decide that. A component that re-renders is not the same as a
+	// component that re-chooses.
+	//
+	// First cut did this once per panel OPEN, which left a swap made WHILE the
+	// panel was up showing the other device's cap until it was closed and
+	// reopened (the tester caught it: the confirm pill changed on the fly, this
+	// one did not). It now rides the panel's 0.25 s text cadence instead - one
+	// GetVariable four times a second while the panel is open, beside the
+	// per-row SetText and textWidth work already on that tick - and the
+	// SetButtonData fires only on an actual change, so a session that never
+	// swaps device pays nothing but the read.
+	// ---------------------------------------------------------------------------
+	void RefreshBrowsePillDevice()
+	{
+		if (!(g_panelBrowsePill.IsObject() || g_panelBrowsePill.IsDisplayObject()))
+			return;
+
+		const auto                     ui = RE::UI::GetSingleton();
+		static const RE::BSFixedString s_hud{ kShipHudMenu };
+		const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
+			return;
+
+		auto*             root = menu->uiMovie->asMovieRoot.get();
+		const char*       rootPath = menu->GetRootPath();
+		const std::string reticlePath = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc";
+
+		const auto pad = UsingGamepad(root, reticlePath);
+		if (!pad)
+			return;  // unreadable or PLATFORM_INVALID: keep the dress it has
+
+		const int   want = *pad ? 2 : 1;
+		const char* which = *pad ? "the controller" : "keyboard and mouse";
+		if (g_panelBrowsePillDevice.load(std::memory_order_acquire) == want)
+			return;
+
+		// Stamped whether or not the re-dress lands. The settings are read once
+		// per session, so a failure here would fail identically every time, and
+		// retrying it on a 0.25 s cadence is VM work that can never come good.
+		g_panelBrowsePillDevice.store(want, std::memory_order_release);
+
+		RE::Scaleform::GFx::Value data;
+		if (BuildPillData(root, BrowsePillLabel(), BrowsePillEvents(*pad), data) &&
+			g_panelBrowsePill.Invoke("SetButtonData", nullptr, &data, 1))
+			REX::INFO("[panel] browse pill re-dressed for {}", which);
+		else
+			REX::WARN("[panel] browse pill could not be re-dressed for {} - it keeps the cap it had",
+				which);
+	}
+
 	void TryCreatePanel()
 	{
 		if (!bPanel.GetValue() || g_panelReady.load(std::memory_order_acquire) ||
@@ -8077,46 +8136,6 @@ namespace
 				setVis(g_panelHintRight, true);
 				setVis(g_panelConfirmPill, true);
 				setVis(g_panelBrowsePill, true);
-				// Re-dress the browse pill if the player has changed device
-				// since it was built (v1.1.0). Once per OPEN, never per tick:
-				// this is VM work, and the last time per-notch VM work rode
-				// the live list it cost the wheel its smoothness. Vanilla
-				// re-drives its own staged buttons exactly this way
-				// (ShipReticle re-calls SetButtonData whenever cruise state
-				// flips), so a second SetButtonData on a staged pill is its
-				// own idiom rather than a new trick.
-				if (g_panelBrowsePill.IsObject() || g_panelBrowsePill.IsDisplayObject()) {
-					const auto                     ui = RE::UI::GetSingleton();
-					static const RE::BSFixedString s_hud{ kShipHudMenu };
-					const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
-					if (menu && menu->uiMovie && menu->uiMovie->asMovieRoot) {
-						auto*             pillRoot = menu->uiMovie->asMovieRoot.get();
-						const char*       rp = menu->GetRootPath();
-						const std::string reticlePath =
-							std::string{ rp ? rp : "root" } + ".Reticle_mc";
-						if (const auto pad = UsingGamepad(pillRoot, reticlePath)) {
-							const int   want = *pad ? 2 : 1;
-							const char* which = *pad ? "the controller" : "keyboard and mouse";
-							if (g_panelBrowsePillDevice.load(std::memory_order_acquire) != want) {
-								// Stamped whether or not the re-dress lands.
-								// The settings are read once per session, so a
-								// failure here would fail identically on every
-								// open, and retrying it forever is VM work
-								// that can never come good.
-								g_panelBrowsePillDevice.store(want, std::memory_order_release);
-								RE::Scaleform::GFx::Value data;
-								if (BuildPillData(pillRoot, BrowsePillLabel(),
-										BrowsePillEvents(*pad), data) &&
-									g_panelBrowsePill.Invoke("SetButtonData", nullptr, &data, 1))
-									REX::INFO("[panel] browse pill re-dressed for {}", which);
-								else
-									REX::WARN("[panel] browse pill could not be re-dressed for {} "
-											  "- it keeps the cap it had",
-										which);
-							}
-						}
-					}
-				}
 			} else if (anim == PanelAnim::kOpening || anim == PanelAnim::kClosing) {
 				setVis(g_panelTitle, false);
 				setVis(g_panelHint, false);
@@ -8191,8 +8210,15 @@ namespace
 		static auto s_lastText = clock::time_point{};
 		const auto  now = clock::now();
 		const bool  refreshText = std::chrono::duration<float>(now - s_lastText).count() >= 0.25f;
-		if (refreshText)
+		if (refreshText) {
 			s_lastText = now;
+			// Rides this cadence so a device swap made WHILE the panel is up
+			// is followed, the way the confirm pill follows one by itself.
+			// The panel has been closed for longer than the interval by the
+			// time it opens, so the first tick after an open also lands here
+			// and the pill is dressed before it is looked at.
+			RefreshBrowsePillDevice();
+		}
 
 		const auto    rowCount = static_cast<std::size_t>(g_panelRowCount.load(std::memory_order_acquire));
 		const auto    highlight = g_highlightID.load(std::memory_order_acquire);
