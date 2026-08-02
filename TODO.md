@@ -394,14 +394,19 @@ Later, nice-to-have:
       chokepoint for Scaleform input, which was not known before. The camera
       tap's technique generalises.
 
-- [ ] **⚠ TT_STATION — the one open case.** The type gate allows `TT_STAR` and
-      `TT_PLANET` only, but an early flight reported *stations* course-locking
-      fine, which the gate does not allow for and which was never rechecked with
-      the audit watching. Settle it: `[Recon] bCourseAnyRow=true`, course-lock a
-      station, and read whether the feed comes back reporting the course on that
-      station's own row or the 3-second `NO body in the feed reports a course`
-      warning fires. If stations take it, add `kTargetTypeStation` to
-      `IsCourseableType` — the gate exists to be exactly as wide as the engine is.
+- [ ] **⚠ WHICH ROWS DOES THE ENGINE ACTUALLY REFUSE?** Open, and deliberately
+      NOT gated on in the meantime — see the header above `RequestLockCourse` for
+      why three gates in a row were guesses. Known: a **sensor contact** does not
+      take (no entry reports the course, no marker, ship drifts to the system
+      origin); **planets** do; **POIs and stations** did when they were last
+      tried, which is what killed the type gate. A "Sensor Contact" is vanilla's
+      own name for a contact it has **not resolved**, so *unresolved* is the
+      obvious next hypothesis — and `Candidate::locMarkerState` /
+      `discovered` already carry that, so the gate is one line **once there is
+      enough evidence to write it**. Collect it from ordinary play: every failure
+      now prints
+      `[course] the game did not take a course on <id>`. When the failing rows
+      have a property in common across a few sessions, gate on that property.
 
 - [x] ~~THE LEAD: `uniqueID` may be the wrong number to send.~~ **DEAD, measured
       2026-08-03:** `[course] the feed does NOT carry a per-entry uBodyID`.
@@ -1001,6 +1006,17 @@ Each of these cost real time; the reasoning is in the findings docs.
   there.**
   ⭐ And the posture that survives all of it: **when an engine call takes an id,
   audit what came back rather than assuming it refused what it could not use.**
+- **⛔⛔ THREE GATES, THREE GUESSES — and the third one removed working
+  functionality.** Each was built on the single row that had misbehaved and then
+  generalised: FF-prefixed ids, then the wrong id field, then "only a celestial
+  body". The third was flatly contradicted by an observation already in hand
+  (the tester had reported POIs and stations course-locking fine), and shipping
+  it took away a capability that was the reason the feature earned its place.
+  ⭐ **A wrong heading costs one keypress to recover; a capability that is gone
+  costs a release to notice.** When the engine's answer is READABLE — and here it
+  is, `bIsCruiseTargetLock` on the body's own feed entry — ask and audit. Do not
+  predict. The prediction is only worth writing once the audit has named the
+  failing rows and they visibly share a property.
 - **⚠ `TargetOnlyData.uniqueID` and `PlanetCardInfo.uBodyID` are NOT the same
   number** — `payload.uniqueID` **386531** vs `pci.uBodyID` **385501**
   ("Masada IV", a landable target) in the 2026-08-02 dump. They agree for a

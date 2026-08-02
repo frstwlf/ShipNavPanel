@@ -555,13 +555,6 @@ namespace
 	// press. It stays the fallback if taking this key ever proves worse.
 	REX::TIniSetting<std::string> sLockCourseEvent{ "Panel", "sLockCourseEvent", "LockCourse" };
 
-	// Lifts the courseable-type gate (see IsCourseableType). It lives in [Recon]
-	// because it exists to MEASURE what the gate is predicting: with the gate on
-	// the mod never dispatches for those rows, so the audit that would say what
-	// the engine really does with one can never fire. A guard that blocks its own
-	// verification is a guard nobody can improve. Turn it on, set courses on
-	// every kind of row, and read the `[course] asked the engine for ...` lines.
-	REX::TIniSetting<bool> bCourseAnyRow{ "Recon", "bCourseAnyRow", false };
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
 	// (it has an RTTI entry in CommonLibSF); the rest are guesses kept because a
@@ -1966,52 +1959,34 @@ namespace
 	std::atomic<std::int32_t> g_infoTargetIndex{ -1 };
 
 	// ---------------------------------------------------------------------------
-	// ⚠ `uBodyID` MEANS uBodyID. Only a CELESTIAL BODY can take a course by id.
+	// ⚠ NO PREDICTION ABOUT WHICH ROWS THE ENGINE WILL TAKE. Dispatch, then AUDIT.
 	//
-	// Three flights to get here, and two wrong theories buried on the way. What
-	// the evidence finally says, in the order it arrived:
+	// Three gates were written here and all three were guesses dressed as rules,
+	// each built on the single row that had misbehaved and then generalised:
 	//
-	//  1. Course-locking a sensor contact aimed the ship at the system's star.
-	//     First theory: its runtime (FF-prefixed) id is unusable. **Dead** - the
-	//     same contact, targeted the vanilla way, produced
-	//     `the engine reports a course locked on 'Sensor Contact' (FF015BCB)`,
-	//     which is exactly the id the panel row carries. The number was right.
-	//  2. Second theory: `uniqueID` is the wrong FIELD, since the dossier showed
-	//     `payload.uniqueID` 386531 against `PlanetCardInfo.uBodyID` 385501 for
-	//     one target. **Dead too** - the low feed carries no per-entry `uBodyID`
-	//     at all (logged on the first course of a session, so this is measured,
-	//     not assumed). `uniqueID` is the only id an entry has.
-	//  3. What actually happens, and the tester's own eye is what settles it:
-	//     **there is NO orange course indicator**, no entry in the feed reports
-	//     `bIsCruiseTargetLock`, and the ship merely points "that way". So the
-	//     engine is not substituting another body - it takes the course with an
-	//     UNRESOLVED destination. Nothing holds it, nothing draws it, and the
-	//     heading that falls out is the system's origin, which is where the star
-	//     sits. "It locked onto the star" was the appearance, not the mechanism.
+	//   1. "runtime (FF-prefixed) ids are unusable" - killed by the tester's log,
+	//      which showed the engine holding a course on that very id once the
+	//      contact was targeted the vanilla way. The number was always right.
+	//   2. "`uniqueID` is the wrong field, it wants a body id" - killed by
+	//      measurement: the low feed carries no per-entry `uBodyID` at all.
+	//   3. "only a celestial body can take a course by id" - killed by the
+	//      tester, who had already reported POIs and stations course-locking
+	//      fine. A gate that contradicts a direct observation is not a rule.
 	//
-	// So the gate is on TYPE, not on the id's shape, and for a reason rather than
-	// a correlation: a POI, a ship or a station is not a body, so there is no
-	// body id to name it by, and vanilla reaches those through the info target
-	// (`{uBodyID: 0}`) - a route the mod cannot take, since setting the info
-	// target is the dead end Phase 0 closed.
+	// ⚠ The third one REMOVED WORKING FUNCTIONALITY, which is worse than the bug
+	// it was meant to contain: a wrong heading is recoverable in one keypress, a
+	// capability that is gone is not. **Do not gate this on a theory again.** The
+	// engine's answer is readable - `bIsCruiseTargetLock` on the body's own feed
+	// entry - so the mod asks, watches, and says plainly when nothing came back.
 	//
-	// ⚠ The cost is a dead key on those rows: declining leaves the press to
-	// vanilla, and vanilla does nothing there either, because its path needs an
-	// info target and the panel's highlight is not one. Dead beats "flies you at
-	// the star with no indicator", which is the v0.18.2 optimistic-fallback trap
-	// one layer down.
-	//
-	// ⚠ TT_STATION is the one open case: an early flight reported stations
-	// working, which this gate does not allow for, and it has never been rechecked
-	// with the audit watching. `bCourseAnyRow` lifts the gate to settle it.
+	// What is actually known: a course on a **sensor contact** does not take (no
+	// entry reports it, no orange indicator draws, the ship heads for the system
+	// origin), while planets do, and POIs and stations did when they were last
+	// tried. A "Sensor Contact" is vanilla's name for a contact it has not
+	// resolved yet, so "unresolved" is the obvious next hypothesis - and it stays
+	// a hypothesis until the audit has named the failing rows across a few
+	// sessions. Gate on the evidence when there is enough of it, not before.
 	// ---------------------------------------------------------------------------
-	// Defined with the other target-type helpers, below the TT_* constants.
-	bool IsCourseableType(std::uint32_t a_type);
-
-	// Whether the highlighted row is one the engine can take a course on, kept as
-	// an atomic so the input path never has to take the candidate mutex to ask.
-	// Written wherever the highlight or the candidate list changes.
-	std::atomic<bool> g_highlightCourseable{ false };
 
 	// The id of the last course the mod asked for, held until the engine reports
 	// a course - so the report can be compared with the request. 0 when nothing
@@ -2294,16 +2269,6 @@ namespace
 	constexpr std::uint32_t kTargetTypeShip = 5;
 	constexpr std::uint32_t kTargetTypeStation = 6;
 	constexpr std::uint32_t kTargetTypePlanet = 7;
-
-	// Which rows the cruise autopilot can be aimed at by id - star and planet,
-	// the two the feed uses for celestial bodies (moons ride as TT_PLANET like
-	// everything else in the sky). The long version of why is at
-	// g_highlightCourseable; the short version is that `uBodyID` means uBodyID,
-	// and a POI, ship or station has no body id to be named by.
-	bool IsCourseableType(std::uint32_t a_type)
-	{
-		return a_type == kTargetTypeStar || a_type == kTargetTypePlanet;
-	}
 
 	bool IsLocalBody(std::uint32_t a_type, double a_distanceMeters)
 	{
@@ -2744,10 +2709,6 @@ namespace
 		// first local body regardless of the delta.
 
 		g_highlightID.store(g_candidates[local[pos]].id, std::memory_order_release);
-		// Published with the highlight and under the same lock, so the input path
-		// can ask "can this row take a course" without touching the mutex.
-		g_highlightCourseable.store(IsCourseableType(g_candidates[local[pos]].type),
-			std::memory_order_release);
 	}
 
 	void TogglePanel()
@@ -2809,20 +2770,6 @@ namespace
 		// for a key that does nothing, so a player pressing it repeatedly has to
 		// be able to find out why - but the fifth identical line teaches nobody
 		// anything, and the tester's log filled with them.
-		if (!g_highlightCourseable.load(std::memory_order_acquire) && !bCourseAnyRow.GetValue()) {
-			static std::mutex                       s_toldMutex;
-			static std::unordered_set<std::uint32_t> s_told;
-
-			std::lock_guard lock{ s_toldMutex };
-			if (s_told.size() < 32 && s_told.emplace(a_id).second)
-				REX::INFO("[course] no course offered on {:08X} - the autopilot is aimed by BODY id, "
-						  "and a contact, ship or station has none. Asked anyway, the game takes "
-						  "the course with nothing to fly to: no marker, and a heading into the "
-						  "middle of the system. Target it and use the key with the panel closed.",
-					a_id);
-			return;
-		}
-
 		g_pendingCourseID.store(a_id, std::memory_order_release);
 		if (bVerboseLog.GetValue())
 			REX::INFO("[course] requested for {:08X}", a_id);
@@ -3060,17 +3007,14 @@ namespace
 		if (!original)
 			return;
 
-		// ⚠ The highlighted row decides whether the key is claimed at all. Only a
-		// celestial body can be given a course by id; on any other row the mod
-		// stands off and the press stays vanilla's. See the header above
-		// g_highlightCourseable.
-		const auto highlight = g_highlightID.load(std::memory_order_acquire);
-		const bool courseable = g_highlightCourseable.load(std::memory_order_acquire) ||
-		                        bCourseAnyRow.GetValue();
+		// Any highlighted row may be asked for - see the header above
+		// RequestLockCourse for why the mod no longer tries to predict which the
+		// engine will take. The only requirement is that there IS a row, so an
+		// empty list does not silently eat the key.
 		const bool claiming = bLockCourse.GetValue() &&
 		                      g_panelOpen.load(std::memory_order_acquire) &&
 		                      g_inCruise.load(std::memory_order_acquire) &&
-		                      highlight != 0 && courseable;
+		                      g_highlightID.load(std::memory_order_acquire) != 0;
 		if (!claiming) {
 			original(a_this, a_queueHead);
 			return;
@@ -4877,21 +4821,6 @@ namespace
 					}
 				}
 
-				// Re-published with every rebuild, not only when the highlight
-				// moves: a row's type arrives with the feed, so a highlight set
-				// before its row existed would otherwise keep a stale answer.
-				if (const auto highlight = g_highlightID.load(std::memory_order_acquire);
-					highlight != 0) {
-					bool courseable = false;
-					for (const auto& row : g_candidates) {
-						if (row.id == highlight) {
-							courseable = IsCourseableType(row.type);
-							break;
-						}
-					}
-					g_highlightCourseable.store(courseable, std::memory_order_release);
-				}
-
 				// Which body the autopilot is actually flying to, straight from
 				// the engine - its own word rather than the mod's belief.
 				//
@@ -5321,12 +5250,17 @@ namespace
 			const auto askedAt = std::chrono::steady_clock::time_point{
 				std::chrono::steady_clock::duration{ g_courseAskedTicks.load(std::memory_order_acquire) }
 			};
-			if (std::chrono::duration<float>(std::chrono::steady_clock::now() - askedAt).count() > 3.0f) {
+			// 1.5 s. A course that lands republishes the low feed almost at once
+			// (it is a target-set change), so this only has to outlast a slow
+			// tick - and it is now the ONLY thing standing between a row the
+			// engine will not take and a player wondering why the ship is
+			// drifting, so it should not take its time about it.
+			if (std::chrono::duration<float>(std::chrono::steady_clock::now() - askedAt).count() > 1.5f) {
 				g_courseAskedID.store(0, std::memory_order_release);
-				REX::WARN("[course] asked the engine for {:08X} and 3 s later NO body in the feed "
-						  "reports a course. Either it took none, or it locked one onto something "
-						  "the target feed does not carry - the system's own star being the "
-						  "obvious candidate, and the one this cannot see.",
+				REX::WARN("[course] the game did not take a course on {:08X} - no body reports one "
+						  "1.5 s later, and there will be no course marker. The ship may be "
+						  "drifting toward the middle of the system; pick another row and press "
+						  "again, or target it and use the key with the panel closed.",
 					asked);
 			}
 		}
