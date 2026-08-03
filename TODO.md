@@ -406,14 +406,32 @@ Later, nice-to-have:
         z lever this panel trusts. Over the selection on purpose: a row can be
         both, and the pale bar would wash the mark out on exactly the row being
         looked at.
-      - ⚠ **The colour is the one in this panel that was never measured.** The
-        engine draws the HUD course marker itself; the reticle's AS3 colours
-        nothing for `bIsCruiseTargetLock` (sort priority and a button label
-        only), the icon frames are Neutral/Eclipsed × Selected/Unselected with no
-        cruise-lock state, and `shipreticle.swf` has no symbol named for it.
-        `0xEA7A49` is a real Starfield orange borrowed from the SURVEYED banner
-        (planetinfocard.swf, Phase 6). **First job in the seat: compare it with
-        the real marker and set the ini key.**
+      - **CONFIRMED IN GAME 2026-08-03** ("it works"), and the tester's capture
+        had the panel and the HUD marker in one frame, so the colour got settled
+        from it. ⚠ **It is the only colour in this panel measured off a
+        SCREENSHOT rather than an asset**, and it had to be: the engine draws the
+        course marker itself, the reticle's AS3 colours nothing for
+        `bIsCruiseTargetLock` (sort priority and a button label only), the icon
+        frames are Neutral/Eclipsed × Selected/Unselected with no cruise-lock
+        state, and `shipreticle.swf` has no symbol named for it.
+        The chevron's saturated core clusters tightly — FDA14A, F59C4A, F6A150,
+        F6A053, F19E4E, F1A051 — averaging **`0xF5A04E`**, now the default.
+        JPEG subsampling only pulls saturation *down*, so the truth is at or just
+        above that; right to a few units, not exact.
+        ⭐ **The first guess was wrong in an instructive direction**: `0xEA7A49`,
+        a SURVEYED banner band, has G `0x7A` against the marker's `0xA0`. The
+        marker is **amber**; a band borrowed from another screen was too **red**.
+        Borrowing a colour from elsewhere in the game is not the same as
+        measuring the one in front of you.
+      - **The ramp measured clean off the same capture**: sampled along the row,
+        `0x5F3827 → 0x563320 → 0x503025 → 0x4A2C21 → 0x452A21 → 0x3E271F →
+        0x38241D → 0x30221F` against a plate baseline of ~`0x131415`. No banding,
+        and it matches the alpha maths, so the 28-strip approximation needs no
+        revisiting and `beginGradientFill` stays untried for a reason.
+      - ⚠ At 40% over a near-black plate the mark renders about `0x6D4C2C` — far
+        darker than the marker's own full-opacity amber. That is the spec, not a
+        bug; if it should READ the same rather than BE the same hex, the knob is
+        `fPanelCourseAlpha`.
 
 - [x] ~~Flight-test the splice.~~ **CONFIRMED IN GAME 2026-08-02 ("it works").**
       Unlinking at `RE::UI` *does* hide an event from a menu's

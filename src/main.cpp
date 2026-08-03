@@ -284,18 +284,33 @@ namespace
 	// vanilla way (target it, press the key with the panel closed) marks its row
 	// just the same. That is why this is not gated on bLockCourse.
 	//
-	// ⚠ The colour is a STARTING POINT, not a measurement, and that is unusual
-	// for this panel - every other colour here was measured off a vanilla SWF.
-	// The engine draws its course marker on the HUD blip itself, and that art is
-	// not reachable the way the others were: the reticle's AS3 never colours
-	// anything for `bIsCruiseTargetLock` (it only picks a sort priority and a
-	// button label), the icon's own frames are Neutral/Eclipsed x
+	// ⚠ The colour is measured OFF A SCREENSHOT, not off an asset, and it is the
+	// only one in this panel that had to be. The engine draws the HUD course
+	// marker itself and there is nothing to read it from: the reticle's AS3
+	// colours nothing for `bIsCruiseTargetLock` (it only picks a sort priority
+	// and a button label), the icon's frames are Neutral/Eclipsed x
 	// Selected/Unselected with no cruise-lock state, and shipreticle.swf has no
-	// symbol named for it. 0xEA7A49 is at least a REAL Starfield orange - one of
-	// the SURVEYED banner's bands, measured off planetinfocard.swf in Phase 6.
-	// Tune it in the seat against the marker; that is what the key is for.
+	// symbol named for it.
+	//
+	// So it was sampled from the marker on screen (2026-08-03, the tester's
+	// capture with the panel and the marker in the same frame). The saturated
+	// core of the chevron clusters tightly - FDA14A, F59C4A, F6A150, F6A053,
+	// F19E4E, F1A051 - averaging **0xF5A04E**, which is what this now defaults
+	// to. JPEG chroma subsampling only ever pulls saturation DOWN toward the
+	// background, so the true value is at or slightly above that cluster; treat
+	// it as right to a few units, not exact.
+	//
+	// The first guess was 0xEA7A49 (a SURVEYED banner band) and it was wrong in a
+	// specific way worth recording: G 0x7A against the marker's 0xA0. The marker
+	// is AMBER, and a band borrowed from somewhere else was too RED.
+	//
+	// ⚠ At 40% over a near-black plate this renders around 0x6D4C2C - far darker
+	// than the marker's own full-opacity amber. That is the spec (the fade starts
+	// at the selection bar's opacity) and not a bug, but if the mark should READ
+	// as the same orange rather than BE the same hex, the knob to turn is
+	// fPanelCourseAlpha, not the colour.
 	REX::TIniSetting<bool>          bPanelCourseMark{ "Panel", "bPanelCourseMark", true };
-	REX::TIniSetting<std::uint32_t> uPanelCourseColor{ "Panel", "uPanelCourseColor", 0xEA7A49 };
+	REX::TIniSetting<std::uint32_t> uPanelCourseColor{ "Panel", "uPanelCourseColor", 0xF5A04E };
 	REX::TIniSetting<float>         fPanelCourseAlpha{ "Panel", "fPanelCourseAlpha", 0.40f };
 
 	REX::TIniSetting<bool>        bPanelSounds{ "Panel", "bPanelSounds", true };
