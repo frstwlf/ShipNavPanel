@@ -274,6 +274,30 @@ namespace
 	REX::TIniSetting<std::uint32_t> uPanelHighlightColor{ "Panel", "uPanelHighlightColor", 0xEFF3DC };
 	REX::TIniSetting<float>         fPanelHighlightAlpha{ "Panel", "fPanelHighlightAlpha", 0.40f };
 
+	// The row the cruise autopilot is flying to, marked with a fade that starts
+	// at the selection bar's own opacity on the left and runs out to nothing on
+	// the right. Only ONE row can ever carry it - the engine holds a single
+	// course - so this is one clip that moves, exactly like the selection bar.
+	//
+	// It reflects the ENGINE, not the mod: `Candidate::courseLocked` comes from
+	// the feed's own `bIsCruiseTargetLock`, so a course the player set the
+	// vanilla way (target it, press the key with the panel closed) marks its row
+	// just the same. That is why this is not gated on bLockCourse.
+	//
+	// ⚠ The colour is a STARTING POINT, not a measurement, and that is unusual
+	// for this panel - every other colour here was measured off a vanilla SWF.
+	// The engine draws its course marker on the HUD blip itself, and that art is
+	// not reachable the way the others were: the reticle's AS3 never colours
+	// anything for `bIsCruiseTargetLock` (it only picks a sort priority and a
+	// button label), the icon's own frames are Neutral/Eclipsed x
+	// Selected/Unselected with no cruise-lock state, and shipreticle.swf has no
+	// symbol named for it. 0xEA7A49 is at least a REAL Starfield orange - one of
+	// the SURVEYED banner's bands, measured off planetinfocard.swf in Phase 6.
+	// Tune it in the seat against the marker; that is what the key is for.
+	REX::TIniSetting<bool>          bPanelCourseMark{ "Panel", "bPanelCourseMark", true };
+	REX::TIniSetting<std::uint32_t> uPanelCourseColor{ "Panel", "uPanelCourseColor", 0xEA7A49 };
+	REX::TIniSetting<float>         fPanelCourseAlpha{ "Panel", "fPanelCourseAlpha", 0.40f };
+
 	REX::TIniSetting<bool>        bPanelSounds{ "Panel", "bPanelSounds", true };
 	REX::TIniSetting<std::string> sPanelOpenSound{ "Panel", "sPanelOpenSound", "UICockpitHUDMonocleOpen" };
 	REX::TIniSetting<std::string> sPanelCloseSound{ "Panel", "sPanelCloseSound", "UICockpitHUDMonocleClose" };
@@ -2112,6 +2136,9 @@ namespace
 	constexpr std::size_t      kPanelMaxRowsHard = 16;
 	RE::Scaleform::GFx::Value  g_panelClip;
 	RE::Scaleform::GFx::Value  g_panelHighlight;
+	// The course mark, one clip that moves to whichever row the engine's
+	// autopilot is flying to. See bPanelCourseMark.
+	RE::Scaleform::GFx::Value  g_panelCourseBar;
 	// Name and distance are separate fields so one can sit left and the other
 	// right - a single field cannot align part of its text.
 	RE::Scaleform::GFx::Value g_panelRows[kPanelMaxRowsHard];
@@ -3462,6 +3489,7 @@ namespace
 			g_panelFailed.store(false, std::memory_order_release);
 			g_panelClip = RE::Scaleform::GFx::Value{};
 			g_panelHighlight = RE::Scaleform::GFx::Value{};
+			g_panelCourseBar = RE::Scaleform::GFx::Value{};
 			g_panelFormat = RE::Scaleform::GFx::Value{};
 			g_panelDistFormat = RE::Scaleform::GFx::Value{};
 			g_panelHint = RE::Scaleform::GFx::Value{};
@@ -7846,6 +7874,63 @@ namespace
 			REX::WARN("[panel] no highlight clip - the list will run without one");
 		}
 
+		// The course mark (see bPanelCourseMark): a fade from the left edge on
+		// the row the autopilot is flying to.
+		//
+		// Drawn as a run of vertical strips rather than a real gradient fill.
+		// `beginGradientFill` needs a `flash.geom.Matrix` built through
+		// `createGradientBox` and eight arguments, and no gradient has ever been
+		// exercised under GFx in this project - while `beginFill` is what every
+		// other shape in this panel is made of. At this many steps each strip
+		// differs from its neighbour by well under one alpha percent, which is
+		// invisible, and the whole thing is drawn ONCE and thereafter only moved.
+		//
+		// Depth 2 puts it over the selection bar (1) and under the scrollbar (3),
+		// and it is created before the text fields so creation order keeps it
+		// beneath them - the only z lever this panel trusts (see the note by the
+		// survey marks). Over rather than under the selection deliberately: a row
+		// can be both, and the pale 40% selection bar would otherwise wash the
+		// mark out on exactly the row the player is looking at.
+		if (bPanelCourseMark.GetValue() &&
+			g_panelClip.CreateEmptyMovieClip(&g_panelCourseBar, "CourseMark", 2)) {
+			RE::Scaleform::GFx::Value cgfx;
+			if (g_panelCourseBar.GetMember("graphics", &cgfx)) {
+				constexpr int kSteps = 28;
+				const double  left = 4.0;
+				const double  right = std::max(left + 1.0, width - 4.0);
+				const double  step = (right - left) / static_cast<double>(kSteps);
+				const double  peak =
+					std::clamp(static_cast<double>(fPanelCourseAlpha.GetValue()), 0.0, 1.0);
+
+				for (int s = 0; s < kSteps; ++s) {
+					// Sampled at the strip's MIDPOINT so the ramp is centred on
+					// each strip: sampling at the leading edge would start the
+					// whole mark one step short of the requested opacity.
+					const double t = (static_cast<double>(s) + 0.5) / static_cast<double>(kSteps);
+					const double alpha = peak * (1.0 - t);
+					const double x0 = left + step * static_cast<double>(s);
+					// Half a pixel of overlap: adjacent fills that merely touch
+					// leave hairline seams when the plate is scaled by the
+					// open animation or the cockpit tilt.
+					const double x1 = x0 + step + 0.5;
+
+					V fill[]{ V{ uPanelCourseColor.GetValue() }, V{ alpha } };
+					cgfx.Invoke("beginFill", nullptr, fill, 2);
+					V c0[]{ V{ x0 }, V{ 0.0 } };
+					cgfx.Invoke("moveTo", nullptr, c0, 2);
+					V c1[]{ V{ x1 }, V{ 0.0 } };
+					cgfx.Invoke("lineTo", nullptr, c1, 2);
+					V c2[]{ V{ x1 }, V{ rowHeight } };
+					cgfx.Invoke("lineTo", nullptr, c2, 2);
+					V c3[]{ V{ x0 }, V{ rowHeight } };
+					cgfx.Invoke("lineTo", nullptr, c3, 2);
+					cgfx.Invoke("lineTo", nullptr, c0, 2);
+					cgfx.Invoke("endFill", nullptr, nullptr, 0);
+				}
+			}
+			g_panelCourseBar.SetMember("visible", V{ false });
+		}
+
 		// The scrollbar (v0.12.0, drawn - the tester's call): a hairline
 		// track down the left edge, a brighter thumb whose 1 px art is
 		// scaled to length per refresh. Both hidden until the list actually
@@ -8948,6 +9033,7 @@ namespace
 				setVis(g_panelConfirmPill, false);
 				setVis(g_panelBrowsePill, false);
 				setVis(g_panelHighlight, false);
+				setVis(g_panelCourseBar, false);
 				setVis(g_panelScrollTrack, false);
 				setVis(g_panelScrollThumb, false);
 				for (std::size_t i = 0; i < kPanelMaxRowsHard; ++i) {
@@ -9031,6 +9117,8 @@ namespace
 		const double  rowHeight = static_cast<double>(fPanelRowHeight.GetValue());
 		std::size_t   highlightRow = 0;
 		bool          haveHighlightRow = false;
+		std::size_t   courseRow = 0;
+		bool          haveCourseRow = false;
 
 		// Snapshot under the lock, render OUTSIDE it. The row loop below calls
 		// into the Scaleform VM, and a VM call must never happen while
@@ -9172,6 +9260,14 @@ namespace
 				if (rowBright) {
 					highlightRow = r;
 					haveHighlightRow = true;
+				}
+				// The engine's own course, straight off the feed. `fromFeed`
+				// because an appended master-file row carries no live state and
+				// its default false would otherwise be indistinguishable from a
+				// real answer.
+				if (row.fromFeed && row.courseLocked) {
+					courseRow = r;
+					haveCourseRow = true;
 				}
 
 				if (refreshText) {
@@ -9499,6 +9595,17 @@ namespace
 				g_panelHighlight.SetMember("y",
 				V{ g_panelListTop.load(std::memory_order_acquire) +
 					rowHeight * static_cast<double>(highlightRow) });
+		}
+
+		// Same shape as the highlight: one clip, moved. It hides by itself when
+		// the course's row scrolls out of the window, because the loop above only
+		// walks the rows on screen.
+		if (g_panelCourseBar.IsObject() || g_panelCourseBar.IsDisplayObject()) {
+			g_panelCourseBar.SetMember("visible", V{ haveCourseRow });
+			if (haveCourseRow)
+				g_panelCourseBar.SetMember("y",
+					V{ g_panelListTop.load(std::memory_order_acquire) +
+						rowHeight * static_cast<double>(courseRow) });
 		}
 	}
 

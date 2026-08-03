@@ -385,14 +385,35 @@ Later, nice-to-have:
       so a second prompt for the same key is noise. The user's call, and it is
       also why the shared key beat a free one.
 
-- [ ] **Show the course on the row.** `Candidate::courseLocked` is now captured
-      per body, so the panel knows which row the autopilot is flying to and could
-      mark it — the engine's own state rather than the mod's belief. Cheap; the
-      question is what it should look like next to the survey banner in the
-      distance cell. ⚠ Worth more now than when it was first listed: with a
-      SHARED key the engine's course can be set by vanilla's press as well as the
-      mod's, so the row mark is the only place the two agree in front of the
-      player.
+- [x] ~~Show the course on the row.~~ **BUILT 2026-08-03, awaiting its first
+      look.** `bPanelCourseMark` (default on), `uPanelCourseColor`,
+      `fPanelCourseAlpha`. An orange fade on the row the autopilot is flying to:
+      opaque at the left edge at the selection bar's own alpha, gone by the
+      right. The tester's design — *marking every courseable row would be
+      clutter, marking the one that is locked is the interesting part*.
+
+      Notes for whoever touches it next:
+      - **It follows the ENGINE, not the mod.** `courseLocked` is the feed's own
+        `bIsCruiseTargetLock`, so a course set the vanilla way marks its row too.
+        Deliberately not gated on `bLockCourse`.
+      - **Strips, not a gradient fill.** `beginGradientFill` needs a
+        `flash.geom.Matrix` via `createGradientBox` and has never been exercised
+        under GFx here; 28 `beginFill` rectangles with a half-pixel overlap cost
+        one draw at build and are indistinguishable at this alpha delta. If a
+        real gradient is ever wanted, that is the unproven call to try first.
+      - **Depth 2, created before the text fields.** Over the selection bar (1),
+        under the scrollbar (3), and under the text by creation order — the only
+        z lever this panel trusts. Over the selection on purpose: a row can be
+        both, and the pale bar would wash the mark out on exactly the row being
+        looked at.
+      - ⚠ **The colour is the one in this panel that was never measured.** The
+        engine draws the HUD course marker itself; the reticle's AS3 colours
+        nothing for `bIsCruiseTargetLock` (sort priority and a button label
+        only), the icon frames are Neutral/Eclipsed × Selected/Unselected with no
+        cruise-lock state, and `shipreticle.swf` has no symbol named for it.
+        `0xEA7A49` is a real Starfield orange borrowed from the SURVEYED banner
+        (planetinfocard.swf, Phase 6). **First job in the seat: compare it with
+        the real marker and set the ini key.**
 
 - [x] ~~Flight-test the splice.~~ **CONFIRMED IN GAME 2026-08-02 ("it works").**
       Unlinking at `RE::UI` *does* hide an event from a menu's
