@@ -675,6 +675,16 @@ The
       Everything from Requirements down is unchanged. Style rules that hold for
       this copy: **no dashes as punctuation** and hyphens avoided in ordinary
       words ("off screen", "mod added", "D pad"), warm and plain throughout.
+      ⚠ **No blank lines in the BBCode either** — one newline between blocks and
+      no hard wrapping. Nexus turns every newline into a break, so blank lines
+      between paragraphs render as double gaps. Same cause as the posts'
+      no-hard-wrap rule: these editors take whitespace literally.
+      ⭐ **A feature's limit belongs in the feature's own sentence.** Course
+      lock's "planets and moons only" is bold at the end of its own bullet, with
+      the explanation directly under the list, rather than in a caveats
+      paragraph further down. A limit met after the reader has formed an
+      expectation reads as a catch; the same limit where the feature is
+      introduced reads as a spec.
       Facts still carried: cruise only; whole system listed; the settlement mark
       means *there is somewhere to go here*, not "a city is down there" (Deimos's
       is the staryard); `fArrowAngleOffset` / `bArrowInvertAngle` first if anyone
