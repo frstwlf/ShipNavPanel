@@ -555,18 +555,15 @@ namespace
 	// press. It stays the fallback if taking this key ever proves worse.
 	REX::TIniSetting<std::string> sLockCourseEvent{ "Panel", "sLockCourseEvent", "LockCourse" };
 
-	// Turns the UI splice off while leaving the feature on - the A/B that
-	// separates "the mod's dispatch" from "the mod taking the press away from the
-	// SWF". It exists because those two arrived in the same commit and have never
-	// been varied independently: the build where POIs course-locked had no
-	// splice, and every build since has had one. **Adding a second key to
-	// sLockCourseEvent does NOT isolate this** - the splice matches the whole
-	// list, so a new key comes under it too, which is exactly how the tester's
-	// own A/B ended up carrying the variable along with it.
-	//
-	// With this false and sLockCourseEvent set to a key vanilla ignores in cruise
-	// (WeaponGroup1), the build is functionally the one that worked.
-	REX::TIniSetting<bool> bCourseSplice{ "Recon", "bCourseSplice", true };
+	// (`bCourseSplice` lived here: a [Recon] switch that turned the UI splice off
+	// so the splice could be varied on its own, settling whether it was what
+	// changed between the build where POIs course-locked and the one where they
+	// did not. It was not - "a case of bad memory", and the finding is in TODO.
+	// Removed with the question: unlike bWheelFilter, which degrades to a
+	// swinging camera, turning this off degrades to a BROKEN course - vanilla
+	// acts on the press as well, and its `{0}` clears what the mod just set. A
+	// switch whose off position breaks the feature is a footgun in a player's
+	// ini, not an escape hatch.)
 
 
 	// Menu names probed once per heartbeat. Only "SpaceshipHudMenu" is confirmed
@@ -794,16 +791,6 @@ namespace
 		// HUD: they have a name and a place in the tree, but no bearing and no
 		// distance, so the arrow cannot point at one.
 		bool fromFeed{ true };
-		// ⚠ A SECOND ID, and the reason this exists: `uniqueID` is not
-		// necessarily what a course-lock wants. The InfoTargetProvider dump
-		// caught the two disagreeing on one target - `payload.uniqueID`
-		// **386531** against `PlanetCardInfo.uBodyID` **385501** ("Masada IV") -
-		// so the id a target is KNOWN by and the id of the BODY it is are
-		// different numbers, and `Reticle_OnCruiseLockCourse`'s parameter is
-		// spelled uBodyID. If the feed entry carries such a field, that is the
-		// one to send. `haveBodyID` records presence, because 0 is a value.
-		std::uint32_t bodyID{ 0 };
-		bool          haveBodyID{ false };
 		// The cruise AUTOPILOT's current course - the per-entry
 		// bIsCruiseTargetLock the far-travel icon reads to decide whether its
 		// button offers LOCK or CLEAR (FarTravelIconBase.UpdateButton). ⚠ NOT
@@ -2733,6 +2720,7 @@ namespace
 		CollectLocalRows(local);
 		if (local.empty()) {
 			g_highlightID.store(0, std::memory_order_release);
+			g_highlightCourseable.store(false, std::memory_order_release);
 			return;
 		}
 
@@ -2816,17 +2804,14 @@ namespace
 		if (!bLockCourse.GetValue() || a_id == 0)
 			return;
 
-		// Belt and braces with the splice gate, which already declines to claim
-		// the key for these rows - if that ever stops matching this, the mod must
-		// still not send an id the engine will silently swap for another body.
-		//
-		// Logged once per body rather than once per press: it is the explanation
-		// for a key that does nothing, so a player pressing it repeatedly has to
-		// be able to find out why - but the fifth identical line teaches nobody
-		// anything, and the tester's log filled with them.
 		// Belt and braces with the splice gate, which already leaves the press to
 		// vanilla for these rows. If the two ever stop matching, the mod must
 		// still not send an id the engine cannot resolve into a destination.
+		//
+		// Logged once per body rather than once per press: it is the explanation
+		// for a key that appears to do nothing, so a player pressing it
+		// repeatedly has to be able to find out why - but the fifth identical
+		// line teaches nobody anything, and a tester's log filled with them.
 		if (!g_highlightCourseable.load(std::memory_order_acquire)) {
 			static std::mutex                        s_toldMutex;
 			static std::unordered_set<std::uint32_t> s_told;
@@ -3082,7 +3067,7 @@ namespace
 		// through the info target and reaches what the mod's by-id one cannot, so
 		// stealing the press there would break a flow that works without the mod.
 		// See the header above g_highlightCourseable.
-		const bool claiming = bLockCourse.GetValue() && bCourseSplice.GetValue() &&
+		const bool claiming = bLockCourse.GetValue() &&
 		                      g_panelOpen.load(std::memory_order_acquire) &&
 		                      g_inCruise.load(std::memory_order_acquire) &&
 		                      g_highlightID.load(std::memory_order_acquire) != 0 &&
@@ -4067,14 +4052,10 @@ namespace
 			}
 			if (entry.GetMember("bMarkerDiscovered", &member) && member.IsBoolean())
 				row.discovered = member.GetBoolean();
-			// See Candidate::bodyID. Read whether or not it turns out to exist:
-			// if it does not, nothing changes and the log says so once, which is
-			// the answer to "is uniqueID the wrong number for a course".
-			if (entry.GetMember("uBodyID", &member) &&
-				(member.IsNumber() || member.IsInt() || member.IsUInt())) {
-				row.bodyID = static_cast<std::uint32_t>(AsNumber(member));
-				row.haveBodyID = true;
-			}
+			// (A `uBodyID` read used to sit here, on the theory that the course
+			// event wanted a different id from `uniqueID`. Measured 2026-08-03:
+			// entries do not carry one. Removed rather than left reading a field
+			// that is never present - the finding is in TODO's Settled list.)
 			// The autopilot's course, per body - read whether or not the
 			// course-lock key is on, because it costs one GetMember and it is
 			// the only readback that feature has (see Candidate::courseLocked).
@@ -5361,36 +5342,26 @@ namespace
 			return;
 		}
 
-		// Which number to send. `uniqueID` is what a target is KNOWN by; the
-		// event's parameter is spelled uBodyID, and the InfoTargetProvider dump
-		// caught those two disagreeing (386531 vs 385501 for Masada IV). So if
-		// the feed hands out a body id per entry, prefer it - and say so, because
-		// "the field does not exist" is just as much the answer as a number is.
-		std::uint32_t id = rowID;
+		// The row's `uniqueID` is what goes out. ⚠ That was questioned once and
+		// measured: the event's parameter is spelled `uBodyID`, and the dossier's
+		// `uBodyID` disagreed with a target's `uniqueID` (385501 vs 386531 for
+		// Masada IV), so a build shipped that preferred a per-entry `uBodyID` if
+		// the feed had one. **It does not** - `uniqueID` is the only id a
+		// low-feed entry carries, and the machinery that looked for another has
+		// been removed rather than left reading a field that is never there.
 		std::uint32_t type = 0;
 		std::string   name;
-		bool          haveBodyID = false;
 		{
 			std::lock_guard lock{ g_candidateMutex };
 			for (const auto& row : g_candidates) {
-				if (row.id != rowID)
-					continue;
-				type = row.type;
-				name = row.name;
-				haveBodyID = row.haveBodyID;
-				if (row.haveBodyID)
-					id = row.bodyID;
-				break;
+				if (row.id == rowID) {
+					type = row.type;
+					name = row.name;
+					break;
+				}
 			}
 		}
 
-		{
-			static std::atomic<bool> s_saidWhichField{ false };
-			if (!s_saidWhichField.exchange(true, std::memory_order_acq_rel))
-				REX::INFO("[course] the feed {} a per-entry uBodyID, so courses are sent by {}",
-					haveBodyID ? "DOES carry" : "does NOT carry",
-					haveBodyID ? "it" : "uniqueID");
-		}
 		if (!WorldSettled())
 			return;  // dropped rather than queued: it was a keypress, and a stale one helps nobody
 
@@ -5412,22 +5383,19 @@ namespace
 			REX::WARN("[course] could not build the event params");
 			return;
 		}
-		params.SetMember("uBodyID", V{ static_cast<double>(id) });
+		params.SetMember("uBodyID", V{ static_cast<double>(rowID) });
 
 		// One line per press, so it goes behind the verbose flag with the rest of
 		// the per-action trace. The engine's own answer - which body it says the
 		// course is on - is logged on change beside the candidate rebuild, and
 		// audited against this id there.
 		if (DispatchHudEvent(root, "Reticle_OnCruiseLockCourse", &params)) {
-			// The AUDIT expects the course to come back on the ROW's id, which is
-			// how the feed marks it, whichever number went out.
 			g_courseAskedID.store(rowID, std::memory_order_release);
 			g_courseAskedTicks.store(
 				std::chrono::steady_clock::now().time_since_epoch().count(),
 				std::memory_order_release);
 			if (bVerboseLog.GetValue())
-				REX::INFO("[course] sent uBodyID={:08X} for row {:08X} '{}' (uTargetType={})",
-					id, rowID, name, type);
+				REX::INFO("[course] sent uBodyID={:08X} '{}' (uTargetType={})", rowID, name, type);
 		}
 	}
 
@@ -9826,10 +9794,6 @@ namespace
 					  "the autopilot at the HIGHLIGHTED body instead of the info target. With the "
 					  "panel closed it is the game's own key doing the game's own job.",
 				sLockCourseEvent.GetValue());
-			if (!bCourseSplice.GetValue())
-				REX::WARN("[course] bCourseSplice is OFF - the press is left in the UI's queue, so "
-						  "the game acts on it too. Only useful for the A/B against the pre-splice "
-						  "build; pair it with a key vanilla ignores in cruise.");
 		}
 		else
 			REX::INFO("[course] course lock OFF - the panel points, and steering stays manual");

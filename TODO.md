@@ -405,7 +405,12 @@ Later, nice-to-have:
       pre-splice build exactly): behaviour identical.** The tester called it:
       *"It was a case of bad memory."* So the splice is cleared, the key was
       already cleared by the diff, and what is left is the mechanism — see
-      Settled.
+      Settled. ⚠ `bCourseSplice` **no longer exists** — it was removed with the
+      question it was built to answer, because unlike `bWheelFilter` (which
+      degrades to a swinging camera) its off position degrades to a *broken*
+      course: vanilla acts on the press too and its `{0}` clears what the mod
+      just set. A switch whose off position breaks the feature is a footgun in a
+      player's ini, not an escape hatch.
 
 - [x] ~~Fly the far-travel probe.~~ **FLOWN 2026-08-03: IT WORKS — and it is the
       wrong verb, so it is deleted.** `ShipHud_FarTravel {uValue: <row id>}`
