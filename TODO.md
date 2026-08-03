@@ -600,13 +600,15 @@ The
       the mechanism, and every theory built on picking a *substitute body* was
       chasing something that never happened.
 
-- [ ] **⚠ VERIFY "press again clears".** It is in the ini and the README on the
-      strength of a code reading — `FarTravelIconBase.UpdateButton` flips its
-      LABEL between `$CruiseCourseLock` and `$CruiseCourseClear` while dispatching
-      the identical event with the identical id. The `{0} = clear` finding above
-      supports the toggle reading but does not prove it for a repeated *id*. The
-      `[course] the engine reports ...` line (verbose, logs on change) is the
-      readout.
+- [x] ~~Verify "press again clears".~~ **CONFIRMED IN GAME 2026-08-03**: a second
+      press on the same body clears the course, the orange bar goes with it, and
+      the selection bar comes back on that row. So the engine does toggle on a
+      repeated id (the reading taken off `FarTravelIconBase.UpdateButton`, which
+      flips its LABEL between `$CruiseCourseLock` and `$CruiseCourseClear` while
+      dispatching the identical event with the identical id, was right), and the
+      claim in the ini and README stops being an inference. It also confirms the
+      two bars hand off correctly in both directions, which was the other half of
+      the mutual-exclusion change and had only been seen one way round.
 
 
 ## Release checklist
@@ -649,15 +651,34 @@ The
 - [x] ~~Decide on the PDB~~ — **it ships** (user's call, 2026-08-01). A first
       public release of a native plugin is exactly when symbolised crash logs
       are worth the ~14 MB.
-- [x] ~~Mod page copy~~ — written and published 2026-08-02. The drafts are
-      **kept privately, outside this repo** (`release/` is gitignored now);
-      the published versions are the mod page itself and the two posts.
-      Points carried in: cruise-mode only; **points rather than targets** (the
-      UI layer has no by-id set target); whole system listed — planets, moons,
-      stations, POIs; the settlement mark means *there is somewhere to go
-      here*, not "a city is down there" (Deimos's mark is the staryard);
-      `fArrowAngleOffset` / `bArrowInvertAngle` first if anyone reports the
-      marker pointing wrongly.
+- [x] ~~Mod page copy~~ — written and published 2026-08-02, **rewritten for
+      1.2.0 on 2026-08-03**. The drafts are **kept privately, outside this
+      repo** (`release/` is gitignored); the published versions are the mod page
+      itself and the two launch posts.
+
+      ⚠ **The rewrite was prompted by readers being confused about what the mod
+      actually does**, which is worth more than the version bump that occasioned
+      it. The old copy opened with the panel and its controls and left the
+      genuine appeal buried in a section near the bottom. It now **leads with
+      the decluttering**: cruise crowds the reticle with anonymous markers, the
+      panel gives you the list instead, and the clutter drops away around the
+      body you pick. Four sections describing behaviour became two ("Flying with
+      it", "What is in the list"), and the technical framing came out entirely.
+      ⛔ In particular the *"the interface has no way to set a target by id"*
+      line is gone rather than corrected: it was written to prevent exactly this
+      confusion and evidently caused some of it. What replaced it says the same
+      thing in plain terms and only where a reader needs it (setting a course
+      covers planets and moons; the panel marks a body rather than targeting it,
+      so a target is still the target key). ⭐ **A caveat phrased in the
+      implementation's terms is not a caveat most readers can use.**
+
+      Everything from Requirements down is unchanged. Style rules that hold for
+      this copy: **no dashes as punctuation** and hyphens avoided in ordinary
+      words ("off screen", "mod added", "D pad"), warm and plain throughout.
+      Facts still carried: cruise only; whole system listed; the settlement mark
+      means *there is somewhere to go here*, not "a city is down there" (Deimos's
+      is the staryard); `fArrowAngleOffset` / `bArrowInvertAngle` first if anyone
+      reports the marker pointing wrongly.
 
 ## Save safety
 
