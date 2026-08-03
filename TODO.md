@@ -11,6 +11,34 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
+**v1.2.0 — BUILT AND PACKAGED 2026-08-03, awaiting the user's upload.**
+`build/packages/ShipNavPanel-1.2.0.zip`, 3.47 MB, DLL stamped 1.2.0.0, same
+`Data/SFSE/Plugins/{dll,ini,pdb}` shape as every release before it. Minor bump
+because course lock is a feature addition and nothing changed under anyone's
+feet. Division of labour as before: **I build, verify and package — the user
+uploads and publishes.** Changelog and the updated mod-page copy are in the
+private release folder; per [[release-post-layout]] an update gets a Nexus
+changelog only, no Patreon or Ko-fi post.
+
+Pre-package checks, both run on this commit:
+- **`GetValue()` sweep**: every `[Panel]`/`[Scaleform]` flag that gates
+  machinery defaults **true**, every `[Recon]` one defaults **false** and gates
+  diagnostics only. No repeat of the v0.2.0 inert-build class.
+- **Shipped ini vs code defaults**, which is the half v0.2.0 actually failed:
+  118 keys, all matching, no orphan either way. One known and deliberate
+  difference: `uScaleformMaxLines` ships 6000 against a code default of 3000 —
+  a cap on a diagnostic that is off by default, pre-dating this release, left
+  alone rather than slipped into a release commit.
+- Package extracted and re-verified: DLL stamp 1.2.0.0, every shipping flag on,
+  every probe off (`bProbeSurveyBind=true` is correct — it is the survey
+  feature's own bind permission, not a probe gate).
+
+⚠ **The mod page needed a correction, not just an addition.** It said *"the
+panel points, it does not target — Starfield's interface has no way to set a
+target by id"*, which was true when it was written and is now only half true:
+there IS a by-id verb, it just addresses bodies rather than targets. The copy
+now says so and keeps the pointing claim for everything else.
+
 **⭐⭐ COURSE LOCK — CONFIRMED IN GAME, and it changes what this mod is.**
 Highlight a **planet or moon**, press the course key, and the cruise autopilot
 takes the ship there. **Nothing has to be targeted first**, which is the part
