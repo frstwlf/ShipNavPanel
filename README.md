@@ -15,21 +15,27 @@ and nothing changes — which is also how you clear a locked target without
 picking another. Outside cruise the mod is idle and the scanner key keeps its
 vanilla job.
 
-**Or just set a course.** Highlight a **planet or moon** and press your normal
-**course-lock key** — the one the game already prompts you with in cruise — and
-the autopilot flies you there. Vanilla needs something targeted before it will
-lock a course; with the panel open it aims at the highlighted row instead. Press
-again on the same body to clear. With the panel closed the key is untouched.
+**Or let the autopilot fly.** Highlight a **planet or moon** and press your
+**autopilot key** — the one the cruise HUD shows as *Autopilot On/Off*, Spacebar
+by default — and it takes you there. Vanilla needs something targeted first;
+with the panel open it aims at the highlighted row instead. Press again on the
+same body to switch it off. With the panel closed the key is untouched.
 
 On any other row — stations, points of interest, ships — the mod leaves the key
-alone and your press reaches the game untouched. That is deliberate: the game's
-own course route works through your *target* and reaches what the panel's
-by-id route cannot, so target one and the same key still works, panel open or
-closed.
+alone and your press reaches the game untouched. That is deliberate: the game
+sends its autopilot through your *target* and so reaches what the panel's by-id
+route cannot, so target one and the same key still works, panel open or closed.
 
-The row your autopilot is flying to wears an **orange bar** — the selection bar
-in the HUD course marker's own colour — whether the course was set from the panel
-or the ordinary way (`bPanelCourseMark`).
+The row the autopilot is flying to wears an **orange bar** in the same colour the
+game puts on its own marker, whether it was sent from the panel or the ordinary
+way (`bPanelCourseMark`).
+
+⚠ **Player-facing wording is "autopilot", not "course lock".** `LockCourse` is
+the internal user-event name and `$CruiseCourseLock` its token; what a player
+ever sees is the game's own English for them — `$CruiseCourseLock` = "Autopilot",
+`$CruiseCourseClear` = "Autopilot Off", and the cruise control hint
+`$ShipHUD_CruiseMode_LockCourse` = "Autopilot On/Off". The ini keys keep the
+internal spelling because that is what the mod matches on; the prose does not.
 
 For everything else the mod **points rather than targets**: Starfield's UI layer
 has no by-id "set target", so the panel steers your eyes and you acquire the
@@ -44,21 +50,21 @@ possible — the full story is in the phase documents below.
 | mouse wheel | `ZoomIn` / `ZoomOut` | move the highlight (hidden from the camera while the panel is open) |
 | D-pad up / down | `Up` / `Down` | move the highlight, on a controller |
 | POV toggle | `TogglePOV` | lock the highlighted body — or clear it, if already locked |
-| your course-lock key (RB on a pad) | `LockCourse` | set the cruise autopilot on the highlighted body — or clear it |
+| autopilot (Spacebar; RB on a pad) | `LockCourse` | fly to the highlighted body — or switch the autopilot off |
 
 Every key is matched by **user-event name**, so rebinding just works, and one
 list serves both devices because a user event is not tied to one — the engine
 resolves it against whatever you are holding. The panel's hint pills render
 your actual bindings. Every control is configurable (`sConfirmEvent`,
 `sBrowseUpEvent`, `sBrowseDownEvent`, `sLockCourseEvent` — names or raw `#id`
-codes, comma-separated), and `bLockCourse=false` leaves the fire key alone
+codes, comma-separated), and `bLockCourse=false` leaves the autopilot key alone
 entirely.
 
-The course key is the one control with **no hint pill**, on purpose: the game
+The autopilot key is the one control with **no hint pill**, on purpose: the game
 already prompts you with it in cruise, so a second prompt would be noise. While
 the panel is open the mod takes that key outright — the game does not also act
-on it, so you get one course change per press, aimed at your highlighted row.
-Close the panel and it is the game's key again, unchanged.
+on it, so you get one destination change per press, aimed at your highlighted
+row. Close the panel and it is the game's key again, unchanged.
 
 The D-pad is free to borrow because vanilla spends it on **power allocation**
 and switches that off for the whole of cruise

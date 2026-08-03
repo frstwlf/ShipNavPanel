@@ -672,6 +672,22 @@ The
       so a target is still the target key). ⭐ **A caveat phrased in the
       implementation's terms is not a caveat most readers can use.**
 
+      ⚠⚠ **SAY "AUTOPILOT", NEVER "COURSE LOCK", IN ANYTHING A PLAYER READS.**
+      `LockCourse` is the internal user-event name and nothing shows it to a
+      player; the game's own English, from `translate_en.txt`, is
+      `$CruiseCourseLock` = **"Autopilot"**, `$CruiseCourseClear` = **"Autopilot
+      Off"**, and the cruise control hint `$ShipHUD_CruiseMode_LockCourse` =
+      **"Autopilot On/Off"** (Spacebar by default, RB on a pad). The first draft
+      of the 1.2.0 copy called it "your course lock key" throughout, which named
+      a thing no player has ever seen. Fixed across the description, the
+      changelog, the shipped ini and the README; the ini KEYS keep the internal
+      spelling (`sLockCourseEvent`, value `LockCourse`) because that is what the
+      mod matches on, and the ini now says so in as many words.
+      ⭐ **The general rule: when a feature rides a vanilla control, take the
+      player-facing name from `translate_<lang>.txt` rather than from the event
+      name in the code.** The two are routinely different, and the code's name
+      is the one you have been staring at.
+
       Everything from Requirements down is unchanged. Style rules that hold for
       this copy: **no dashes as punctuation** and hyphens avoided in ordinary
       words ("off screen", "mod added", "D pad"), warm and plain throughout.

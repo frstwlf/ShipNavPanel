@@ -2864,9 +2864,10 @@ namespace
 
 			std::lock_guard lock{ s_toldMutex };
 			if (s_told.size() < 32 && s_told.emplace(a_id).second)
-				REX::INFO("[course] {:08X} is not a body, so the mod leaves the key to the game: "
-						  "its own course route goes through your TARGET, which reaches things the "
-						  "mod's by-id one cannot. Target it and the same press will work.",
+				REX::INFO("[course] {:08X} is not a body, so the mod leaves the autopilot key to "
+						  "the game: the game sends its autopilot through your TARGET, which "
+						  "reaches things the mod's by-id route cannot. Target it and the same "
+						  "press will work.",
 					a_id);
 			return;
 		}
@@ -5373,10 +5374,10 @@ namespace
 			// drifting, so it should not take its time about it.
 			if (std::chrono::duration<float>(std::chrono::steady_clock::now() - askedAt).count() > 1.5f) {
 				g_courseAskedID.store(0, std::memory_order_release);
-				REX::WARN("[course] the game did not take a course on {:08X} - no body reports one "
-						  "1.5 s later, and there will be no course marker. The ship may be "
-						  "drifting toward the middle of the system; pick another row and press "
-						  "again, or target it and use the key with the panel closed.",
+				REX::WARN("[course] the autopilot did not take {:08X} - no body reports a course "
+						  "1.5 s later, and no marker will draw. The ship may be drifting toward "
+						  "the middle of the system; pick another row and press again, or target "
+						  "it and use the key with the panel closed.",
 					asked);
 			}
 		}
@@ -9906,13 +9907,20 @@ namespace
 		// everything else it does is a read or a draw - so the log says plainly
 		// that it is armed and on which key.
 		if (bLockCourse.GetValue()) {
-			REX::INFO("[course] course lock ON ('{}') - in cruise WITH THE PANEL OPEN that key aims "
-					  "the autopilot at the HIGHLIGHTED body instead of the info target. With the "
-					  "panel closed it is the game's own key doing the game's own job.",
+			// "Autopilot" is what the player sees: $CruiseCourseLock resolves to
+			// "Autopilot", $CruiseCourseClear to "Autopilot Off", and the cruise
+			// control hint $ShipHUD_CruiseMode_LockCourse to "Autopilot On/Off".
+			// `LockCourse` is only the internal event name, so it appears here as
+			// the SETTING VALUE and nowhere else in anything a player reads.
+			REX::INFO("[course] autopilot control ON (matching '{}') - in cruise WITH THE PANEL "
+					  "OPEN that key aims the autopilot at the HIGHLIGHTED body instead of the "
+					  "info target. With the panel closed it is the game's own key doing the "
+					  "game's own job.",
 				sLockCourseEvent.GetValue());
 		}
 		else
-			REX::INFO("[course] course lock OFF - the panel points, and steering stays manual");
+			REX::INFO("[course] autopilot control OFF - the panel points, and the key is the "
+					  "game's own in every state");
 
 		if (bSurveyCruiseKeys.GetValue())
 			REX::INFO("[survey] cruise key survey ON - enter cruise, then press every key you can spare. "
