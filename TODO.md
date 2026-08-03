@@ -11,14 +11,21 @@ version-by-version story this section used to accumulate.
 
 ## Where it is
 
-**v1.2.0 — BUILT AND PACKAGED 2026-08-03, awaiting the user's upload.**
-`build/packages/ShipNavPanel-1.2.0.zip`, 3.47 MB, DLL stamped 1.2.0.0, same
-`Data/SFSE/Plugins/{dll,ini,pdb}` shape as every release before it. Minor bump
-because course lock is a feature addition and nothing changed under anyone's
-feet. Division of labour as before: **I build, verify and package — the user
-uploads and publishes.** Changelog and the updated mod-page copy are in the
-private release folder; per [[release-post-layout]] an update gets a Nexus
-changelog only, no Patreon or Ko-fi post.
+**⭐ v1.2.0 IS LIVE ON NEXUS (2026-08-03) — the mod's fourth release and its
+second feature update.** `build/packages/ShipNavPanel-1.2.0.zip`, 3.63 MB, DLL
+stamped 1.2.0.0, same `Data/SFSE/Plugins/{dll,ini,pdb}` shape as every release
+before it. Minor bump because the autopilot control is a feature addition and
+nothing changed under anyone's feet. Division of labour as before: **I build,
+verify and package — the user uploads and publishes.** Changelog and the
+rewritten mod-page copy are in the private release folder; per
+[[release-post-layout]] an update gets a Nexus changelog only, no Patreon or
+Ko-fi post.
+
+⚠ **Nexus autoformats a changelog at ONE LINE PER ENTRY** (learned on this
+upload): every newline becomes its own entry, so the next one should be written
+as discrete one-line entries rather than prose paragraphs. v1.2.0's three
+paragraphs landed as three entries, which read acceptably but were not designed
+for it. It is also the reason the house norm is one-liners in the first place.
 
 Pre-package checks, both run on this commit:
 - **`GetValue()` sweep**: every `[Panel]`/`[Scaleform]` flag that gates
