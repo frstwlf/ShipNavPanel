@@ -396,16 +396,28 @@ Later, nice-to-have:
       - **It follows the ENGINE, not the mod.** `courseLocked` is the feed's own
         `bIsCruiseTargetLock`, so a course set the vanilla way marks its row too.
         Deliberately not gated on `bLockCourse`.
-      - **Strips, not a gradient fill.** `beginGradientFill` needs a
-        `flash.geom.Matrix` via `createGradientBox` and has never been exercised
-        under GFx here; 28 `beginFill` rectangles with a half-pixel overlap cost
-        one draw at build and are indistinguishable at this alpha delta. If a
-        real gradient is ever wanted, that is the unproven call to try first.
-      - **Depth 2, created before the text fields.** Over the selection bar (1),
-        under the scrollbar (3), and under the text by creation order — the only
-        z lever this panel trusts. Over the selection on purpose: a row can be
-        both, and the pale bar would wash the mark out on exactly the row being
-        looked at.
+      - **A FLAT BAR — the fade is gone (tester's call, 2026-08-03): seams, and
+        "it doesn't really add much".** ⭐ The seams are worth keeping in mind,
+        because the thing that caused them was the thing meant to prevent them:
+        each of the 28 strips was drawn half a pixel wider than its slot so
+        neighbours would overlap rather than butt-join, which is correct for
+        OPAQUE fills and exactly wrong for translucent ones — the overlap
+        composites twice and every join becomes a brighter line. **Overlap hides
+        seams between opaque fills and creates them between transparent ones.**
+        (Butt-joining would have fixed it; the second half of the verdict decided
+        it anyway.) `beginGradientFill` remains untried — it needs a
+        `flash.geom.Matrix` via `createGradientBox` and no gradient has been
+        exercised under GFx here.
+      - **⚠ THE TWO BARS ARE MUTUALLY EXCLUSIVE, because z among siblings is not
+        answerable here.** The course mark was created at depth 2 against the
+        selection bar's 1 and *in game it still drew underneath* — which is the
+        second time this panel has found that relative z among script-added
+        siblings cannot be reasoned about, only observed (the survey marks carry
+        the same note, and `fPanelSurveyBannerWidth` exists as its escape hatch).
+        Rather than fight it: on a row that is both, the **course wins the bar**
+        and the selection shows through the row text, which already brightens to
+        `uPanelTextColorHighlight` independently. Two flat fills of the same
+        rectangle had nothing to gain from stacking anyway.
       - **CONFIRMED IN GAME 2026-08-03** ("it works"), and the tester's capture
         had the panel and the HUD marker in one frame, so the colour got settled
         from it. ⚠ **It is the only colour in this panel measured off a
@@ -423,11 +435,6 @@ Later, nice-to-have:
         marker is **amber**; a band borrowed from another screen was too **red**.
         Borrowing a colour from elsewhere in the game is not the same as
         measuring the one in front of you.
-      - **The ramp measured clean off the same capture**: sampled along the row,
-        `0x5F3827 → 0x563320 → 0x503025 → 0x4A2C21 → 0x452A21 → 0x3E271F →
-        0x38241D → 0x30221F` against a plate baseline of ~`0x131415`. No banding,
-        and it matches the alpha maths, so the 28-strip approximation needs no
-        revisiting and `beginGradientFill` stays untried for a reason.
       - ⚠ At 40% over a near-black plate the mark renders about `0x6D4C2C` — far
         darker than the marker's own full-opacity amber. That is the spec, not a
         bug; if it should READ the same rather than BE the same hex, the knob is

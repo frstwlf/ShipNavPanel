@@ -27,9 +27,9 @@ own course route works through your *target* and reaches what the panel's
 by-id route cannot, so target one and the same key still works, panel open or
 closed.
 
-The row your autopilot is flying to wears an **orange fade** from its left edge,
-whether the course was set from the panel or the ordinary way
-(`bPanelCourseMark`).
+The row your autopilot is flying to wears an **orange bar** — the selection bar
+in the HUD course marker's own colour — whether the course was set from the panel
+or the ordinary way (`bPanelCourseMark`).
 
 For everything else the mod **points rather than targets**: Starfield's UI layer
 has no by-id "set target", so the panel steers your eyes and you acquire the

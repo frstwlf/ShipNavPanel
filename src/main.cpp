@@ -274,10 +274,14 @@ namespace
 	REX::TIniSetting<std::uint32_t> uPanelHighlightColor{ "Panel", "uPanelHighlightColor", 0xEFF3DC };
 	REX::TIniSetting<float>         fPanelHighlightAlpha{ "Panel", "fPanelHighlightAlpha", 0.40f };
 
-	// The row the cruise autopilot is flying to, marked with a fade that starts
-	// at the selection bar's own opacity on the left and runs out to nothing on
-	// the right. Only ONE row can ever carry it - the engine holds a single
-	// course - so this is one clip that moves, exactly like the selection bar.
+	// The row the cruise autopilot is flying to, marked with a bar in the HUD
+	// marker's own orange - the selection bar's twin in a different colour. Only
+	// ONE row can ever carry it, since the engine holds a single course, so this
+	// is one clip that moves, exactly like the selection bar.
+	//
+	// On a row that is both selected and course-locked the COURSE takes the bar
+	// and the selection shows through the brightened row text instead; see the
+	// note where they are placed for why they are not stacked.
 	//
 	// It reflects the ENGINE, not the mod: `Candidate::courseLocked` comes from
 	// the feed's own `bIsCruiseTargetLock`, so a course the player set the
@@ -305,9 +309,9 @@ namespace
 	// is AMBER, and a band borrowed from somewhere else was too RED.
 	//
 	// ⚠ At 40% over a near-black plate this renders around 0x6D4C2C - far darker
-	// than the marker's own full-opacity amber. That is the spec (the fade starts
-	// at the selection bar's opacity) and not a bug, but if the mark should READ
-	// as the same orange rather than BE the same hex, the knob to turn is
+	// than the marker's own full-opacity amber. That is the spec (it starts at
+	// the selection bar's opacity) and not a bug, but if the mark should READ as
+	// the same orange rather than BE the same hex, the knob to turn is
 	// fPanelCourseAlpha, not the colour.
 	REX::TIniSetting<bool>          bPanelCourseMark{ "Panel", "bPanelCourseMark", true };
 	REX::TIniSetting<std::uint32_t> uPanelCourseColor{ "Panel", "uPanelCourseColor", 0xF5A04E };
@@ -7889,59 +7893,36 @@ namespace
 			REX::WARN("[panel] no highlight clip - the list will run without one");
 		}
 
-		// The course mark (see bPanelCourseMark): a fade from the left edge on
-		// the row the autopilot is flying to.
+		// The course mark (see bPanelCourseMark): a flat bar on the row the
+		// autopilot is flying to, the selection bar's twin in a different colour.
 		//
-		// Drawn as a run of vertical strips rather than a real gradient fill.
-		// `beginGradientFill` needs a `flash.geom.Matrix` built through
-		// `createGradientBox` and eight arguments, and no gradient has ever been
-		// exercised under GFx in this project - while `beginFill` is what every
-		// other shape in this panel is made of. At this many steps each strip
-		// differs from its neighbour by well under one alpha percent, which is
-		// invisible, and the whole thing is drawn ONCE and thereafter only moved.
-		//
-		// Depth 2 puts it over the selection bar (1) and under the scrollbar (3),
-		// and it is created before the text fields so creation order keeps it
-		// beneath them - the only z lever this panel trusts (see the note by the
-		// survey marks). Over rather than under the selection deliberately: a row
-		// can be both, and the pale 40% selection bar would otherwise wash the
-		// mark out on exactly the row the player is looking at.
+		// ⛔ It was a left-to-right FADE first, drawn as 28 strips of decreasing
+		// alpha, and it is worth knowing why that is gone. The tester saw seams -
+		// and the seams were caused by the very thing meant to prevent them. Each
+		// strip was drawn half a pixel wider than its slot so neighbours would
+		// overlap rather than merely touch, which is the right move for OPAQUE
+		// fills. For TRANSLUCENT ones it is exactly wrong: the overlap composites
+		// twice and every join becomes a brighter line. ⭐ **Overlap hides seams
+		// between opaque fills and CREATES them between transparent ones.**
+		// (Butt-joining them would have fixed the seams, but the tester's other
+		// verdict stands on its own: the fade "doesn't really add much".)
 		if (bPanelCourseMark.GetValue() &&
 			g_panelClip.CreateEmptyMovieClip(&g_panelCourseBar, "CourseMark", 2)) {
 			RE::Scaleform::GFx::Value cgfx;
 			if (g_panelCourseBar.GetMember("graphics", &cgfx)) {
-				constexpr int kSteps = 28;
-				const double  left = 4.0;
-				const double  right = std::max(left + 1.0, width - 4.0);
-				const double  step = (right - left) / static_cast<double>(kSteps);
-				const double  peak =
-					std::clamp(static_cast<double>(fPanelCourseAlpha.GetValue()), 0.0, 1.0);
-
-				for (int s = 0; s < kSteps; ++s) {
-					// Sampled at the strip's MIDPOINT so the ramp is centred on
-					// each strip: sampling at the leading edge would start the
-					// whole mark one step short of the requested opacity.
-					const double t = (static_cast<double>(s) + 0.5) / static_cast<double>(kSteps);
-					const double alpha = peak * (1.0 - t);
-					const double x0 = left + step * static_cast<double>(s);
-					// Half a pixel of overlap: adjacent fills that merely touch
-					// leave hairline seams when the plate is scaled by the
-					// open animation or the cockpit tilt.
-					const double x1 = x0 + step + 0.5;
-
-					V fill[]{ V{ uPanelCourseColor.GetValue() }, V{ alpha } };
-					cgfx.Invoke("beginFill", nullptr, fill, 2);
-					V c0[]{ V{ x0 }, V{ 0.0 } };
-					cgfx.Invoke("moveTo", nullptr, c0, 2);
-					V c1[]{ V{ x1 }, V{ 0.0 } };
-					cgfx.Invoke("lineTo", nullptr, c1, 2);
-					V c2[]{ V{ x1 }, V{ rowHeight } };
-					cgfx.Invoke("lineTo", nullptr, c2, 2);
-					V c3[]{ V{ x0 }, V{ rowHeight } };
-					cgfx.Invoke("lineTo", nullptr, c3, 2);
-					cgfx.Invoke("lineTo", nullptr, c0, 2);
-					cgfx.Invoke("endFill", nullptr, nullptr, 0);
-				}
+				V fill[]{ V{ uPanelCourseColor.GetValue() },
+					V{ std::clamp(static_cast<double>(fPanelCourseAlpha.GetValue()), 0.0, 1.0) } };
+				cgfx.Invoke("beginFill", nullptr, fill, 2);
+				V c0[]{ V{ 4.0 }, V{ 0.0 } };
+				cgfx.Invoke("moveTo", nullptr, c0, 2);
+				V c1[]{ V{ width - 4.0 }, V{ 0.0 } };
+				cgfx.Invoke("lineTo", nullptr, c1, 2);
+				V c2[]{ V{ width - 4.0 }, V{ rowHeight } };
+				cgfx.Invoke("lineTo", nullptr, c2, 2);
+				V c3[]{ V{ 4.0 }, V{ rowHeight } };
+				cgfx.Invoke("lineTo", nullptr, c3, 2);
+				cgfx.Invoke("lineTo", nullptr, c0, 2);
+				cgfx.Invoke("endFill", nullptr, nullptr, 0);
 			}
 			g_panelCourseBar.SetMember("visible", V{ false });
 		}
@@ -9604,12 +9585,26 @@ namespace
 			}
 		}
 
+		// ⚠ THE TWO BARS ARE MUTUALLY EXCLUSIVE, and that is a design decision
+		// rather than a limitation. Both are flat fills of the same rectangle, so
+		// stacking them shows one colour muddied by another and nothing more -
+		// and which one lands on top is not a question this panel can answer.
+		// Depth said the course mark was above (2 against the highlight's 1) and
+		// in game it was below; relative z among script-added siblings has never
+		// been proven here, only assumed (the survey marks carry the same note).
+		//
+		// So on a row that is both, the COURSE wins the bar. Selection is not
+		// lost: the highlighted row's name and distance already step up to
+		// uPanelTextColorHighlight, which is an independent cue and the only one
+		// on that row that needs to be.
+		const bool courseOnHighlight = haveCourseRow && haveHighlightRow && courseRow == highlightRow;
+		const double listTopY = g_panelListTop.load(std::memory_order_acquire);
+
 		if (g_panelHighlight.IsObject() || g_panelHighlight.IsDisplayObject()) {
-			g_panelHighlight.SetMember("visible", V{ haveHighlightRow });
+			g_panelHighlight.SetMember("visible", V{ haveHighlightRow && !courseOnHighlight });
 			if (haveHighlightRow)
 				g_panelHighlight.SetMember("y",
-				V{ g_panelListTop.load(std::memory_order_acquire) +
-					rowHeight * static_cast<double>(highlightRow) });
+				V{ listTopY + rowHeight * static_cast<double>(highlightRow) });
 		}
 
 		// Same shape as the highlight: one clip, moved. It hides by itself when
@@ -9619,8 +9614,7 @@ namespace
 			g_panelCourseBar.SetMember("visible", V{ haveCourseRow });
 			if (haveCourseRow)
 				g_panelCourseBar.SetMember("y",
-					V{ g_panelListTop.load(std::memory_order_acquire) +
-						rowHeight * static_cast<double>(courseRow) });
+					V{ listTopY + rowHeight * static_cast<double>(courseRow) });
 		}
 	}
 
