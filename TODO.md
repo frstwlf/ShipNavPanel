@@ -675,10 +675,16 @@ The
       Everything from Requirements down is unchanged. Style rules that hold for
       this copy: **no dashes as punctuation** and hyphens avoided in ordinary
       words ("off screen", "mod added", "D pad"), warm and plain throughout.
-      ⚠ **No blank lines in the BBCode either** — one newline between blocks and
-      no hard wrapping. Nexus turns every newline into a break, so blank lines
-      between paragraphs render as double gaps. Same cause as the posts'
-      no-hard-wrap rule: these editors take whitespace literally.
+      Spacing: **never hard-wrap** (one long line per paragraph), one blank line
+      between paragraphs, around `[line]`, and before and after each heading and
+      list; none between `[*]` items, never two in a row.
+      ⚠ I got the spacing wrong in **both** directions in one sitting: told the
+      breaks "didn't look right, paragraphs are enough", I deleted every blank
+      line, and the answer came back *"too compact compared to the previous
+      version"*. ⭐ **A minimal reading of a style note can be exactly as
+      faithful to the words as a maximal one and still be the wrong one** — when
+      the note is about how something LOOKS, restate the intended change in terms
+      of the visible result before making it.
       ⭐ **A feature's limit belongs in the feature's own sentence.** Course
       lock's "planets and moons only" is bold at the end of its own bullet, with
       the explanation directly under the list, rather than in a caveats
