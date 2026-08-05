@@ -4938,28 +4938,46 @@ namespace
 						g_sinkRepeats[a_index].load(std::memory_order_relaxed));
 					REX::INFO("[hudtgt] {}   {}", probe.tag, dump);
 
-					// Any 32-bit word that resolves to a real form is worth
-					// naming - it turns a qword into "this field is the target".
-					// ⚠ Reported as CANDIDATES: a small integer can collide with
-					// a real form id by coincidence, and LookupByID cannot tell
-					// the difference. Corroborate across several events before
-					// calling any offset the target field.
-					for (std::size_t off = 0; off + sizeof(std::uint32_t) <= avail; off += sizeof(std::uint32_t)) {
-						const auto id = *reinterpret_cast<const std::uint32_t*>(bytes + off);
-						if (id < 0x100)
-							continue;
-						const auto form = RE::TESForm::LookupByID(id);
-						if (!form)
-							continue;
-						const auto type = static_cast<std::uint32_t>(form->GetFormType());
-						const auto name = form->GetFormType() == RE::FormType::kPNDT ? TryNameBody(id)
-						                                                             : std::string{};
-						if (!name.empty())
-							REX::INFO("[hudtgt] {}   +{:02X} = {:08X} -> form type {} (PNDT) '{}'",
-								probe.tag, off, id, type, name);
-						else
-							REX::INFO("[hudtgt] {}   +{:02X} = {:08X} -> form type {}", probe.tag, off,
-								id, type);
+					// Any 32-bit word that resolves to a real form is worth naming
+					// - it turns a qword into "this field is the target".
+					//
+					// ⚠ Walk QWORDS and skip any that is itself a plausible
+					// pointer. The first flight showed exactly why: 0x00007FF6,
+					// the top half of every exe address in the dump, resolves
+					// through LookupByID to a real form, so FOUR meaningless
+					// "form type 41" lines appeared under every single event. A
+					// diagnostic that cries wolf is worse than none - the next
+					// real hit gets waved away with the noise.
+					//
+					// ⚠ Even so these stay CANDIDATES: a small integer can still
+					// collide with a real form id, and LookupByID cannot tell the
+					// difference. Corroborate across several events, and across
+					// several DIFFERENT targets, before calling an offset the
+					// target field.
+					for (std::size_t off = 0; off + sizeof(std::uint64_t) <= avail; off += sizeof(std::uint64_t)) {
+						const auto word = *reinterpret_cast<const std::uint64_t*>(bytes + off);
+						if (word >= 0x10000 && word <= 0x7FFFFFFFFFFFull)
+							continue;  // a pointer; neither half of it is a form id
+
+						for (std::size_t half = 0; half < 2; ++half) {
+							const auto id = static_cast<std::uint32_t>(word >> (half * 32));
+							if (id < 0x100)
+								continue;
+							const auto form = RE::TESForm::LookupByID(id);
+							if (!form)
+								continue;
+							const auto at = off + half * sizeof(std::uint32_t);
+							const auto type = static_cast<std::uint32_t>(form->GetFormType());
+							const auto name = form->GetFormType() == RE::FormType::kPNDT
+							                    ? TryNameBody(id)
+							                    : std::string{};
+							if (!name.empty())
+								REX::INFO("[hudtgt] {}   +{:02X} = {:08X} -> form type {} (PNDT) '{}'",
+									probe.tag, at, id, type, name);
+							else
+								REX::INFO("[hudtgt] {}   +{:02X} = {:08X} -> form type {}", probe.tag,
+									at, id, type);
+						}
 					}
 				}
 			}
