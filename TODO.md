@@ -1453,13 +1453,49 @@ Each of these cost real time; the reasoning is in the findings docs.
     HUD nor the player-input path**, which is precisely what the flight measured.
     None of the five is a virtual, so RTTI cannot name them; identifying that
     subsystem is the next question.
-  - ⭐ **Consequence: the route no longer needs the menu at all.** `GetEventSource`
-    (89264) is a live, callable id, so a plugin can obtain the source directly and
-    `Notify` — no `0x190`, no sink pointer, no movie. What remains unknown is only
-    the **semantics** of the two dwords, and `+4` is free at runtime (read the
-    global at id 883585 and echo it back). ⚠ `+0` is not guessable and its value
-    is *stored into an engine global*, so it must not be poked with an arbitrary
-    number before we know what it means.
+  - ⭐ **The route no longer needs the menu at all.** `GetEventSource` (89264) is a
+    live, callable id, so a plugin can obtain the source directly and `Notify` —
+    no `0x190`, no sink pointer, no movie. **But read the next entry before using
+    any of it.**
+- **⛔⛔⛔ AND THE SUBSYSTEM IS NAMED: `TryUpdateShipHudTarget` BELONGS TO SHIP
+  EQUIPMENT/PARTS, NOT NAVIGATION (2026-08-06). The route is closed.**
+  - `tools/Find-RegionOwners.ps1` asks which classes have virtual methods inside a
+    `.text` range. The three notifiers' region (`0x214xxxx`) is owned by
+    **`SpaceshipEquipmentUtils::SpaceshipEquipmentEventHandler`** (8 slots),
+    **`SpaceshipEffectsUtil::EventSink`**, **`SpaceshipPart`**,
+    **`SpaceshipGravDrivePart`**, **`SpaceshipWeapon`** and the
+    `SpaceshipEffectsComponent` factories — 44 vtable slots, unambiguously the
+    ship equipment/parts subsystem.
+  - ⭐ **ATTRIBUTED, not merely adjacent:** one notifier is reached from
+    **`Spaceship::SpaceshipEventHandler` vfunc 2** — one of the five classes in
+    the whole `Spaceship` namespace.
+  - **The reading:** `TryUpdateShipHudTarget` is a *refresh* signal raised when a
+    ship or its parts change state — "what you are targeting may be stale,
+    re-evaluate" — not a command to choose a target. It fits everything measured:
+    it never fires when the player targets a planet, moon, station or ship
+    (that is the input path, `ShipHud_Target`), it is raised from equipment and
+    ship events, and its handler merely gates on a matching id and stores one
+    dword. It is the same family as the Target Computer and
+    `ShipHud_TargetShipSystem`, which target a *part of* something already
+    targeted. ⚠ A strong reading, not proof: the notifiers themselves are not
+    virtuals, so only one of the three is directly attributed.
+- **⛔⛔ SO BOTH ENGINE LEADS ARE CLOSED, AND THE PATTERN IS THE POINT.**
+  `Spaceship::TargetingMode` and `TryUpdateShipHudTarget::Event` were each found
+  by matching a NAME in the RTTI against the vocabulary of the feature, and each
+  turned out to be an adjacent subsystem doing a different job. **Twice, the same
+  mistake, and the second time I made it with the first one's lesson already
+  written down three entries above.**
+  ⭐ **The conclusion this now supports, from a third independent direction:
+  there may be NO "set the info target by id" verb anywhere, because targeting is
+  GEOMETRIC.** PHASE0 proved it from the cockpit (cruise acquires by pointing,
+  and `bAcquireTarget`'s log said *"the cycle did not move - nothing acquirable
+  from this heading"*); the UI vocabulary says it from source (`ShipHud_Target` is
+  parameterless *because* the engine picks by geometry); and the engine side now
+  says it twice over. **A design with no by-id concept has no by-id function to
+  find, and hunting for one will keep turning up neighbours.**
+  ⚠ Before anyone reopens this: the thing to look for is **not** another
+  target-shaped name. It is evidence that the engine's target selection consults
+  a *list* at all — and three investigations have now found the opposite.
   - ⚠ Diagnostic bug the flight exposed and which is now fixed: the form-id
     heuristic walked 32-bit words, so **`0x00007FF6` — the top half of every exe
     address in the dump — resolved through `LookupByID` and printed four
