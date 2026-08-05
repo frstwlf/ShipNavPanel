@@ -513,10 +513,12 @@ Later, nice-to-have:
       ⛔ **And the UI vocabulary is now EXHAUSTED.** Every parameterised
       UI→engine event in this movie has been tried or ruled out
       ([PHASE1-SWF-FINDINGS.md:286](PHASE1-SWF-FINDINGS.md:286)). For a *course*
-      on a station the one remaining lead is `Spaceship::TargetingMode` — set the
-      info target, then vanilla's `{0}` reaches anything. That is a project, not
-      a session. ⚠ **But not through its vtable** — see the 2026-08-05 correction
-      in Settled.
+      on a station the remaining lead is to set the info target, after which
+      vanilla's `{0}` reaches anything. ⛔ **It is NOT `Spaceship::TargetingMode`,
+      which this list named for months and which was settled dead on 2026-08-05**
+      — that is the Target Computer and it *requires* an info target. The live
+      lead is `ShipHudDataModel`'s `TryUpdateShipHudTarget::Event` sink; both in
+      Settled.
 
 <details><summary>the probe as it was specified</summary>
 
@@ -1123,9 +1125,10 @@ Each of these cost real time; the reasoning is in the findings docs.
   **points** because targeting by id is impossible from the UI layer, so E is
   the only way the player can actually acquire what the panel is pointing at.
   Taking E away removes the mechanism the whole design rests on. Self-defeating
-  rather than hard. (The route that would change that is
-  `Spaceship::TargetingMode` — a different project from stealing a key, and
-  ⚠ **not a vtable job**: see the 2026-08-05 correction in Settled.)
+  rather than hard. (The route that would change that is setting the info target
+  — a different project from stealing a key. ⛔ Not via `Spaceship::TargetingMode`,
+  dead as of 2026-08-05; the live lead is `TryUpdateShipHudTarget::Event`, both
+  in Settled.)
 - **`disableplayercontrols` is not an alternative** — it drops the ship out of
   cruise without the hidden loading screen, i.e. outside the cruise state
   machine's normal teardown. Not worth the risk.
@@ -1168,9 +1171,11 @@ Each of these cost real time; the reasoning is in the findings docs.
 
 - **Targeting a body by id is impossible from the UI layer.** No such event
   exists; `ShipHud_Target` is parameterless ("target what is hovered") and
-  `iInfoTargetIndex` is read-only to the SWF. Would need
-  `Spaceship::TargetingMode`, whose vtable is mapped but is **not the way in**
-  (2026-08-05 correction below). ⚠ Still true of TARGETING, and it is not
+  `iInfoTargetIndex` is read-only to the SWF. ⛔ The old answer here,
+  `Spaceship::TargetingMode`, is **dead on both counts** (2026-08-05): not its
+  vtable, and not that subsystem — it is the Target Computer and it *requires* an
+  info target. The live lead is `TryUpdateShipHudTarget::Event`, below. ⚠ Still
+  true of TARGETING, and it is not
   worked around by shaping the candidate data: the feed is a PUBLICATION, not an
   input, so removing entries changes what the HUD draws and nothing about what
   the engine considers. Anything that could filter the engine's candidates lives
@@ -1248,10 +1253,11 @@ Each of these cost real time; the reasoning is in the findings docs.
   ([PHASE1-SWF-FINDINGS.md:286](PHASE1-SWF-FINDINGS.md:286)); Papyrus was checked
   too and has no course or target native (`Game.psc`/`InputEnableLayer` expose
   cruise *state* only, `SpaceshipReference` has combat-target getters and no
-  setter). For a course on a station the single remaining route is
-  `Spaceship::TargetingMode`: set the info target and vanilla's `{0}` reaches
-  anything. **That is the whole list. It is one item.** ⚠ How to get *into* that
-  class is corrected in the next entry.
+  setter). For a course on a station the single remaining route is to **set the
+  info target**, after which vanilla's `{0}` reaches anything. **That is the whole
+  list. It is one item.** ⛔ For months that item named `Spaceship::TargetingMode`;
+  as of 2026-08-05 that class is settled DEAD (next entry) and the item's live
+  lead is `ShipHudDataModel`'s `TryUpdateShipHudTarget::Event` sink.
 - **⛔⛔ CORRECTION 2026-08-05: THE VTABLE IS NOT THE DOOR INTO
   `Spaceship::TargetingMode`, and three entries above used to say it was.**
   Read straight out of `Starfield.exe` on disk with `tools/Dump-Vtable.ps1` —
@@ -1276,11 +1282,37 @@ Each of these cost real time; the reasoning is in the findings docs.
   readable once that buffer is located — and its callable surface is ordinary
   member functions. That means xrefs and Ghidra, not `write_vfunc`.
 
-  ⚠ **Check the subsystem before investing in any of it.**
-  `WeaponFiredEvent` says *combat* targeting — what the weapons are locked onto
-  — which may not be the cruise **info target** the panel needs, and that fits
-  `SpaceshipReference` carrying combat-target getters. Hypothesis, not a
-  finding; cheap to test, expensive to skip.
+  ⛔⛔ **SETTLED 2026-08-05 — IT IS THE TARGET COMPUTER, AND THE ROUTE IS DEAD.**
+  Not merely "the wrong subsystem": `Spaceship::TargetingMode` sits **DOWNSTREAM
+  of the info target and cannot set it**. Four independent lines, all offline:
+  1. **RTTI** — a singleton whose only interface is
+     `BSTEventSink<WeaponFiredEvent>`.
+  2. **The perk enum** — `BGSEntryPoint.h` carries
+     `kEnablePlayerShipTargetingMode` (0xE9), sitting in the ship-**combat**
+     cluster between `kModCriticalChanceOnTargetLockedSp` and
+     `kModifyWeaponFireRate`. The feature is **perk-gated**; the cruise info
+     target is not.
+  3. **The UI name** — `ShipHud_SetTargetMode` is dispatched by
+     `onTargetComputerPressed`, and `LockOnIndicator.as:54` binds it to
+     `XButton`. It is the **Target Computer / lock-on**, which enters
+     `STATE_TARGETING` (`ShipReticle.as:988`) and shows `TargetPanel`
+     (`TargetPanel.as:65`, `visible = bTargetModeActive`) — the amber enemy
+     subsystem meter PHASE4 rejected as a chrome donor. Its verb is
+     `ShipHud_TargetShipSystem {uValue: uPartIndex}`: a **subsystem of what is
+     already targeted**.
+  4. ⭐ **The gate that closes it** — `ShipReticle.as:1005` allows target mode
+     only when `iInfoTargetIndex != -1` **and** that entry's
+     `uTargetType == TT_SHIP`. **It REQUIRES an info target, and only a ship's.**
+     A system that demands an info target before it will run is not the system
+     that chooses one.
+  ⭐⭐ **The lesson, and it is the expensive one: a class name that matches your
+  feature's vocabulary is not evidence it is your feature's class.**
+  "`Spaceship::TargetingMode`" read as *the targeting system* for months and was
+  written into three notes as the last route left, on nothing but its name and a
+  mapped vtable. The cheap way to settle it is **find the UI's name for the
+  thing** — the AS3 called it the Target Computer immediately — and **read its
+  gates**. ⭐ `BGSEntryPoint.h` is an underused oracle for "what subsystem is
+  this": the perk enum names gameplay features and its ORDERING clusters them.
 
   ⭐⭐ **The reusable lesson: a vtable id proves a class EXISTS, not that it has
   a reachable API.** `IDs_VTABLE.h` hands you a name and an address for every
