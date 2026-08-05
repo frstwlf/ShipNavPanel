@@ -10250,6 +10250,54 @@ namespace
 		iniStore->Init("Data/SFSE/Plugins/ShipNavPanel.ini", "Data/SFSE/Plugins/ShipNavPanelCustom.ini");
 		iniStore->Load();
 
+		// ⭐ Echo the override file back, exactly as it spells things. A
+		// misspelled or mis-encoded key in ShipNavPanelCustom.ini is otherwise
+		// INVISIBLE: the settings library reads the keys it knows and says
+		// nothing whatever about one it does not, so a typo is indistinguishable
+		// from a switch left off. That cost a whole test flight on 2026-08-06,
+		// when a shell escape turned bHookHudTarget into nbHookHudTarget and the
+		// only symptom was a feature quietly not happening.
+		//
+		// This validates nothing - it prints what the FILE says, and the config
+		// lines below print what the mod READ. Comparing the two is the
+		// diagnosis, and it works for keys this code has never heard of.
+		{
+			std::ifstream in{ "Data/SFSE/Plugins/ShipNavPanelCustom.ini", std::ios::binary };
+			if (!in) {
+				REX::INFO("config: no ShipNavPanelCustom.ini - everything is at its shipped default");
+			} else {
+				REX::INFO("config: ShipNavPanelCustom.ini says, verbatim -");
+				std::string   line;
+				std::uint32_t shown = 0;
+				bool          first = true;
+				while (std::getline(in, line) && shown < 60) {
+					if (first) {
+						// SimpleIni strips a UTF-8 BOM, but it would make this
+						// first line unreadable - and an unreadable first line is
+						// exactly what someone chasing an encoding problem needs
+						// NOT to be distracted by.
+						if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+							static_cast<unsigned char>(line[1]) == 0xBB &&
+							static_cast<unsigned char>(line[2]) == 0xBF)
+							line.erase(0, 3);
+						first = false;
+					}
+					if (!line.empty() && line.back() == '\r')
+						line.pop_back();
+					const auto begin = line.find_first_not_of(" \t");
+					if (begin == std::string::npos)
+						continue;
+					line.erase(0, begin);
+					if (line[0] == ';' || line[0] == '#')
+						continue;
+					REX::INFO("config:   {}", line);
+					++shown;
+				}
+				if (shown == 0)
+					REX::INFO("config:   (present, but sets nothing)");
+			}
+		}
+
 		// bGateOnFlightState is in here because a DISABLED gate logs nothing at
 		// all - without this line, "no flight gate lines" is ambiguous between
 		// "switched off" and "never reached".
@@ -10285,6 +10333,11 @@ namespace
 				bSurveyCruiseKeys.GetValue(), bScaleformReader.GetValue(), bLogTargetCaptures.GetValue(),
 				bDumpPlanetRecords.GetValue(), bProbeStarmapFeed.GetValue(), bProbeSurveyVM.GetValue(),
 				bProbeVanillaChrome.GetValue(), bTestGraphicsClear.GetValue());
+			REX::INFO("config: bProbeHudModelPtr={} uProbeHudModelBytes={} bHookHudTarget={} "
+					  "uHookHudTargetBytes={} uHookHudTargetMax={}",
+				bProbeHudModelPtr.GetValue(), uProbeHudModelBytes.GetValue(),
+				bHookHudTarget.GetValue(), uHookHudTargetBytes.GetValue(),
+				uHookHudTargetMax.GetValue());
 		} else if (bVerboseLog.GetValue()) {
 			// The default since 1.1.2. bVerboseLog is a [Recon] switch but is
 			// deliberately NOT part of anyRecon above - it is the one level meant
