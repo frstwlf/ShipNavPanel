@@ -1386,11 +1386,49 @@ Each of these cost real time; the reasoning is in the findings docs.
       mechanism**: it locates the model by matching Address Library *vtable ids*,
       which survive a patch, and derives the offset at runtime. Any shipping use
       must find the model the same way and refuse to proceed when it doesn't.
-  - **Remaining: unknown (2), the event's layout.** That is the only Ghidra-shaped
-    question left — and it may not need Ghidra either: with the exact subobject
-    and slot in hand, a **pass-through hook on slot 1 that logs the event bytes
-    when VANILLA fires it** answers layout *and* live values off the game's own
-    traffic, without guessing or calling anything.
+  - **Remaining: unknown (2), the event's layout.** The plan was to read it off
+    vanilla's own traffic with a pass-through hook rather than guess. **That
+    flight is flown and the answer is a negative — see below.**
+- **⛔⛔ `TryUpdateShipHudTarget::Event` IS NOT ON THE PLAYER-TARGETING PATH —
+  MEASURED 2026-08-06, and the CONTROL is what makes it a finding.** Pass-through
+  hooks on three of `ShipHudDataModel`'s sinks (branch `probe/hud-data-model`).
+  Tester targeted a **planet (Jemison), a moon (Kurtz), a station (The Eye) and a
+  ship**, in and out of scanner mode.
+  - `target` (`ShipHud_Target`, vtable 440381) fired **4×**; `deselect`
+    (`ShipHud_Deselect`, vtable 440379) fired **2×**; **`tryupdate` (vtable
+    440397) fired ZERO times.**
+  - ⭐⭐ **The first flight had the TryUpdate hook alone and could not be read**:
+    it installed on verifiably the right function and nothing arrived, which is
+    equally consistent with "the engine never sends it" and "a patched sink
+    vtable is not how it arrives". **A silence with two explanations is not a
+    result.** The controls were chosen because the tester's own keypresses drive
+    them, and they cost one flight to turn an ambiguity into a measurement.
+  - **The mechanism is PROVEN end to end**, not merely assumed: each dump's `+00`
+    is the event class's own vtable — `144C72F78` = id **440553** = `ShipHud_Target`,
+    `144C72F98` = id **440555** = `ShipHud_Deselect`. The hook reads the real
+    event object.
+  - ⚠ **`ShipHud_Target`/`ShipHud_Deselect` carry NO payload** (vtable + a
+    pointer; everything past ~`+0x10` is adjacent stack — the `{event, source}`
+    pair visible at `+0x18`/`+0x20` is the dispatcher's own frame). That matches
+    the AS3 exactly: both are bare `new Event(...)`. So they are the input path
+    and they are useless for targeting BY ID.
+  - ⭐ **The sink is not dead code.** `.pdata` gives its handler 62 bytes (against
+    200 and 239 for the two controls) and its opening reads a global dword then
+    forms pointers into the event at **+4 and +8** — so the event has real fields
+    and something is meant to send it. **Hypothesis, NOT a finding:** absent from
+    the input path but real, it may be the *programmatic* target-update route
+    (scripts/quests/systems), which is precisely what a mod would want. It cannot
+    be settled by watching, because vanilla never demonstrates it.
+  - ⭐ **Next step is OFFLINE and needs no more flights:** find who notifies
+    `BSTEventSource<TryUpdateShipHudTarget::Event>` by scanning `.text` for
+    RIP-relative references to its vtable/instance, or read the 62-byte handler
+    properly. The observation route is closed; the disassembly route is not.
+  - ⚠ Diagnostic bug the flight exposed and which is now fixed: the form-id
+    heuristic walked 32-bit words, so **`0x00007FF6` — the top half of every exe
+    address in the dump — resolved through `LookupByID` and printed four
+    meaningless "form type 41" lines under every event.** It now walks qwords and
+    skips any that is itself a plausible pointer. *A diagnostic that cries wolf is
+    worse than none* — second time this project has paid for that.
   - Two negatives worth keeping: **`SpaceCruise::CruiseEventHandler` sinks only
     `MenuOpenClose`, `GravJump`, `FarTravel` and `Dock`** — the cruise system does
     not own targeting, so nothing about targeting will be found by following
