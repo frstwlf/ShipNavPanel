@@ -513,10 +513,10 @@ Later, nice-to-have:
       ⛔ **And the UI vocabulary is now EXHAUSTED.** Every parameterised
       UI→engine event in this movie has been tried or ruled out
       ([PHASE1-SWF-FINDINGS.md:286](PHASE1-SWF-FINDINGS.md:286)). For a *course*
-      on a station there is one route left and it is
-      `Spaceship::TargetingMode` (vtable 450764 / 450766) — set the info target,
-      then vanilla's `{0}` reaches anything. That is a project, not a session,
-      and it is now the only one.
+      on a station the one remaining lead is `Spaceship::TargetingMode` — set the
+      info target, then vanilla's `{0}` reaches anything. That is a project, not
+      a session. ⚠ **But not through its vtable** — see the 2026-08-05 correction
+      in Settled.
 
 <details><summary>the probe as it was specified</summary>
 
@@ -1124,8 +1124,8 @@ Each of these cost real time; the reasoning is in the findings docs.
   the only way the player can actually acquire what the panel is pointing at.
   Taking E away removes the mechanism the whole design rests on. Self-defeating
   rather than hard. (The route that would change that is
-  `Spaceship::TargetingMode`, vtable mapped at 450764 / 450766 — a different
-  project from stealing a key.)
+  `Spaceship::TargetingMode` — a different project from stealing a key, and
+  ⚠ **not a vtable job**: see the 2026-08-05 correction in Settled.)
 - **`disableplayercontrols` is not an alternative** — it drops the ship out of
   cruise without the hidden loading screen, i.e. outside the cruise state
   machine's normal teardown. Not worth the risk.
@@ -1169,8 +1169,8 @@ Each of these cost real time; the reasoning is in the findings docs.
 - **Targeting a body by id is impossible from the UI layer.** No such event
   exists; `ShipHud_Target` is parameterless ("target what is hovered") and
   `iInfoTargetIndex` is read-only to the SWF. Would need
-  `Spaceship::TargetingMode` (vtable **is** mapped: 450764, 450766 — try
-  vtable-observation before Ghidra). ⚠ Still true of TARGETING, and it is not
+  `Spaceship::TargetingMode`, whose vtable is mapped but is **not the way in**
+  (2026-08-05 correction below). ⚠ Still true of TARGETING, and it is not
   worked around by shaping the candidate data: the feed is a PUBLICATION, not an
   input, so removing entries changes what the HUD draws and nothing about what
   the engine considers. Anything that could filter the engine's candidates lives
@@ -1249,8 +1249,91 @@ Each of these cost real time; the reasoning is in the findings docs.
   too and has no course or target native (`Game.psc`/`InputEnableLayer` expose
   cruise *state* only, `SpaceshipReference` has combat-target getters and no
   setter). For a course on a station the single remaining route is
-  `Spaceship::TargetingMode` (vtable 450764 / 450766): set the info target and
-  vanilla's `{0}` reaches anything. **That is the whole list. It is one item.**
+  `Spaceship::TargetingMode`: set the info target and vanilla's `{0}` reaches
+  anything. **That is the whole list. It is one item.** ⚠ How to get *into* that
+  class is corrected in the next entry.
+- **⛔⛔ CORRECTION 2026-08-05: THE VTABLE IS NOT THE DOOR INTO
+  `Spaceship::TargetingMode`, and three entries above used to say it was.**
+  Read straight out of `Starfield.exe` on disk with `tools/Dump-Vtable.ps1` —
+  no game running, no plugin loaded, nothing that can fault. The class has
+  **three virtual functions in total**:
+  - **450766** @ `0x144CB2EE0` — the primary vtable, object offset 0, **one
+    slot** (`0x1418A0430`, address library id 99543).
+  - **450764** @ `0x144CB2F00` — object offset **16**, **two slots** (ids 99766
+    and 120644). A *subobject* vtable, not the class's own.
+
+  None of the three is named in `IDs.h`. The RTTI base list says why there are
+  so few: the only interface the class implements is
+  **`BSTEventSink<WeaponFiredEvent>`** at mdisp 16 — precisely the two-slot
+  table (destructor + `ProcessEvent`) — and everything else it inherits is
+  `BSTSingletonSDM` plumbing. **So hooking these vtables buys a callback when a
+  weapon is fired. There is no virtual "set target" to hook, and there never
+  was.**
+
+  ⭐ **The class is probably still the right one; its API is just non-virtual.**
+  It is a `BSTSingletonSDM` with a `BSTSingletonSDMOpStaticBuffer`, so the
+  instance lives at a **fixed address in a static buffer** — its state is
+  readable once that buffer is located — and its callable surface is ordinary
+  member functions. That means xrefs and Ghidra, not `write_vfunc`.
+
+  ⚠ **Check the subsystem before investing in any of it.**
+  `WeaponFiredEvent` says *combat* targeting — what the weapons are locked onto
+  — which may not be the cruise **info target** the panel needs, and that fits
+  `SpaceshipReference` carrying combat-target getters. Hypothesis, not a
+  finding; cheap to test, expensive to skip.
+
+  ⭐⭐ **The reusable lesson: a vtable id proves a class EXISTS, not that it has
+  a reachable API.** `IDs_VTABLE.h` hands you a name and an address for every
+  class in the game, and "the vtable is mapped" reads far too easily as "the
+  route is mapped" — this note carried that slide for months. Dump the slots and
+  the RTTI first. It costs a minute offline and it is the whole difference
+  between a project and a dead end.
+- **⭐⭐ AND THE OFFLINE SWEEP FOUND A REAL DOOR, one layer up (2026-08-05).**
+  Same tooling, no game. The ship HUD's engine-side owner is **`ShipHudDataModel`**
+  (an `IDataModel`, 33 vtables, **66 RTTI bases**), and its base list is the
+  complete surface of how the HUD's state can be driven from outside — **32
+  events** — and ⚠ **that list does not match PHASE1's, which is a finding in
+  itself.** [PHASE1-SWF-FINDINGS.md:286](PHASE1-SWF-FINDINGS.md:286) tabulates
+  six *parameterised* UI→engine events; this model alone sinks **twenty
+  `ShipHud_*` events** plus `ShipHudQuickContainer_TransferMenu`, among them
+  **`ShipHud_SetTargetMode`**, which appears in no PHASE1 table. (Neither list
+  contains the other — `ShipHud_DockRequested`, `ShipHud_HailShip` and
+  `ShipHudQuickContainer_TransferItem` are sunk elsewhere.) So **"the UI
+  vocabulary is exhausted" is scoped to what the SWF DISPATCHES with a payload,
+  not to what the ENGINE ACCEPTS** — the same shape as the settled lesson about
+  not assuming a handler is limited to the values its vanilla callers pass, one
+  level up. ⚠ Whether the extra events take parameters is **unmeasured**: an RTTI
+  base list gives names, not signatures. Do not write "exhausted" again without
+  saying exhausted *of what*.
+  Exactly one event in the list is engine-internal and about the target:
+  **`TryUpdateShipHudTarget::Event`**, sunk at **mdisp 40**.
+  - The door: `ShipHudDataModel` vtable **440397** @ `0x144C73358` is that sink
+    subobject (object offset 40). **Slot 1 = its `ProcessEvent`**, at
+    `0x14155D3E0`, address library id **89321**. That is a virtual call on a
+    vtable we have an id for — i.e. reachable the same way `RE::UI` and
+    `PlayerCamera` already are.
+  - ⛔ **The event SOURCE route is blocked, the SINK route is not.**
+    `BSTEventSource<TryUpdateShipHudTarget::Event>` exists (vtable 440407, RTTI
+    855194) but `TryUpdateShipHudTarget::Event::GetEventSource` is `REL::ID{ 0 }`
+    with pre-migration 137012 in the comment — the SDK-wide dead-`GetEventSource`
+    fact again. Driving the sink directly sidesteps it entirely.
+  - ⚠ **Two unknowns before this is a plan, and both are honest ones:** (1) how
+    to obtain the `ShipHudDataModel` instance — CommonLibSF has **no** namespace
+    for it in `IDs.h`, so there is no published accessor; (2) the layout of
+    `TryUpdateShipHudTarget::Event`. Neither is answerable from RTTI; that is the
+    Ghidra part, and it is now a *bounded* Ghidra question rather than an open
+    one.
+  - Two negatives worth keeping: **`SpaceCruise::CruiseEventHandler` sinks only
+    `MenuOpenClose`, `GravJump`, `FarTravel` and `Dock`** — the cruise system does
+    not own targeting, so nothing about targeting will be found by following
+    cruise; and the entire `Spaceship` namespace holds only **five** classes
+    (`InstanceData`, `LadderSwapHandler`, `ShipProxyCollisionListener`,
+    `TargetingMode`, `__SpaceshipEventHandler`), so there is no second targeting
+    class hiding there.
+  - Tools: `tools/Dump-Vtable.ps1` (`-Class`, `-Id` or `-VA`; joins each slot to
+    its address library id and its `IDs.h` name) and `tools/Dump-Rtti.ps1`
+    (`-ColVA` or `-Class`). Both read `Starfield.exe` on disk. Nothing to install,
+    nothing that can fault.
 - **⭐ THE MEASURED SCOPE: planets and moons take a by-id course; stations, POIs
   and ships do not** (every type tried, 2026-08-03). Exactly what the two-route
   mechanism predicts — the first time on this feature that a prediction and a
