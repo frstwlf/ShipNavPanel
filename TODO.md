@@ -1412,17 +1412,54 @@ Each of these cost real time; the reasoning is in the findings docs.
     pair visible at `+0x18`/`+0x20` is the dispatcher's own frame). That matches
     the AS3 exactly: both are bare `new Event(...)`. So they are the input path
     and they are useless for targeting BY ID.
-  - ⭐ **The sink is not dead code.** `.pdata` gives its handler 62 bytes (against
-    200 and 239 for the two controls) and its opening reads a global dword then
-    forms pointers into the event at **+4 and +8** — so the event has real fields
-    and something is meant to send it. **Hypothesis, NOT a finding:** absent from
-    the input path but real, it may be the *programmatic* target-update route
-    (scripts/quests/systems), which is precisely what a mod would want. It cannot
-    be settled by watching, because vanilla never demonstrates it.
-  - ⭐ **Next step is OFFLINE and needs no more flights:** find who notifies
-    `BSTEventSource<TryUpdateShipHudTarget::Event>` by scanning `.text` for
-    RIP-relative references to its vtable/instance, or read the 62-byte handler
-    properly. The observation route is closed; the disassembly route is not.
+  - ⭐ **The sink is not dead code.** `.pdata` gives its handler 62 bytes, against
+    200 and 239 for the two controls.
+- **⭐⭐⭐ THE XREF PASS (2026-08-06, offline, `tools/Find-Xrefs.ps1`) — the route is
+  now FULLY ADDRESSABLE, and it recovered a dead `GetEventSource` id.**
+  - **The handler, decoded byte by byte** (all 62): it is
+    `if (event->field_4 == <global, id 883585> && event->field_4 != 0)
+     Func_97892(event->field_0); return kContinue;` — and `Func_97892` stores its
+    argument into a second global. So **`TryUpdateShipHudTarget::Event` is a plain
+    struct of two dwords**: `+0` the payload, `+4` a gate that must equal a global
+    and be non-zero. It has **no vtable** — its RTTI name is `.?AUEvent@…` (`U` =
+    struct), unlike `ShipHud_Target`'s `.?AV…` (`V` = class), which is exactly why
+    the controls' dumps started with a vtable pointer and this one would not.
+  - ⚠ **CORRECTION to the entry above, which I wrote and which was wrong:** the
+    handler does **not** touch `+8`. `lea r8,[rdx+8]` was a compiler artifact used
+    only to derive `rdx+4` via `[r8-4]` and as a null-check base. Only `+0` and
+    `+4` are real fields. *Reading an address form as a field access is the
+    hand-decoding equivalent of trusting a struct comment.*
+  - **⭐⭐ `TryUpdateShipHudTarget::Event::GetEventSource` = RVA `0x154B6C0`, address
+    library id 89264.** CommonLibSF carries it as `REL::ID{ 0 }` with the
+    pre-migration 137012 — **so this is a dead SDK id RECOVERED**, and the general
+    method is in `STARFIELD-NOTES.md`. Identified by its magic-static prologue
+    (`mov rax, gs:[0x58]`) and by being the only code that references the source.
+  - **The source object is a function-local static at VA `0x145979CD0`**, `0x28`
+    bytes — the next statically-initialised object begins at `+0x28`, matching
+    CommonLibSF's `sizeof(BSTEventSource<void*>) == 0x28`.
+  - ⚠ **The blind spot that nearly hid it:** scanning `.text` for the source's
+    *vtable* (440407) found **ZERO** references, because a statically-initialised
+    global has its vtable pointer **baked into `.data` by the linker**, not written
+    by code. The single 8-byte absolute in `.data` is what located the object.
+    **A code scan cannot see a statically-initialised global; search the data
+    sections for the absolute too.** The control proves the scanner was fine:
+    `ShipHud_Target`'s vtable has 2 `lea rax,[rip+d]` hits, both event
+    constructions.
+  - **⭐ FIVE callers of `GetEventSource`, and the split is the answer.** Two sit
+    in the ship-HUD region (`0x1556300`, `0x1557560`) — register/unregister the
+    sink. **Three sit in an unrelated subsystem at `0x214xxxx`** (`0x2143730`,
+    `0x2149600`, `0x21499D0`), each reading a dword at `+0x28` of some object
+    before the call. **So the event IS notified — by something that is neither the
+    HUD nor the player-input path**, which is precisely what the flight measured.
+    None of the five is a virtual, so RTTI cannot name them; identifying that
+    subsystem is the next question.
+  - ⭐ **Consequence: the route no longer needs the menu at all.** `GetEventSource`
+    (89264) is a live, callable id, so a plugin can obtain the source directly and
+    `Notify` — no `0x190`, no sink pointer, no movie. What remains unknown is only
+    the **semantics** of the two dwords, and `+4` is free at runtime (read the
+    global at id 883585 and echo it back). ⚠ `+0` is not guessable and its value
+    is *stored into an engine global*, so it must not be poked with an arbitrary
+    number before we know what it means.
   - ⚠ Diagnostic bug the flight exposed and which is now fixed: the form-id
     heuristic walked 32-bit words, so **`0x00007FF6` — the top half of every exe
     address in the dump — resolved through `LookupByID` and printed four
