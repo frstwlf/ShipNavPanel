@@ -4843,15 +4843,43 @@ namespace
 	// (this, event, source) with a uint32 return.
 	using ProcessHudTarget_t = RE::BSEventNotifyControl (*)(void*, const void*, void*);
 
-	std::atomic<ProcessHudTarget_t> g_origProcessHudTarget{ nullptr };
-	std::atomic<bool>               g_hudTargetClaimed{ false };
-	std::atomic<bool>               g_hudTargetInstalled{ false };
-	std::atomic<bool>               g_hudTargetFailed{ false };
-	std::atomic<std::uint32_t>      g_hudTargetLogged{ 0 };
-	std::atomic<std::uint32_t>      g_hudTargetRepeats{ 0 };
-	// ONE value, published whole. Two atomics each holding half of a payload is
-	// exactly the torn read that made the survey oracle cry wolf.
-	std::atomic<std::uint64_t> g_hudTargetLastHash{ 0 };
+	// ⭐ WHY THERE ARE THREE OF THESE, and it is the lesson of the first flight:
+	// the hook installed on exactly the right function (the guard below verified
+	// the original against the offline map) and then NOTHING ARRIVED. On its own
+	// that cannot tell "the engine never sends this event" from "a patched sink
+	// vtable is not how this event reaches the model" - a silent result with two
+	// explanations is not a result.
+	//
+	// So the other two are CONTROLS, chosen because the tester's own keypresses
+	// drive them: `ShipHud_Target` is the target key and `ShipHud_Deselect` is
+	// the clear key, both sunk by the same ShipHudDataModel through the same kind
+	// of vtable slot. If those log and `tryupdate` stays silent, the silence is a
+	// finding about the engine. If none of the three log, the mechanism is wrong
+	// and the finding is about this code instead.
+	struct SinkProbe
+	{
+		const char*   tag;
+		const char*   event;
+		std::uint64_t vtableID;        // ShipHudDataModel's sink subobject vtable
+		std::uint64_t processEventID;  // what slot 1 must already hold
+	};
+
+	constexpr std::array<SinkProbe, 3> kSinkProbes{ {
+		{ "tryupdate", "TryUpdateShipHudTarget::Event", 440397, 89321 },
+		{ "target", "ShipHud_Target - your target key", 440381, 89317 },
+		{ "deselect", "ShipHud_Deselect - your clear key", 440379, 1016391 },
+	} };
+
+	std::array<std::atomic<ProcessHudTarget_t>, kSinkProbes.size()> g_sinkOriginal{};
+	std::array<std::atomic<std::uint32_t>, kSinkProbes.size()>      g_sinkLogged{};
+	std::array<std::atomic<std::uint32_t>, kSinkProbes.size()>      g_sinkRepeats{};
+	// ONE value per sink, published whole. Two atomics each holding half of a
+	// payload is exactly the torn read that made the survey oracle cry wolf.
+	std::array<std::atomic<std::uint64_t>, kSinkProbes.size()> g_sinkLastHash{};
+
+	std::atomic<bool> g_sinkClaimed{ false };
+	std::atomic<bool> g_sinkInstalled{ false };
+	std::atomic<bool> g_sinkFailed{ false };
 
 	// Name a PNDT from the mod's own table when the lock happens to be free.
 	// try_lock and never block: this runs inside the engine's event dispatch, and
@@ -4865,9 +4893,11 @@ namespace
 		return it != g_bodyTable.end() ? it->second.name : std::string{};
 	}
 
-	RE::BSEventNotifyControl ProcessHudTargetHook(void* a_this, const void* a_event, void* a_source)
+	RE::BSEventNotifyControl HandleSinkEvent(std::size_t a_index, void* a_this, const void* a_event,
+		void* a_source)
 	{
-		const auto original = g_origProcessHudTarget.load(std::memory_order_acquire);
+		const auto& probe = kSinkProbes[a_index];
+		const auto  original = g_sinkOriginal[a_index].load(std::memory_order_acquire);
 
 		// Everything between here and the call through is observation, and every
 		// branch of it can be skipped without the game noticing. The call through
@@ -4888,10 +4918,11 @@ namespace
 					hash *= 1099511628211ull;
 				}
 
-				if (g_hudTargetLastHash.exchange(hash, std::memory_order_acq_rel) == hash) {
-					g_hudTargetRepeats.fetch_add(1, std::memory_order_relaxed);
-				} else if (g_hudTargetLogged.load(std::memory_order_acquire) < uHookHudTargetMax.GetValue()) {
-					const auto n = g_hudTargetLogged.fetch_add(1, std::memory_order_acq_rel) + 1;
+				if (g_sinkLastHash[a_index].exchange(hash, std::memory_order_acq_rel) == hash) {
+					g_sinkRepeats[a_index].fetch_add(1, std::memory_order_relaxed);
+				} else if (g_sinkLogged[a_index].load(std::memory_order_acquire) <
+						   uHookHudTargetMax.GetValue()) {
+					const auto n = g_sinkLogged[a_index].fetch_add(1, std::memory_order_acq_rel) + 1;
 
 					std::string dump;
 					dump.reserve(avail * 3);
@@ -4899,12 +4930,13 @@ namespace
 						dump += std::format("+{:02X}:{:016X} ", off,
 							*reinterpret_cast<const std::uint64_t*>(bytes + off));
 
-					REX::INFO("[hudtgt] #{} event {:016X} source {:016X} thread {} ({} readable bytes, "
-							  "{} repeat(s) suppressed so far)",
-						n, reinterpret_cast<std::uintptr_t>(a_event),
-						reinterpret_cast<std::uintptr_t>(a_source), ThreadIdString(), avail,
-						g_hudTargetRepeats.load(std::memory_order_relaxed));
-					REX::INFO("[hudtgt]   {}", dump);
+					REX::INFO("[hudtgt] {} #{} event {:016X} source {:016X} this {:016X} thread {} "
+							  "({} readable bytes, {} repeat(s) suppressed so far)",
+						probe.tag, n, reinterpret_cast<std::uintptr_t>(a_event),
+						reinterpret_cast<std::uintptr_t>(a_source),
+						reinterpret_cast<std::uintptr_t>(a_this), ThreadIdString(), avail,
+						g_sinkRepeats[a_index].load(std::memory_order_relaxed));
+					REX::INFO("[hudtgt] {}   {}", probe.tag, dump);
 
 					// Any 32-bit word that resolves to a real form is worth
 					// naming - it turns a qword into "this field is the target".
@@ -4923,10 +4955,11 @@ namespace
 						const auto name = form->GetFormType() == RE::FormType::kPNDT ? TryNameBody(id)
 						                                                             : std::string{};
 						if (!name.empty())
-							REX::INFO("[hudtgt]   +{:02X} = {:08X} -> form type {} (PNDT) '{}'", off, id,
-								type, name);
+							REX::INFO("[hudtgt] {}   +{:02X} = {:08X} -> form type {} (PNDT) '{}'",
+								probe.tag, off, id, type, name);
 						else
-							REX::INFO("[hudtgt]   +{:02X} = {:08X} -> form type {}", off, id, type);
+							REX::INFO("[hudtgt] {}   +{:02X} = {:08X} -> form type {}", probe.tag, off,
+								id, type);
 					}
 				}
 			}
@@ -4939,67 +4972,91 @@ namespace
 		return RE::BSEventNotifyControl::kContinue;
 	}
 
+	// One body, three distinct function addresses - which is the whole point: a
+	// patched slot has no way to say which sink it belongs to, so each needs its
+	// own entry point carrying the index.
+	template <std::size_t Index>
+	RE::BSEventNotifyControl SinkThunk(void* a_this, const void* a_event, void* a_source)
+	{
+		return HandleSinkEvent(Index, a_this, a_event, a_source);
+	}
+
 	void TryInstallHudTargetHook()
 	{
 		if (!bHookHudTarget.GetValue() ||
-			g_hudTargetInstalled.load(std::memory_order_acquire) ||
-			g_hudTargetFailed.load(std::memory_order_acquire))
+			g_sinkInstalled.load(std::memory_order_acquire) ||
+			g_sinkFailed.load(std::memory_order_acquire))
 			return;
 
 		// Two threads patching one vtable slot leaves the hook calling itself -
 		// the SeamlessGravJumps failure, and the reason this is not a plain bool.
-		const SingleWinner winner{ g_hudTargetClaimed };
+		const SingleWinner winner{ g_sinkClaimed };
 		if (!winner.Won())
 			return;
-		if (g_hudTargetInstalled.load(std::memory_order_acquire))
+		if (g_sinkInstalled.load(std::memory_order_acquire))
 			return;
 
-		// ShipHudDataModel's BSTEventSink<TryUpdateShipHudTarget::Event> vtable,
-		// and the ProcessEvent its slot 1 is supposed to hold. Both read offline
-		// out of the exe (tools/Dump-Vtable.ps1) and recorded in TODO.md.
-		constexpr std::uint64_t kSinkVTableID = 440397;
-		constexpr std::uint64_t kProcessEventID = 89321;
-		constexpr std::size_t   kProcessEventSlot = 1;
+		static constexpr std::array<ProcessHudTarget_t, kSinkProbes.size()> kThunks{
+			&SinkThunk<0>, &SinkThunk<1>, &SinkThunk<2>
+		};
+		constexpr std::size_t kProcessEventSlot = 1;
 
-		const REL::ID sinkVT{ kSinkVTableID };
-		const REL::ID processEvent{ kProcessEventID };
-		if (sinkVT.offset() == 0 || processEvent.offset() == 0) {
-			REX::WARN("[hudtgt] address library does not know vtable id {} or function id {} - hook "
-					  "NOT installed",
-				kSinkVTableID, kProcessEventID);
-			g_hudTargetFailed.store(true, std::memory_order_release);
+		// Each sink is installed on its own account and reported on its own line.
+		// One that cannot be hooked must not take the others down with it - the
+		// same rule the feed subscriptions learned the hard way.
+		std::size_t installed = 0;
+		for (std::size_t i = 0; i < kSinkProbes.size(); ++i) {
+			const auto&   probe = kSinkProbes[i];
+			const REL::ID sinkVT{ probe.vtableID };
+			const REL::ID processEvent{ probe.processEventID };
+
+			if (sinkVT.offset() == 0 || processEvent.offset() == 0) {
+				REX::WARN("[hudtgt] {}: address library knows neither vtable {} nor function {} - "
+						  "not hooked",
+					probe.tag, probe.vtableID, probe.processEventID);
+				continue;
+			}
+
+			const auto vtableAddr = sinkVT.address();
+			const auto slot = vtableAddr + sizeof(void*) * kProcessEventSlot;
+			const auto current = *reinterpret_cast<std::uintptr_t*>(slot);
+
+			// ⭐ Refuse to patch anything but the function the offline map says is
+			// there. On a build where these ids have moved, this is the difference
+			// between "the hook did not install" and "an unrelated virtual now
+			// points at our function".
+			if (current != processEvent.address()) {
+				REX::WARN("[hudtgt] {}: slot {} of vtable {:016X} holds {:016X}, expected {:016X} - "
+						  "NOT patching. These ids do not describe this build.",
+					probe.tag, kProcessEventSlot, vtableAddr, current, processEvent.address());
+				continue;
+			}
+
+			// Publish the original BEFORE redirecting: the moment write_vfunc
+			// lands, another thread can be inside the thunk needing it.
+			g_sinkOriginal[i].store(
+				reinterpret_cast<ProcessHudTarget_t>(current), std::memory_order_release);
+
+			REL::Relocation<std::uintptr_t> vtable{ vtableAddr };
+			vtable.write_vfunc(kProcessEventSlot, kThunks[i]);
+			++installed;
+
+			REX::INFO("[hudtgt] {}: pass-through installed on {} (vtable {:016X}, original {:016X})",
+				probe.tag, probe.event, vtableAddr, current);
+		}
+
+		if (installed == 0) {
+			g_sinkFailed.store(true, std::memory_order_release);
+			REX::WARN("[hudtgt] nothing hooked - none of the ids describe this build");
 			return;
 		}
 
-		const auto vtableAddr = sinkVT.address();
-		const auto slot = vtableAddr + sizeof(void*) * kProcessEventSlot;
-		const auto current = *reinterpret_cast<std::uintptr_t*>(slot);
-
-		// ⭐ Refuse to patch anything but the function the offline map says is
-		// there. On a build where these ids have moved, this is the difference
-		// between "the hook did not install" and "an unrelated virtual now points
-		// at our function".
-		if (current != processEvent.address()) {
-			REX::WARN("[hudtgt] slot {} of vtable {:016X} holds {:016X}, expected {:016X} - NOT "
-					  "patching. The address library ids do not describe this build.",
-				kProcessEventSlot, vtableAddr, current, processEvent.address());
-			g_hudTargetFailed.store(true, std::memory_order_release);
-			return;
-		}
-
-		// Publish the original BEFORE redirecting: the moment write_vfunc lands,
-		// another thread can be inside the hook needing it.
-		g_origProcessHudTarget.store(
-			reinterpret_cast<ProcessHudTarget_t>(current), std::memory_order_release);
-
-		REL::Relocation<std::uintptr_t> vtable{ vtableAddr };
-		vtable.write_vfunc(kProcessEventSlot, &ProcessHudTargetHook);
-		g_hudTargetInstalled.store(true, std::memory_order_release);
-
-		REX::INFO("[hudtgt] pass-through installed on "
-				  "ShipHudDataModel::ProcessEvent(TryUpdateShipHudTarget::Event) - vtable {:016X}, "
-				  "original {:016X}. It logs and calls through; it never swallows an event.",
-			vtableAddr, current);
+		g_sinkInstalled.store(true, std::memory_order_release);
+		REX::INFO("[hudtgt] {} of {} sinks hooked. Now press your TARGET key and your CLEAR key on a "
+				  "few different things. If 'target' and 'deselect' log while 'tryupdate' stays "
+				  "silent, that silence is a finding about the engine rather than a broken hook - "
+				  "which is exactly what the first flight could not tell us.",
+			installed, kSinkProbes.size());
 	}
 
 	void ProbeSurveyVM()
