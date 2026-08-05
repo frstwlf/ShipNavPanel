@@ -1358,12 +1358,39 @@ Each of these cost real time; the reasoning is in the findings docs.
     855194) but `TryUpdateShipHudTarget::Event::GetEventSource` is `REL::ID{ 0 }`
     with pre-migration 137012 in the comment — the SDK-wide dead-`GetEventSource`
     fact again. Driving the sink directly sidesteps it entirely.
-  - ⚠ **Two unknowns before this is a plan, and both are honest ones:** (1) how
-    to obtain the `ShipHudDataModel` instance — CommonLibSF has **no** namespace
-    for it in `IDs.h`, so there is no published accessor; (2) the layout of
-    `TryUpdateShipHudTarget::Event`. Neither is answerable from RTTI; that is the
-    Ghidra part, and it is now a *bounded* Ghidra question rather than an open
-    one.
+  - ⚠ **Two unknowns before this is a plan:** (1) how to obtain the
+    `ShipHudDataModel` instance — CommonLibSF has **no** namespace for it in
+    `IDs.h`, so there is no published accessor; (2) the layout of
+    `TryUpdateShipHudTarget::Event`.
+  - **⭐⭐⭐ UNKNOWN (1) IS SOLVED — MEASURED IN GAME 2026-08-06** (probe on branch
+    `probe/hud-data-model`, two runs, byte-identical). **`ShipHudDataModel` is
+    EMBEDDED in `SpaceshipHudMenu` at `+0x190`** — not owned by pointer; all 33 of
+    its vtables sit contiguously from `menu+0x190` to `menu+0x298`. So the
+    instance costs nothing to reach: the mod is already handed the menu.
+    - **The offline RTTI and the runtime layout agree EXACTLY, which is the
+      cross-check that makes this trustworthy.** `menu+0x190` holds vtable
+      **440405**, whose COL says *object offset 0* → the model's primary vtable.
+      The `TryUpdateShipHudTarget::Event` sink is vtable **440397**, whose COL says
+      *object offset 40*, and it was found at `menu+0x1B8` = `0x190 + 0x28`.
+      Prediction and measurement met.
+    - ⭐ **So the sink pointer is `(std::uint8_t*)menu + 0x1B8`, and its
+      `ProcessEvent` is slot 1 of vtable 440397** — `0x14155D3E0`, address library
+      id **89321**.
+    - **Bonus, and it settles a CommonLibSF question:** `IDataModel::unk08` —
+      commented "model object?" in `RE/I/IDataModel.h` — is the
+      **`ShipHudEventShuttle` pointer** (found at `menu+0x198` = model+0x8). And
+      vtable 440405 has exactly **4 slots**, matching `IDataModel`'s four declared
+      virtuals, so that declaration is correct as written.
+    - ⛔⛔ **DO NOT HARDCODE `0x190`.** It is a measured offset for THIS build and
+      a patch moves it. ⭐ **The probe is not scaffolding — it is the production
+      mechanism**: it locates the model by matching Address Library *vtable ids*,
+      which survive a patch, and derives the offset at runtime. Any shipping use
+      must find the model the same way and refuse to proceed when it doesn't.
+  - **Remaining: unknown (2), the event's layout.** That is the only Ghidra-shaped
+    question left — and it may not need Ghidra either: with the exact subobject
+    and slot in hand, a **pass-through hook on slot 1 that logs the event bytes
+    when VANILLA fires it** answers layout *and* live values off the game's own
+    traffic, without guessing or calling anything.
   - Two negatives worth keeping: **`SpaceCruise::CruiseEventHandler` sinks only
     `MenuOpenClose`, `GravJump`, `FarTravel` and `Dock`** — the cruise system does
     not own targeting, so nothing about targeting will be found by following
