@@ -492,6 +492,18 @@ namespace
 	// see the note in DispatchSurveyPercent - so it gets its own switch even
 	// though the whole probe is already opt-in.
 	REX::TIniSetting<bool> bProbeSurveyBind{ "Recon", "bProbeSurveyBind", true };
+
+	// The one remaining route to setting the info target (TODO.md, Settled):
+	// ShipHudDataModel sinks TryUpdateShipHudTarget::Event, and driving that sink
+	// needs a pointer to the model. CommonLibSF publishes no accessor and the
+	// class is not a singleton, so this goes looking - read-only, bounded, and
+	// only when the scanner key is pressed. On: the scanner key runs the probe.
+	REX::TIniSetting<bool> bProbeHudModelPtr{ "Recon", "bProbeHudModelPtr", false };
+	// How far into the menu object to walk. SpaceshipHudMenu's RTTI bases alone
+	// reach past 0x190 and members follow, so the default is deliberately
+	// generous; VirtualQuery clamps it to what is actually committed, so
+	// over-asking costs nothing but a few page queries.
+	REX::TIniSetting<std::uint32_t> uProbeHudModelBytes{ "Recon", "uProbeHudModelBytes", 0x800 };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -653,6 +665,7 @@ namespace
 	std::atomic<bool>          g_starmapDumpRequested{ false };
 	std::atomic<bool>          g_dumpPlanetsRequested{ false };
 	std::atomic<bool>          g_surveyVmProbeRequested{ false };
+	std::atomic<bool>          g_hudModelProbeRequested{ false };
 	// Last body dossier the info-target feed published, kept so probe A's float
 	// can be checked against the number the vanilla planet card would draw for
 	// the same body. That the two are the same quantity is an inference from a
@@ -2936,6 +2949,8 @@ namespace
 			g_dumpPlanetsRequested.store(true, std::memory_order_release);
 		if (bProbeSurveyVM.GetValue())
 			g_surveyVmProbeRequested.store(true, std::memory_order_release);
+		if (bProbeHudModelPtr.GetValue())
+			g_hudModelProbeRequested.store(true, std::memory_order_release);
 
 		// Only hijack the scanner key while cruising; outside cruise it still
 		// opens the vanilla ship scanner.
@@ -4607,6 +4622,185 @@ namespace
 			REX::INFO("[surveyed] sweep: {} of {} listed body/bodies queried ({} already complete, "
 					  "never re-read)",
 				sent, listed, complete);
+	}
+
+	// ------------------------------------------------------------------
+	// Where does the engine's ShipHudDataModel instance live? (2026-08-06)
+	// ------------------------------------------------------------------
+	//
+	// `TryUpdateShipHudTarget::Event` is the ONLY engine-internal event the ship
+	// HUD sinks that concerns the target, and `ShipHudDataModel` is what sinks it
+	// - read offline out of the exe's RTTI with tools/Dump-Vtable.ps1. With
+	// Spaceship::TargetingMode settled as the Target Computer, driving that sink
+	// is the one remaining route to setting the info target. Two things stand in
+	// the way: the event's LAYOUT, and a POINTER to the model. This probe goes
+	// after the pointer, which is the half that does not need a disassembler.
+	//
+	// There is no published accessor - `ShipHudDataModel` has no namespace in
+	// IDs.h - and it is not a `BSTSingletonSDM`, so there is no static buffer to
+	// resolve either. The cheap hypothesis is that the MENU owns it.
+	//
+	// ⚠ The menu does not DERIVE from it; their RTTI base lists are disjoint.
+	// SpaceshipHudMenu sinks HailShip, DockRequested, QuickContainer_TransferItem,
+	// AbortJump and the Reticle_* events; ShipHudDataModel sinks Target, Deselect,
+	// Activate and TryUpdateShipHudTarget. (That split is also why PHASE1's table
+	// looks the way it does - the parameterised events it found are exactly the
+	// ones the MENU sinks.) So if the menu holds the model, it holds it as a
+	// member: embedded, or behind a pointer. Both are checked.
+	//
+	// READ-ONLY AND BOUNDED. Nothing is written and nothing is called. Every read
+	// is clamped by ReadableBytesFrom, so a wrong guess about the object's size
+	// cannot fault, and the `Scaleform::Ptr` returned by GetMenu is held for the
+	// whole walk - it is an intrusive refcount, so the menu cannot be freed out
+	// from under the scan.
+	//
+	// ⚠ A CLEAN MISS IS A RESULT, not a failure, and says so in the log: it would
+	// mean the model is owned somewhere other than the menu (UIDataShuttleManager
+	// is the next suspect) and the hunt moves rather than stops. This must never
+	// be a check that cannot pass - it always prints which of the two happened.
+	void ProbeHudModelPtr()
+	{
+		REX::INFO("[hudmodel] ==== probe: locating the engine-side ShipHudDataModel ====");
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui) {
+			REX::WARN("[hudmodel] no UI singleton - probe skipped");
+			return;
+		}
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud)) {
+			REX::INFO("[hudmodel] {} is not open - probe skipped. Run it from the pilot seat.",
+				kShipHudMenu);
+			return;
+		}
+
+		// Held for the duration: Scaleform::Ptr is an intrusive refcount, so this
+		// is what keeps the object alive while the walk reads it.
+		const auto menu = ui->GetMenu(s_shipHud);
+		const auto obj = reinterpret_cast<const std::uint8_t*>(menu.get());
+		if (!obj) {
+			REX::WARN("[hudmodel] menu entry carries no object - probe skipped");
+			return;
+		}
+
+		// An id the address library does not know resolves to the module base,
+		// because address() is base + offset and a miss offsets by zero. Such a
+		// set would "match" a great deal of nothing, so drop them on offset().
+		const auto resolve = [](const REL::ID& a_id) -> std::uintptr_t {
+			const auto off = a_id.offset();
+			return off ? a_id.address() : 0;
+		};
+
+		std::vector<std::uintptr_t> modelVT;
+		std::size_t                 modelDropped = 0;
+		modelVT.reserve(RE::VTABLE::ShipHudDataModel.size());
+		for (const auto& id : RE::VTABLE::ShipHudDataModel) {
+			if (const auto a = resolve(id))
+				modelVT.push_back(a);
+			else
+				++modelDropped;
+		}
+
+		std::vector<std::uintptr_t> menuVT;
+		menuVT.reserve(RE::VTABLE::SpaceshipHudMenu.size());
+		for (const auto& id : RE::VTABLE::SpaceshipHudMenu)
+			if (const auto a = resolve(id))
+				menuVT.push_back(a);
+
+		std::uintptr_t shuttleVT = 0;
+		for (const auto& id : RE::VTABLE::ShipHudDataModel__ShipHudEventShuttle)
+			if (const auto a = resolve(id))
+				shuttleVT = a;
+
+		REX::INFO("[hudmodel] vtable sets resolved: {} model ({} unresolved), {} menu, shuttle {}",
+			modelVT.size(), modelDropped, menuVT.size(), shuttleVT ? "ok" : "UNRESOLVED");
+		if (modelVT.empty()) {
+			REX::WARN("[hudmodel] no ShipHudDataModel vtable resolved - nothing to match against, "
+					  "probe stopped. The address library does not know these ids on this build.");
+			return;
+		}
+
+		// Prove the pointer before measuring any offset from it. IMenu sits at
+		// mdisp 0 of SpaceshipHudMenu, so the object's own first qword must be one
+		// of the vtables the address library maps for that class. If it is not,
+		// every offset below is measured from the wrong thing and says so.
+		if (ReadableBytesFrom(obj, sizeof(std::uintptr_t)) < sizeof(std::uintptr_t)) {
+			REX::WARN("[hudmodel] menu object is not readable - probe stopped");
+			return;
+		}
+		const auto objVT = *reinterpret_cast<const std::uintptr_t*>(obj);
+		const bool isMenu = std::find(menuVT.begin(), menuVT.end(), objVT) != menuVT.end();
+		if (isMenu) {
+			REX::INFO("[hudmodel] menu object {:016X}, vtable {:016X} - confirmed SpaceshipHudMenu",
+				reinterpret_cast<std::uintptr_t>(obj), objVT);
+		} else {
+			REX::WARN("[hudmodel] menu object {:016X} has vtable {:016X}, which is NOT one of the {} "
+					  "mapped SpaceshipHudMenu vtables. Offsets below are suspect - treat any hit as "
+					  "unverified until this line agrees.",
+				reinterpret_cast<std::uintptr_t>(obj), objVT, menuVT.size());
+		}
+
+		const std::size_t want = uProbeHudModelBytes.GetValue();
+		const std::size_t avail = ReadableBytesFrom(obj, want);
+		REX::INFO("[hudmodel] walking {} of {} requested bytes (VirtualQuery clamp)", avail, want);
+
+		std::size_t embedded = 0;
+		std::size_t owned = 0;
+		std::size_t shuttleHits = 0;
+
+		for (std::size_t off = 0; off + sizeof(std::uintptr_t) <= avail; off += sizeof(std::uintptr_t)) {
+			const auto word = *reinterpret_cast<const std::uintptr_t*>(obj + off);
+			if (!word)
+				continue;
+
+			// Embedded: the qword IS a model vtable, so a ShipHudDataModel
+			// subobject begins at this offset.
+			if (std::find(modelVT.begin(), modelVT.end(), word) != modelVT.end()) {
+				REX::INFO("[hudmodel] EMBEDDED model at menu+0x{:X} (vtable {:016X})", off, word);
+				++embedded;
+				continue;
+			}
+			if (shuttleVT && word == shuttleVT) {
+				REX::INFO("[hudmodel] embedded event shuttle at menu+0x{:X}", off);
+				++shuttleHits;
+				continue;
+			}
+
+			// Owned: the qword is a pointer whose target begins with a model
+			// vtable. The cheap shape test first - every candidate that survives
+			// it costs a VirtualQuery, and most words in an object are not
+			// pointers at all.
+			if (word < 0x10000 || word > 0x7FFFFFFFFFFFull || (word & 7) != 0)
+				continue;
+			const auto target = reinterpret_cast<const std::uint8_t*>(word);
+			if (ReadableBytesFrom(target, sizeof(std::uintptr_t)) < sizeof(std::uintptr_t))
+				continue;
+			const auto inner = *reinterpret_cast<const std::uintptr_t*>(target);
+			if (!inner)
+				continue;
+
+			if (std::find(modelVT.begin(), modelVT.end(), inner) != modelVT.end()) {
+				REX::INFO("[hudmodel] *** OWNED model at menu+0x{:X} -> {:016X} (vtable {:016X})",
+					off, word, inner);
+				++owned;
+			} else if (shuttleVT && inner == shuttleVT) {
+				REX::INFO("[hudmodel] event shuttle pointer at menu+0x{:X} -> {:016X}", off, word);
+				++shuttleHits;
+			}
+		}
+
+		if (embedded == 0 && owned == 0) {
+			REX::INFO("[hudmodel] RESULT: no ShipHudDataModel vtable within {} readable bytes of the "
+					  "menu ({} shuttle hit(s)). That is an ANSWER, not a failure - the model is "
+					  "owned somewhere other than SpaceshipHudMenu, and UIDataShuttleManager is the "
+					  "next suspect.",
+				avail, shuttleHits);
+		} else {
+			REX::INFO("[hudmodel] RESULT: {} embedded, {} owned-by-pointer, {} shuttle. The offset is "
+					  "the thing to keep - it is fixed for a given build, so it only has to be found "
+					  "once.",
+				embedded, owned, shuttleHits);
+		}
 	}
 
 	void ProbeSurveyVM()
@@ -9810,6 +10004,14 @@ namespace
 		if (g_surveyVmProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
 			ProbeSurveyVM();
 
+		// The ShipHudDataModel pointer hunt. Same placement and the same
+		// single-winner exchange as the probe above: this task can land on two
+		// threads in one frame, and one read-only walk is plenty. WorldSettled
+		// keeps it away from a half-built menu - the object it reads is the one
+		// the takeoff crash proved can be rebuilt underneath a worker thread.
+		if (g_hudModelProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
+			ProbeHudModelPtr();
+
 		// The survey sweep (Phase 6). Same place as the probe and for the same
 		// reason - a feed callback is inside Scaleform's locks and this reaches
 		// into the Papyrus VM.
@@ -9865,7 +10067,7 @@ namespace
 		                      bScaleformReader.GetValue() || bLogTargetCaptures.GetValue() ||
 		                      bDumpPlanetRecords.GetValue() || bProbeStarmapFeed.GetValue() ||
 		                      bProbeSurveyVM.GetValue() || bProbeVanillaChrome.GetValue() ||
-		                      bTestGraphicsClear.GetValue();
+		                      bProbeHudModelPtr.GetValue() || bTestGraphicsClear.GetValue();
 		if (anyRecon) {
 			REX::INFO("config: bLogInput={} bLogInputHeldFrames={} bLogInputNonButton={} uMaxInputLines={} "
 					  "bLogMenus={} bLogHeartbeat={} fHeartbeatSeconds={} bVerifyVTableID={} bSuppressThrottleTest={}",
@@ -9891,6 +10093,10 @@ namespace
 					  "trace without the thousands of lines the [Recon] switches produce.");
 		}
 
+		if (bProbeHudModelPtr.GetValue())
+			REX::INFO("[hudmodel] probe ON - from the pilot seat, press the scanner key to walk the "
+					  "SpaceshipHudMenu object looking for the engine ShipHudDataModel. Read-only. "
+					  "The '[hudmodel] RESULT' line always prints: a clean miss is an answer.");
 		if (bProbeSurveyVM.GetValue())
 			REX::INFO("[surveyed] probe A ON - in cruise, press the scanner key to dispatch "
 					  "Planet.GetSurveyPercent for every listed body. Read the '[surveyed]' lines: "
