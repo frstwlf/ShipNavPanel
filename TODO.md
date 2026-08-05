@@ -1292,19 +1292,28 @@ Each of these cost real time; the reasoning is in the findings docs.
   Same tooling, no game. The ship HUD's engine-side owner is **`ShipHudDataModel`**
   (an `IDataModel`, 33 vtables, **66 RTTI bases**), and its base list is the
   complete surface of how the HUD's state can be driven from outside — **32
-  events** — and ⚠ **that list does not match PHASE1's, which is a finding in
-  itself.** [PHASE1-SWF-FINDINGS.md:286](PHASE1-SWF-FINDINGS.md:286) tabulates
-  six *parameterised* UI→engine events; this model alone sinks **twenty
-  `ShipHud_*` events** plus `ShipHudQuickContainer_TransferMenu`, among them
-  **`ShipHud_SetTargetMode`**, which appears in no PHASE1 table. (Neither list
-  contains the other — `ShipHud_DockRequested`, `ShipHud_HailShip` and
-  `ShipHudQuickContainer_TransferItem` are sunk elsewhere.) So **"the UI
-  vocabulary is exhausted" is scoped to what the SWF DISPATCHES with a payload,
-  not to what the ENGINE ACCEPTS** — the same shape as the settled lesson about
-  not assuming a handler is limited to the values its vanilla callers pass, one
-  level up. ⚠ Whether the extra events take parameters is **unmeasured**: an RTTI
-  base list gives names, not signatures. Do not write "exhausted" again without
-  saying exhausted *of what*.
+  events**, against [PHASE1-SWF-FINDINGS.md:286](PHASE1-SWF-FINDINGS.md:286)'s
+  table of six. ⚠⚠ **I first wrote that up as PHASE1 having missed routes. It had
+  not, and the correction is the better fact.** Grepping every
+  `BSUIDataManager.dispatchEvent` in the exported scripts gives the complete
+  SWF-side vocabulary, and **every event PHASE1 left out carries a NON-REFERENCE
+  payload**: `ShipHud_SetTargetMode` and `ShipHud_OnMonocleToggle` are
+  `{bValue:Boolean}`, `ShipHud_AbortJump` is `{}`, `UpdateComponentPower` and
+  `BodyViewMarkerDimensions` carry neither id nor handle. PHASE1 tabulated the
+  events carrying an object **reference** — the only kind that could ever name a
+  target — so **its conclusion holds, and is now verified against the complete
+  source list instead of a hand-built table.**
+  ⛔ **`ShipHud_SetTargetMode` is DEAD for target selection** (checked 2026-08-05,
+  before building anything): `SpaceshipHudMenu.as:786` shows it is the **Target
+  Computer** toggle — `onTargetComputerPressed` → `SetTargetMode(true)`,
+  `onExitTargetComputerPressed` → `SetTargetMode(false)`. A boolean, no target
+  reference in it anywhere. It pairs with `ShipHud_TargetShipSystem`, which
+  targets a *subsystem of whatever is already targeted*. **Do not probe it.**
+  ⭐ **The lesson, and it cost one grep instead of one build and one test flight:
+  a sink list LONGER than your AS3 table is not evidence the table missed a
+  route.** An RTTI base list gives names, never signatures — use the engine sink
+  list for what is **reachable** and the AS3 for what a payload **is**. Neither
+  answers the other's question.
   Exactly one event in the list is engine-internal and about the target:
   **`TryUpdateShipHudTarget::Event`**, sunk at **mdisp 40**.
   - The door: `ShipHudDataModel` vtable **440397** @ `0x144C73358` is that sink
