@@ -504,6 +504,19 @@ namespace
 	// generous; VirtualQuery clamps it to what is actually committed, so
 	// over-asking costs nothing but a few page queries.
 	REX::TIniSetting<std::uint32_t> uProbeHudModelBytes{ "Recon", "uProbeHudModelBytes", 0x800 };
+
+	// The instance question is answered; the event's LAYOUT is what is left. This
+	// installs a PASS-THROUGH on ShipHudDataModel's
+	// BSTEventSink<TryUpdateShipHudTarget::Event>::ProcessEvent and logs the
+	// event's bytes as VANILLA fires it. It never swallows or alters an event.
+	REX::TIniSetting<bool> bHookHudTarget{ "Recon", "bHookHudTarget", false };
+	// How many bytes of the event struct to dump. Its real size is unknown, which
+	// is the point; VirtualQuery clamps this to what is actually readable.
+	REX::TIniSetting<std::uint32_t> uHookHudTargetBytes{ "Recon", "uHookHudTargetBytes", 64 };
+	// A cap on logged events. The engine fires this one freely, and an
+	// uncapped line-per-dispatch would bury the transitions that carry the
+	// information under thousands that repeat.
+	REX::TIniSetting<std::uint32_t> uHookHudTargetMax{ "Recon", "uHookHudTargetMax", 40 };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -4801,6 +4814,192 @@ namespace
 					  "once.",
 				embedded, owned, shuttleHits);
 		}
+	}
+
+	// ------------------------------------------------------------------
+	// TryUpdateShipHudTarget::Event - pass-through observation hook
+	// ------------------------------------------------------------------
+	//
+	// The instance question is answered (ShipHudDataModel is embedded in
+	// SpaceshipHudMenu at +0x190, measured 2026-08-06). What stands between here
+	// and DRIVING the sink is the event's LAYOUT - and vanilla fires this event
+	// itself every time the HUD target changes, so the cheap answer is to watch
+	// the game's own traffic rather than guess at a struct.
+	//
+	// This patches slot 1 of ShipHudDataModel's
+	// BSTEventSink<TryUpdateShipHudTarget::Event> vtable with a pass-through that
+	// logs the event's bytes and then calls the original. It never swallows an
+	// event and never alters one: the return value is whatever the original
+	// returned, on every path.
+	//
+	// ⚠ The vtable patched is the CLASS's, in .rdata - not a per-instance copy.
+	// So it installs once for the process, needs no menu open, survives a movie
+	// rebuild, and does NOT depend on the measured 0x190 offset. It keys on the
+	// address library id, which is the part that survives a game patch.
+	//
+	// Signature, from RE/B/BSTEvent.h:
+	//   BSEventNotifyControl ProcessEvent(const Event&, BSTEventSource<Event>*)
+	// A reference is a pointer in the ABI, so the raw shape is
+	// (this, event, source) with a uint32 return.
+	using ProcessHudTarget_t = RE::BSEventNotifyControl (*)(void*, const void*, void*);
+
+	std::atomic<ProcessHudTarget_t> g_origProcessHudTarget{ nullptr };
+	std::atomic<bool>               g_hudTargetClaimed{ false };
+	std::atomic<bool>               g_hudTargetInstalled{ false };
+	std::atomic<bool>               g_hudTargetFailed{ false };
+	std::atomic<std::uint32_t>      g_hudTargetLogged{ 0 };
+	std::atomic<std::uint32_t>      g_hudTargetRepeats{ 0 };
+	// ONE value, published whole. Two atomics each holding half of a payload is
+	// exactly the torn read that made the survey oracle cry wolf.
+	std::atomic<std::uint64_t> g_hudTargetLastHash{ 0 };
+
+	// Name a PNDT from the mod's own table when the lock happens to be free.
+	// try_lock and never block: this runs inside the engine's event dispatch, and
+	// the ESM parse thread holds that mutex while it builds.
+	std::string TryNameBody(std::uint32_t a_formID)
+	{
+		std::unique_lock lock{ g_bodyTableMutex, std::try_to_lock };
+		if (!lock.owns_lock())
+			return {};
+		const auto it = g_bodyTable.find(a_formID);
+		return it != g_bodyTable.end() ? it->second.name : std::string{};
+	}
+
+	RE::BSEventNotifyControl ProcessHudTargetHook(void* a_this, const void* a_event, void* a_source)
+	{
+		const auto original = g_origProcessHudTarget.load(std::memory_order_acquire);
+
+		// Everything between here and the call through is observation, and every
+		// branch of it can be skipped without the game noticing. The call through
+		// is the last thing that happens and it happens unconditionally.
+		if (a_event && bHookHudTarget.GetValue()) {
+			const auto  bytes = static_cast<const std::uint8_t*>(a_event);
+			const auto  want = static_cast<std::size_t>(uHookHudTargetBytes.GetValue());
+			const auto  avail = ReadableBytesFrom(bytes, want);
+
+			if (avail >= sizeof(std::uint64_t)) {
+				// FNV-1a over exactly what would be printed. The engine fires this
+				// event repeatedly while a target is held, and a line per dispatch
+				// would bury the transitions - which are the only part that says
+				// anything about the layout.
+				std::uint64_t hash = 1469598103934665603ull;
+				for (std::size_t i = 0; i < avail; ++i) {
+					hash ^= bytes[i];
+					hash *= 1099511628211ull;
+				}
+
+				if (g_hudTargetLastHash.exchange(hash, std::memory_order_acq_rel) == hash) {
+					g_hudTargetRepeats.fetch_add(1, std::memory_order_relaxed);
+				} else if (g_hudTargetLogged.load(std::memory_order_acquire) < uHookHudTargetMax.GetValue()) {
+					const auto n = g_hudTargetLogged.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+					std::string dump;
+					dump.reserve(avail * 3);
+					for (std::size_t off = 0; off + sizeof(std::uint64_t) <= avail; off += sizeof(std::uint64_t))
+						dump += std::format("+{:02X}:{:016X} ", off,
+							*reinterpret_cast<const std::uint64_t*>(bytes + off));
+
+					REX::INFO("[hudtgt] #{} event {:016X} source {:016X} thread {} ({} readable bytes, "
+							  "{} repeat(s) suppressed so far)",
+						n, reinterpret_cast<std::uintptr_t>(a_event),
+						reinterpret_cast<std::uintptr_t>(a_source), ThreadIdString(), avail,
+						g_hudTargetRepeats.load(std::memory_order_relaxed));
+					REX::INFO("[hudtgt]   {}", dump);
+
+					// Any 32-bit word that resolves to a real form is worth
+					// naming - it turns a qword into "this field is the target".
+					// ⚠ Reported as CANDIDATES: a small integer can collide with
+					// a real form id by coincidence, and LookupByID cannot tell
+					// the difference. Corroborate across several events before
+					// calling any offset the target field.
+					for (std::size_t off = 0; off + sizeof(std::uint32_t) <= avail; off += sizeof(std::uint32_t)) {
+						const auto id = *reinterpret_cast<const std::uint32_t*>(bytes + off);
+						if (id < 0x100)
+							continue;
+						const auto form = RE::TESForm::LookupByID(id);
+						if (!form)
+							continue;
+						const auto type = static_cast<std::uint32_t>(form->GetFormType());
+						const auto name = form->GetFormType() == RE::FormType::kPNDT ? TryNameBody(id)
+						                                                             : std::string{};
+						if (!name.empty())
+							REX::INFO("[hudtgt]   +{:02X} = {:08X} -> form type {} (PNDT) '{}'", off, id,
+								type, name);
+						else
+							REX::INFO("[hudtgt]   +{:02X} = {:08X} -> form type {}", off, id, type);
+					}
+				}
+			}
+		}
+
+		// Unconditional. A hook that can fail to call through is a hook that can
+		// break the HUD's own targeting, which is the one thing this must not do.
+		if (original)
+			return original(a_this, a_event, a_source);
+		return RE::BSEventNotifyControl::kContinue;
+	}
+
+	void TryInstallHudTargetHook()
+	{
+		if (!bHookHudTarget.GetValue() ||
+			g_hudTargetInstalled.load(std::memory_order_acquire) ||
+			g_hudTargetFailed.load(std::memory_order_acquire))
+			return;
+
+		// Two threads patching one vtable slot leaves the hook calling itself -
+		// the SeamlessGravJumps failure, and the reason this is not a plain bool.
+		const SingleWinner winner{ g_hudTargetClaimed };
+		if (!winner.Won())
+			return;
+		if (g_hudTargetInstalled.load(std::memory_order_acquire))
+			return;
+
+		// ShipHudDataModel's BSTEventSink<TryUpdateShipHudTarget::Event> vtable,
+		// and the ProcessEvent its slot 1 is supposed to hold. Both read offline
+		// out of the exe (tools/Dump-Vtable.ps1) and recorded in TODO.md.
+		constexpr std::uint64_t kSinkVTableID = 440397;
+		constexpr std::uint64_t kProcessEventID = 89321;
+		constexpr std::size_t   kProcessEventSlot = 1;
+
+		const REL::ID sinkVT{ kSinkVTableID };
+		const REL::ID processEvent{ kProcessEventID };
+		if (sinkVT.offset() == 0 || processEvent.offset() == 0) {
+			REX::WARN("[hudtgt] address library does not know vtable id {} or function id {} - hook "
+					  "NOT installed",
+				kSinkVTableID, kProcessEventID);
+			g_hudTargetFailed.store(true, std::memory_order_release);
+			return;
+		}
+
+		const auto vtableAddr = sinkVT.address();
+		const auto slot = vtableAddr + sizeof(void*) * kProcessEventSlot;
+		const auto current = *reinterpret_cast<std::uintptr_t*>(slot);
+
+		// ⭐ Refuse to patch anything but the function the offline map says is
+		// there. On a build where these ids have moved, this is the difference
+		// between "the hook did not install" and "an unrelated virtual now points
+		// at our function".
+		if (current != processEvent.address()) {
+			REX::WARN("[hudtgt] slot {} of vtable {:016X} holds {:016X}, expected {:016X} - NOT "
+					  "patching. The address library ids do not describe this build.",
+				kProcessEventSlot, vtableAddr, current, processEvent.address());
+			g_hudTargetFailed.store(true, std::memory_order_release);
+			return;
+		}
+
+		// Publish the original BEFORE redirecting: the moment write_vfunc lands,
+		// another thread can be inside the hook needing it.
+		g_origProcessHudTarget.store(
+			reinterpret_cast<ProcessHudTarget_t>(current), std::memory_order_release);
+
+		REL::Relocation<std::uintptr_t> vtable{ vtableAddr };
+		vtable.write_vfunc(kProcessEventSlot, &ProcessHudTargetHook);
+		g_hudTargetInstalled.store(true, std::memory_order_release);
+
+		REX::INFO("[hudtgt] pass-through installed on "
+				  "ShipHudDataModel::ProcessEvent(TryUpdateShipHudTarget::Event) - vtable {:016X}, "
+				  "original {:016X}. It logs and calls through; it never swallows an event.",
+			vtableAddr, current);
 	}
 
 	void ProbeSurveyVM()
@@ -9977,6 +10176,11 @@ namespace
 		TryInstallInputTap();
 		TryInstallCameraTap();
 
+		// Self-latching and independent of the menu: it patches a class vtable
+		// resolved from the address library, so there is nothing to wait for and
+		// nothing to reinstall when a movie is rebuilt.
+		TryInstallHudTargetHook();
+
 		// Only the subscription bootstrap happens here, and only once the world
 		// has settled. Everything else that touches the movie - creating the
 		// arrow, reading cruise state, moving the label - now runs inside the
@@ -10067,7 +10271,8 @@ namespace
 		                      bScaleformReader.GetValue() || bLogTargetCaptures.GetValue() ||
 		                      bDumpPlanetRecords.GetValue() || bProbeStarmapFeed.GetValue() ||
 		                      bProbeSurveyVM.GetValue() || bProbeVanillaChrome.GetValue() ||
-		                      bProbeHudModelPtr.GetValue() || bTestGraphicsClear.GetValue();
+		                      bProbeHudModelPtr.GetValue() || bHookHudTarget.GetValue() ||
+		                      bTestGraphicsClear.GetValue();
 		if (anyRecon) {
 			REX::INFO("config: bLogInput={} bLogInputHeldFrames={} bLogInputNonButton={} uMaxInputLines={} "
 					  "bLogMenus={} bLogHeartbeat={} fHeartbeatSeconds={} bVerifyVTableID={} bSuppressThrottleTest={}",
@@ -10093,6 +10298,11 @@ namespace
 					  "trace without the thousands of lines the [Recon] switches produce.");
 		}
 
+		if (bHookHudTarget.GetValue())
+			REX::INFO("[hudtgt] pass-through hook ON - it logs TryUpdateShipHudTarget::Event as the "
+					  "GAME fires it and always calls through. Target things with your target key "
+					  "and read the '[hudtgt]' lines; identical payloads are suppressed, and the "
+					  "install line says whether it patched or refused.");
 		if (bProbeHudModelPtr.GetValue())
 			REX::INFO("[hudmodel] probe ON - from the pilot seat, press the scanner key to walk the "
 					  "SpaceshipHudMenu object looking for the engine ShipHudDataModel. Read-only. "
