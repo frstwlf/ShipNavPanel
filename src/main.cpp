@@ -492,6 +492,31 @@ namespace
 	// see the note in DispatchSurveyPercent - so it gets its own switch even
 	// though the whole probe is already opt-in.
 	REX::TIniSetting<bool> bProbeSurveyBind{ "Recon", "bProbeSurveyBind", true };
+
+	// The one remaining route to setting the info target (TODO.md, Settled):
+	// ShipHudDataModel sinks TryUpdateShipHudTarget::Event, and driving that sink
+	// needs a pointer to the model. CommonLibSF publishes no accessor and the
+	// class is not a singleton, so this goes looking - read-only, bounded, and
+	// only when the scanner key is pressed. On: the scanner key runs the probe.
+	REX::TIniSetting<bool> bProbeHudModelPtr{ "Recon", "bProbeHudModelPtr", false };
+	// How far into the menu object to walk. SpaceshipHudMenu's RTTI bases alone
+	// reach past 0x190 and members follow, so the default is deliberately
+	// generous; VirtualQuery clamps it to what is actually committed, so
+	// over-asking costs nothing but a few page queries.
+	REX::TIniSetting<std::uint32_t> uProbeHudModelBytes{ "Recon", "uProbeHudModelBytes", 0x800 };
+
+	// The instance question is answered; the event's LAYOUT is what is left. This
+	// installs a PASS-THROUGH on ShipHudDataModel's
+	// BSTEventSink<TryUpdateShipHudTarget::Event>::ProcessEvent and logs the
+	// event's bytes as VANILLA fires it. It never swallows or alters an event.
+	REX::TIniSetting<bool> bHookHudTarget{ "Recon", "bHookHudTarget", false };
+	// How many bytes of the event struct to dump. Its real size is unknown, which
+	// is the point; VirtualQuery clamps this to what is actually readable.
+	REX::TIniSetting<std::uint32_t> uHookHudTargetBytes{ "Recon", "uHookHudTargetBytes", 64 };
+	// A cap on logged events. The engine fires this one freely, and an
+	// uncapped line-per-dispatch would bury the transitions that carry the
+	// information under thousands that repeat.
+	REX::TIniSetting<std::uint32_t> uHookHudTargetMax{ "Recon", "uHookHudTargetMax", 40 };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -653,6 +678,7 @@ namespace
 	std::atomic<bool>          g_starmapDumpRequested{ false };
 	std::atomic<bool>          g_dumpPlanetsRequested{ false };
 	std::atomic<bool>          g_surveyVmProbeRequested{ false };
+	std::atomic<bool>          g_hudModelProbeRequested{ false };
 	// Last body dossier the info-target feed published, kept so probe A's float
 	// can be checked against the number the vanilla planet card would draw for
 	// the same body. That the two are the same quantity is an inference from a
@@ -2936,6 +2962,8 @@ namespace
 			g_dumpPlanetsRequested.store(true, std::memory_order_release);
 		if (bProbeSurveyVM.GetValue())
 			g_surveyVmProbeRequested.store(true, std::memory_order_release);
+		if (bProbeHudModelPtr.GetValue())
+			g_hudModelProbeRequested.store(true, std::memory_order_release);
 
 		// Only hijack the scanner key while cruising; outside cruise it still
 		// opens the vanilla ship scanner.
@@ -4607,6 +4635,446 @@ namespace
 			REX::INFO("[surveyed] sweep: {} of {} listed body/bodies queried ({} already complete, "
 					  "never re-read)",
 				sent, listed, complete);
+	}
+
+	// ------------------------------------------------------------------
+	// Where does the engine's ShipHudDataModel instance live? (2026-08-06)
+	// ------------------------------------------------------------------
+	//
+	// `TryUpdateShipHudTarget::Event` is the ONLY engine-internal event the ship
+	// HUD sinks that concerns the target, and `ShipHudDataModel` is what sinks it
+	// - read offline out of the exe's RTTI with tools/Dump-Vtable.ps1. With
+	// Spaceship::TargetingMode settled as the Target Computer, driving that sink
+	// is the one remaining route to setting the info target. Two things stand in
+	// the way: the event's LAYOUT, and a POINTER to the model. This probe goes
+	// after the pointer, which is the half that does not need a disassembler.
+	//
+	// There is no published accessor - `ShipHudDataModel` has no namespace in
+	// IDs.h - and it is not a `BSTSingletonSDM`, so there is no static buffer to
+	// resolve either. The cheap hypothesis is that the MENU owns it.
+	//
+	// ⚠ The menu does not DERIVE from it; their RTTI base lists are disjoint.
+	// SpaceshipHudMenu sinks HailShip, DockRequested, QuickContainer_TransferItem,
+	// AbortJump and the Reticle_* events; ShipHudDataModel sinks Target, Deselect,
+	// Activate and TryUpdateShipHudTarget. (That split is also why PHASE1's table
+	// looks the way it does - the parameterised events it found are exactly the
+	// ones the MENU sinks.) So if the menu holds the model, it holds it as a
+	// member: embedded, or behind a pointer. Both are checked.
+	//
+	// READ-ONLY AND BOUNDED. Nothing is written and nothing is called. Every read
+	// is clamped by ReadableBytesFrom, so a wrong guess about the object's size
+	// cannot fault, and the `Scaleform::Ptr` returned by GetMenu is held for the
+	// whole walk - it is an intrusive refcount, so the menu cannot be freed out
+	// from under the scan.
+	//
+	// ⚠ A CLEAN MISS IS A RESULT, not a failure, and says so in the log: it would
+	// mean the model is owned somewhere other than the menu (UIDataShuttleManager
+	// is the next suspect) and the hunt moves rather than stops. This must never
+	// be a check that cannot pass - it always prints which of the two happened.
+	void ProbeHudModelPtr()
+	{
+		REX::INFO("[hudmodel] ==== probe: locating the engine-side ShipHudDataModel ====");
+
+		const auto ui = RE::UI::GetSingleton();
+		if (!ui) {
+			REX::WARN("[hudmodel] no UI singleton - probe skipped");
+			return;
+		}
+		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
+		if (!ui->IsMenuOpen(s_shipHud)) {
+			REX::INFO("[hudmodel] {} is not open - probe skipped. Run it from the pilot seat.",
+				kShipHudMenu);
+			return;
+		}
+
+		// Held for the duration: Scaleform::Ptr is an intrusive refcount, so this
+		// is what keeps the object alive while the walk reads it.
+		const auto menu = ui->GetMenu(s_shipHud);
+		const auto obj = reinterpret_cast<const std::uint8_t*>(menu.get());
+		if (!obj) {
+			REX::WARN("[hudmodel] menu entry carries no object - probe skipped");
+			return;
+		}
+
+		// An id the address library does not know resolves to the module base,
+		// because address() is base + offset and a miss offsets by zero. Such a
+		// set would "match" a great deal of nothing, so drop them on offset().
+		const auto resolve = [](const REL::ID& a_id) -> std::uintptr_t {
+			const auto off = a_id.offset();
+			return off ? a_id.address() : 0;
+		};
+
+		std::vector<std::uintptr_t> modelVT;
+		std::size_t                 modelDropped = 0;
+		modelVT.reserve(RE::VTABLE::ShipHudDataModel.size());
+		for (const auto& id : RE::VTABLE::ShipHudDataModel) {
+			if (const auto a = resolve(id))
+				modelVT.push_back(a);
+			else
+				++modelDropped;
+		}
+
+		std::vector<std::uintptr_t> menuVT;
+		menuVT.reserve(RE::VTABLE::SpaceshipHudMenu.size());
+		for (const auto& id : RE::VTABLE::SpaceshipHudMenu)
+			if (const auto a = resolve(id))
+				menuVT.push_back(a);
+
+		std::uintptr_t shuttleVT = 0;
+		for (const auto& id : RE::VTABLE::ShipHudDataModel__ShipHudEventShuttle)
+			if (const auto a = resolve(id))
+				shuttleVT = a;
+
+		REX::INFO("[hudmodel] vtable sets resolved: {} model ({} unresolved), {} menu, shuttle {}",
+			modelVT.size(), modelDropped, menuVT.size(), shuttleVT ? "ok" : "UNRESOLVED");
+		if (modelVT.empty()) {
+			REX::WARN("[hudmodel] no ShipHudDataModel vtable resolved - nothing to match against, "
+					  "probe stopped. The address library does not know these ids on this build.");
+			return;
+		}
+
+		// Prove the pointer before measuring any offset from it. IMenu sits at
+		// mdisp 0 of SpaceshipHudMenu, so the object's own first qword must be one
+		// of the vtables the address library maps for that class. If it is not,
+		// every offset below is measured from the wrong thing and says so.
+		if (ReadableBytesFrom(obj, sizeof(std::uintptr_t)) < sizeof(std::uintptr_t)) {
+			REX::WARN("[hudmodel] menu object is not readable - probe stopped");
+			return;
+		}
+		const auto objVT = *reinterpret_cast<const std::uintptr_t*>(obj);
+		const bool isMenu = std::find(menuVT.begin(), menuVT.end(), objVT) != menuVT.end();
+		if (isMenu) {
+			REX::INFO("[hudmodel] menu object {:016X}, vtable {:016X} - confirmed SpaceshipHudMenu",
+				reinterpret_cast<std::uintptr_t>(obj), objVT);
+		} else {
+			REX::WARN("[hudmodel] menu object {:016X} has vtable {:016X}, which is NOT one of the {} "
+					  "mapped SpaceshipHudMenu vtables. Offsets below are suspect - treat any hit as "
+					  "unverified until this line agrees.",
+				reinterpret_cast<std::uintptr_t>(obj), objVT, menuVT.size());
+		}
+
+		const std::size_t want = uProbeHudModelBytes.GetValue();
+		const std::size_t avail = ReadableBytesFrom(obj, want);
+		REX::INFO("[hudmodel] walking {} of {} requested bytes (VirtualQuery clamp)", avail, want);
+
+		std::size_t embedded = 0;
+		std::size_t owned = 0;
+		std::size_t shuttleHits = 0;
+
+		for (std::size_t off = 0; off + sizeof(std::uintptr_t) <= avail; off += sizeof(std::uintptr_t)) {
+			const auto word = *reinterpret_cast<const std::uintptr_t*>(obj + off);
+			if (!word)
+				continue;
+
+			// Embedded: the qword IS a model vtable, so a ShipHudDataModel
+			// subobject begins at this offset.
+			if (std::find(modelVT.begin(), modelVT.end(), word) != modelVT.end()) {
+				REX::INFO("[hudmodel] EMBEDDED model at menu+0x{:X} (vtable {:016X})", off, word);
+				++embedded;
+				continue;
+			}
+			if (shuttleVT && word == shuttleVT) {
+				REX::INFO("[hudmodel] embedded event shuttle at menu+0x{:X}", off);
+				++shuttleHits;
+				continue;
+			}
+
+			// Owned: the qword is a pointer whose target begins with a model
+			// vtable. The cheap shape test first - every candidate that survives
+			// it costs a VirtualQuery, and most words in an object are not
+			// pointers at all.
+			if (word < 0x10000 || word > 0x7FFFFFFFFFFFull || (word & 7) != 0)
+				continue;
+			const auto target = reinterpret_cast<const std::uint8_t*>(word);
+			if (ReadableBytesFrom(target, sizeof(std::uintptr_t)) < sizeof(std::uintptr_t))
+				continue;
+			const auto inner = *reinterpret_cast<const std::uintptr_t*>(target);
+			if (!inner)
+				continue;
+
+			if (std::find(modelVT.begin(), modelVT.end(), inner) != modelVT.end()) {
+				REX::INFO("[hudmodel] *** OWNED model at menu+0x{:X} -> {:016X} (vtable {:016X})",
+					off, word, inner);
+				++owned;
+			} else if (shuttleVT && inner == shuttleVT) {
+				REX::INFO("[hudmodel] event shuttle pointer at menu+0x{:X} -> {:016X}", off, word);
+				++shuttleHits;
+			}
+		}
+
+		if (embedded == 0 && owned == 0) {
+			REX::INFO("[hudmodel] RESULT: no ShipHudDataModel vtable within {} readable bytes of the "
+					  "menu ({} shuttle hit(s)). That is an ANSWER, not a failure - the model is "
+					  "owned somewhere other than SpaceshipHudMenu, and UIDataShuttleManager is the "
+					  "next suspect.",
+				avail, shuttleHits);
+		} else {
+			REX::INFO("[hudmodel] RESULT: {} embedded, {} owned-by-pointer, {} shuttle. The offset is "
+					  "the thing to keep - it is fixed for a given build, so it only has to be found "
+					  "once.",
+				embedded, owned, shuttleHits);
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// TryUpdateShipHudTarget::Event - pass-through observation hook
+	// ------------------------------------------------------------------
+	//
+	// The instance question is answered (ShipHudDataModel is embedded in
+	// SpaceshipHudMenu at +0x190, measured 2026-08-06). What stands between here
+	// and DRIVING the sink is the event's LAYOUT - and vanilla fires this event
+	// itself every time the HUD target changes, so the cheap answer is to watch
+	// the game's own traffic rather than guess at a struct.
+	//
+	// This patches slot 1 of ShipHudDataModel's
+	// BSTEventSink<TryUpdateShipHudTarget::Event> vtable with a pass-through that
+	// logs the event's bytes and then calls the original. It never swallows an
+	// event and never alters one: the return value is whatever the original
+	// returned, on every path.
+	//
+	// ⚠ The vtable patched is the CLASS's, in .rdata - not a per-instance copy.
+	// So it installs once for the process, needs no menu open, survives a movie
+	// rebuild, and does NOT depend on the measured 0x190 offset. It keys on the
+	// address library id, which is the part that survives a game patch.
+	//
+	// Signature, from RE/B/BSTEvent.h:
+	//   BSEventNotifyControl ProcessEvent(const Event&, BSTEventSource<Event>*)
+	// A reference is a pointer in the ABI, so the raw shape is
+	// (this, event, source) with a uint32 return.
+	using ProcessHudTarget_t = RE::BSEventNotifyControl (*)(void*, const void*, void*);
+
+	// ⭐ WHY THERE ARE THREE OF THESE, and it is the lesson of the first flight:
+	// the hook installed on exactly the right function (the guard below verified
+	// the original against the offline map) and then NOTHING ARRIVED. On its own
+	// that cannot tell "the engine never sends this event" from "a patched sink
+	// vtable is not how this event reaches the model" - a silent result with two
+	// explanations is not a result.
+	//
+	// So the other two are CONTROLS, chosen because the tester's own keypresses
+	// drive them: `ShipHud_Target` is the target key and `ShipHud_Deselect` is
+	// the clear key, both sunk by the same ShipHudDataModel through the same kind
+	// of vtable slot. If those log and `tryupdate` stays silent, the silence is a
+	// finding about the engine. If none of the three log, the mechanism is wrong
+	// and the finding is about this code instead.
+	struct SinkProbe
+	{
+		const char*   tag;
+		const char*   event;
+		std::uint64_t vtableID;        // ShipHudDataModel's sink subobject vtable
+		std::uint64_t processEventID;  // what slot 1 must already hold
+	};
+
+	constexpr std::array<SinkProbe, 3> kSinkProbes{ {
+		{ "tryupdate", "TryUpdateShipHudTarget::Event", 440397, 89321 },
+		{ "target", "ShipHud_Target - your target key", 440381, 89317 },
+		{ "deselect", "ShipHud_Deselect - your clear key", 440379, 1016391 },
+	} };
+
+	std::array<std::atomic<ProcessHudTarget_t>, kSinkProbes.size()> g_sinkOriginal{};
+	std::array<std::atomic<std::uint32_t>, kSinkProbes.size()>      g_sinkLogged{};
+	std::array<std::atomic<std::uint32_t>, kSinkProbes.size()>      g_sinkRepeats{};
+	// ONE value per sink, published whole. Two atomics each holding half of a
+	// payload is exactly the torn read that made the survey oracle cry wolf.
+	std::array<std::atomic<std::uint64_t>, kSinkProbes.size()> g_sinkLastHash{};
+
+	std::atomic<bool> g_sinkClaimed{ false };
+	std::atomic<bool> g_sinkInstalled{ false };
+	std::atomic<bool> g_sinkFailed{ false };
+
+	// Name a PNDT from the mod's own table when the lock happens to be free.
+	// try_lock and never block: this runs inside the engine's event dispatch, and
+	// the ESM parse thread holds that mutex while it builds.
+	std::string TryNameBody(std::uint32_t a_formID)
+	{
+		std::unique_lock lock{ g_bodyTableMutex, std::try_to_lock };
+		if (!lock.owns_lock())
+			return {};
+		const auto it = g_bodyTable.find(a_formID);
+		return it != g_bodyTable.end() ? it->second.name : std::string{};
+	}
+
+	RE::BSEventNotifyControl HandleSinkEvent(std::size_t a_index, void* a_this, const void* a_event,
+		void* a_source)
+	{
+		const auto& probe = kSinkProbes[a_index];
+		const auto  original = g_sinkOriginal[a_index].load(std::memory_order_acquire);
+
+		// Everything between here and the call through is observation, and every
+		// branch of it can be skipped without the game noticing. The call through
+		// is the last thing that happens and it happens unconditionally.
+		if (a_event && bHookHudTarget.GetValue()) {
+			const auto  bytes = static_cast<const std::uint8_t*>(a_event);
+			const auto  want = static_cast<std::size_t>(uHookHudTargetBytes.GetValue());
+			const auto  avail = ReadableBytesFrom(bytes, want);
+
+			if (avail >= sizeof(std::uint64_t)) {
+				// FNV-1a over exactly what would be printed. The engine fires this
+				// event repeatedly while a target is held, and a line per dispatch
+				// would bury the transitions - which are the only part that says
+				// anything about the layout.
+				std::uint64_t hash = 1469598103934665603ull;
+				for (std::size_t i = 0; i < avail; ++i) {
+					hash ^= bytes[i];
+					hash *= 1099511628211ull;
+				}
+
+				if (g_sinkLastHash[a_index].exchange(hash, std::memory_order_acq_rel) == hash) {
+					g_sinkRepeats[a_index].fetch_add(1, std::memory_order_relaxed);
+				} else if (g_sinkLogged[a_index].load(std::memory_order_acquire) <
+						   uHookHudTargetMax.GetValue()) {
+					const auto n = g_sinkLogged[a_index].fetch_add(1, std::memory_order_acq_rel) + 1;
+
+					std::string dump;
+					dump.reserve(avail * 3);
+					for (std::size_t off = 0; off + sizeof(std::uint64_t) <= avail; off += sizeof(std::uint64_t))
+						dump += std::format("+{:02X}:{:016X} ", off,
+							*reinterpret_cast<const std::uint64_t*>(bytes + off));
+
+					REX::INFO("[hudtgt] {} #{} event {:016X} source {:016X} this {:016X} thread {} "
+							  "({} readable bytes, {} repeat(s) suppressed so far)",
+						probe.tag, n, reinterpret_cast<std::uintptr_t>(a_event),
+						reinterpret_cast<std::uintptr_t>(a_source),
+						reinterpret_cast<std::uintptr_t>(a_this), ThreadIdString(), avail,
+						g_sinkRepeats[a_index].load(std::memory_order_relaxed));
+					REX::INFO("[hudtgt] {}   {}", probe.tag, dump);
+
+					// Any 32-bit word that resolves to a real form is worth naming
+					// - it turns a qword into "this field is the target".
+					//
+					// ⚠ Walk QWORDS and skip any that is itself a plausible
+					// pointer. The first flight showed exactly why: 0x00007FF6,
+					// the top half of every exe address in the dump, resolves
+					// through LookupByID to a real form, so FOUR meaningless
+					// "form type 41" lines appeared under every single event. A
+					// diagnostic that cries wolf is worse than none - the next
+					// real hit gets waved away with the noise.
+					//
+					// ⚠ Even so these stay CANDIDATES: a small integer can still
+					// collide with a real form id, and LookupByID cannot tell the
+					// difference. Corroborate across several events, and across
+					// several DIFFERENT targets, before calling an offset the
+					// target field.
+					for (std::size_t off = 0; off + sizeof(std::uint64_t) <= avail; off += sizeof(std::uint64_t)) {
+						const auto word = *reinterpret_cast<const std::uint64_t*>(bytes + off);
+						if (word >= 0x10000 && word <= 0x7FFFFFFFFFFFull)
+							continue;  // a pointer; neither half of it is a form id
+
+						for (std::size_t half = 0; half < 2; ++half) {
+							const auto id = static_cast<std::uint32_t>(word >> (half * 32));
+							if (id < 0x100)
+								continue;
+							const auto form = RE::TESForm::LookupByID(id);
+							if (!form)
+								continue;
+							const auto at = off + half * sizeof(std::uint32_t);
+							const auto type = static_cast<std::uint32_t>(form->GetFormType());
+							const auto name = form->GetFormType() == RE::FormType::kPNDT
+							                    ? TryNameBody(id)
+							                    : std::string{};
+							if (!name.empty())
+								REX::INFO("[hudtgt] {}   +{:02X} = {:08X} -> form type {} (PNDT) '{}'",
+									probe.tag, at, id, type, name);
+							else
+								REX::INFO("[hudtgt] {}   +{:02X} = {:08X} -> form type {}", probe.tag,
+									at, id, type);
+						}
+					}
+				}
+			}
+		}
+
+		// Unconditional. A hook that can fail to call through is a hook that can
+		// break the HUD's own targeting, which is the one thing this must not do.
+		if (original)
+			return original(a_this, a_event, a_source);
+		return RE::BSEventNotifyControl::kContinue;
+	}
+
+	// One body, three distinct function addresses - which is the whole point: a
+	// patched slot has no way to say which sink it belongs to, so each needs its
+	// own entry point carrying the index.
+	template <std::size_t Index>
+	RE::BSEventNotifyControl SinkThunk(void* a_this, const void* a_event, void* a_source)
+	{
+		return HandleSinkEvent(Index, a_this, a_event, a_source);
+	}
+
+	void TryInstallHudTargetHook()
+	{
+		if (!bHookHudTarget.GetValue() ||
+			g_sinkInstalled.load(std::memory_order_acquire) ||
+			g_sinkFailed.load(std::memory_order_acquire))
+			return;
+
+		// Two threads patching one vtable slot leaves the hook calling itself -
+		// the SeamlessGravJumps failure, and the reason this is not a plain bool.
+		const SingleWinner winner{ g_sinkClaimed };
+		if (!winner.Won())
+			return;
+		if (g_sinkInstalled.load(std::memory_order_acquire))
+			return;
+
+		static constexpr std::array<ProcessHudTarget_t, kSinkProbes.size()> kThunks{
+			&SinkThunk<0>, &SinkThunk<1>, &SinkThunk<2>
+		};
+		constexpr std::size_t kProcessEventSlot = 1;
+
+		// Each sink is installed on its own account and reported on its own line.
+		// One that cannot be hooked must not take the others down with it - the
+		// same rule the feed subscriptions learned the hard way.
+		std::size_t installed = 0;
+		for (std::size_t i = 0; i < kSinkProbes.size(); ++i) {
+			const auto&   probe = kSinkProbes[i];
+			const REL::ID sinkVT{ probe.vtableID };
+			const REL::ID processEvent{ probe.processEventID };
+
+			if (sinkVT.offset() == 0 || processEvent.offset() == 0) {
+				REX::WARN("[hudtgt] {}: address library knows neither vtable {} nor function {} - "
+						  "not hooked",
+					probe.tag, probe.vtableID, probe.processEventID);
+				continue;
+			}
+
+			const auto vtableAddr = sinkVT.address();
+			const auto slot = vtableAddr + sizeof(void*) * kProcessEventSlot;
+			const auto current = *reinterpret_cast<std::uintptr_t*>(slot);
+
+			// ⭐ Refuse to patch anything but the function the offline map says is
+			// there. On a build where these ids have moved, this is the difference
+			// between "the hook did not install" and "an unrelated virtual now
+			// points at our function".
+			if (current != processEvent.address()) {
+				REX::WARN("[hudtgt] {}: slot {} of vtable {:016X} holds {:016X}, expected {:016X} - "
+						  "NOT patching. These ids do not describe this build.",
+					probe.tag, kProcessEventSlot, vtableAddr, current, processEvent.address());
+				continue;
+			}
+
+			// Publish the original BEFORE redirecting: the moment write_vfunc
+			// lands, another thread can be inside the thunk needing it.
+			g_sinkOriginal[i].store(
+				reinterpret_cast<ProcessHudTarget_t>(current), std::memory_order_release);
+
+			REL::Relocation<std::uintptr_t> vtable{ vtableAddr };
+			vtable.write_vfunc(kProcessEventSlot, kThunks[i]);
+			++installed;
+
+			REX::INFO("[hudtgt] {}: pass-through installed on {} (vtable {:016X}, original {:016X})",
+				probe.tag, probe.event, vtableAddr, current);
+		}
+
+		if (installed == 0) {
+			g_sinkFailed.store(true, std::memory_order_release);
+			REX::WARN("[hudtgt] nothing hooked - none of the ids describe this build");
+			return;
+		}
+
+		g_sinkInstalled.store(true, std::memory_order_release);
+		REX::INFO("[hudtgt] {} of {} sinks hooked. Now press your TARGET key and your CLEAR key on a "
+				  "few different things. If 'target' and 'deselect' log while 'tryupdate' stays "
+				  "silent, that silence is a finding about the engine rather than a broken hook - "
+				  "which is exactly what the first flight could not tell us.",
+			installed, kSinkProbes.size());
 	}
 
 	void ProbeSurveyVM()
@@ -9783,6 +10251,11 @@ namespace
 		TryInstallInputTap();
 		TryInstallCameraTap();
 
+		// Self-latching and independent of the menu: it patches a class vtable
+		// resolved from the address library, so there is nothing to wait for and
+		// nothing to reinstall when a movie is rebuilt.
+		TryInstallHudTargetHook();
+
 		// Only the subscription bootstrap happens here, and only once the world
 		// has settled. Everything else that touches the movie - creating the
 		// arrow, reading cruise state, moving the label - now runs inside the
@@ -9809,6 +10282,14 @@ namespace
 		// out about the hard way.
 		if (g_surveyVmProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
 			ProbeSurveyVM();
+
+		// The ShipHudDataModel pointer hunt. Same placement and the same
+		// single-winner exchange as the probe above: this task can land on two
+		// threads in one frame, and one read-only walk is plenty. WorldSettled
+		// keeps it away from a half-built menu - the object it reads is the one
+		// the takeoff crash proved can be rebuilt underneath a worker thread.
+		if (g_hudModelProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
+			ProbeHudModelPtr();
 
 		// The survey sweep (Phase 6). Same place as the probe and for the same
 		// reason - a feed callback is inside Scaleform's locks and this reaches
@@ -9844,6 +10325,54 @@ namespace
 		iniStore->Init("Data/SFSE/Plugins/ShipNavPanel.ini", "Data/SFSE/Plugins/ShipNavPanelCustom.ini");
 		iniStore->Load();
 
+		// ⭐ Echo the override file back, exactly as it spells things. A
+		// misspelled or mis-encoded key in ShipNavPanelCustom.ini is otherwise
+		// INVISIBLE: the settings library reads the keys it knows and says
+		// nothing whatever about one it does not, so a typo is indistinguishable
+		// from a switch left off. That cost a whole test flight on 2026-08-06,
+		// when a shell escape turned bHookHudTarget into nbHookHudTarget and the
+		// only symptom was a feature quietly not happening.
+		//
+		// This validates nothing - it prints what the FILE says, and the config
+		// lines below print what the mod READ. Comparing the two is the
+		// diagnosis, and it works for keys this code has never heard of.
+		{
+			std::ifstream in{ "Data/SFSE/Plugins/ShipNavPanelCustom.ini", std::ios::binary };
+			if (!in) {
+				REX::INFO("config: no ShipNavPanelCustom.ini - everything is at its shipped default");
+			} else {
+				REX::INFO("config: ShipNavPanelCustom.ini says, verbatim -");
+				std::string   line;
+				std::uint32_t shown = 0;
+				bool          first = true;
+				while (std::getline(in, line) && shown < 60) {
+					if (first) {
+						// SimpleIni strips a UTF-8 BOM, but it would make this
+						// first line unreadable - and an unreadable first line is
+						// exactly what someone chasing an encoding problem needs
+						// NOT to be distracted by.
+						if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+							static_cast<unsigned char>(line[1]) == 0xBB &&
+							static_cast<unsigned char>(line[2]) == 0xBF)
+							line.erase(0, 3);
+						first = false;
+					}
+					if (!line.empty() && line.back() == '\r')
+						line.pop_back();
+					const auto begin = line.find_first_not_of(" \t");
+					if (begin == std::string::npos)
+						continue;
+					line.erase(0, begin);
+					if (line[0] == ';' || line[0] == '#')
+						continue;
+					REX::INFO("config:   {}", line);
+					++shown;
+				}
+				if (shown == 0)
+					REX::INFO("config:   (present, but sets nothing)");
+			}
+		}
+
 		// bGateOnFlightState is in here because a DISABLED gate logs nothing at
 		// all - without this line, "no flight gate lines" is ambiguous between
 		// "switched off" and "never reached".
@@ -9865,6 +10394,7 @@ namespace
 		                      bScaleformReader.GetValue() || bLogTargetCaptures.GetValue() ||
 		                      bDumpPlanetRecords.GetValue() || bProbeStarmapFeed.GetValue() ||
 		                      bProbeSurveyVM.GetValue() || bProbeVanillaChrome.GetValue() ||
+		                      bProbeHudModelPtr.GetValue() || bHookHudTarget.GetValue() ||
 		                      bTestGraphicsClear.GetValue();
 		if (anyRecon) {
 			REX::INFO("config: bLogInput={} bLogInputHeldFrames={} bLogInputNonButton={} uMaxInputLines={} "
@@ -9878,6 +10408,11 @@ namespace
 				bSurveyCruiseKeys.GetValue(), bScaleformReader.GetValue(), bLogTargetCaptures.GetValue(),
 				bDumpPlanetRecords.GetValue(), bProbeStarmapFeed.GetValue(), bProbeSurveyVM.GetValue(),
 				bProbeVanillaChrome.GetValue(), bTestGraphicsClear.GetValue());
+			REX::INFO("config: bProbeHudModelPtr={} uProbeHudModelBytes={} bHookHudTarget={} "
+					  "uHookHudTargetBytes={} uHookHudTargetMax={}",
+				bProbeHudModelPtr.GetValue(), uProbeHudModelBytes.GetValue(),
+				bHookHudTarget.GetValue(), uHookHudTargetBytes.GetValue(),
+				uHookHudTargetMax.GetValue());
 		} else if (bVerboseLog.GetValue()) {
 			// The default since 1.1.2. bVerboseLog is a [Recon] switch but is
 			// deliberately NOT part of anyRecon above - it is the one level meant
@@ -9891,6 +10426,15 @@ namespace
 					  "trace without the thousands of lines the [Recon] switches produce.");
 		}
 
+		if (bHookHudTarget.GetValue())
+			REX::INFO("[hudtgt] pass-through hook ON - it logs TryUpdateShipHudTarget::Event as the "
+					  "GAME fires it and always calls through. Target things with your target key "
+					  "and read the '[hudtgt]' lines; identical payloads are suppressed, and the "
+					  "install line says whether it patched or refused.");
+		if (bProbeHudModelPtr.GetValue())
+			REX::INFO("[hudmodel] probe ON - from the pilot seat, press the scanner key to walk the "
+					  "SpaceshipHudMenu object looking for the engine ShipHudDataModel. Read-only. "
+					  "The '[hudmodel] RESULT' line always prints: a clean miss is an answer.");
 		if (bProbeSurveyVM.GetValue())
 			REX::INFO("[surveyed] probe A ON - in cruise, press the scanner key to dispatch "
 					  "Planet.GetSurveyPercent for every listed body. Read the '[surveyed]' lines: "
