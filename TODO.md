@@ -622,6 +622,24 @@ The
 
 ## Release checklist
 
+- [ ] ⚠ **PUT `LICENSE` IN THE ARCHIVE.** The *repo* has one (added with the
+      public flip below), but the **downloaded archive does not**, and that is
+      the copy the obligation actually attaches to. GPL-3.0 §6 conveys object
+      code "under the terms of sections 4 and 5", and §4 requires giving every
+      recipient "a copy of this License along with the Program" — a link to it
+      is not a copy of it. So the published 1.2.0 archive is out of compliance.
+      Nobody is going to chase it and it is **not worth cutting a release for on
+      its own**, but the next build must not go out without it. ~13 KB
+      compressed, at the archive root, where Vortex ignores it (Vortex only
+      looks for `Data\`).
+
+      Found 2026-08-06 while packaging [[SkillChallengeTuner]], whose
+      `package.ps1` does this correctly — copy that script's approach rather
+      than remembering by hand. ⭐ **The durable fix is a `package.ps1` for this
+      mod too**: the archive here is assembled manually, which is exactly why
+      the licence went missing while the repo had it all along. A checklist item
+      relies on someone reading the checklist; a script cannot forget.
+
 - [x] ~~Discard `build/packages/ShipNavPanel-0.2.0.zip`~~ — deleted
       2026-07-30 (the inert v0.2.0 build; `build/` is gitignored, so nothing
       to scrub from history on its account).
