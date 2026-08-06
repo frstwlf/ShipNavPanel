@@ -205,6 +205,13 @@ foreach ($t in $targets) {
     for ($i = 0; $i -lt $MaxSlots; $i++) {
         $p = [BitConverter]::ToUInt64($bytes, $off + ($i * 8))
         if ($p -eq 0) { break }
+        # What follows a vtable is whatever .rdata packed next - often the next
+        # class's COL pointer, but it can equally be plain non-pointer data.
+        # Range-check BEFORE the uint32 cast below: a value under the image base
+        # underflows the subtraction, and one far above it overflows the cast,
+        # and either aborts the whole dump mid-class rather than just ending the
+        # slot list. (Hit for real on BGSActivity's second vtable, 2026-08-06.)
+        if ($p -lt $imgBase -or ($p - $imgBase) -gt [uint32]::MaxValue) { break }
         $psec = Get-Section ([uint32]($p - $imgBase))
         if ($null -eq $psec -or $psec.Name -ne '.text') { break }
         $slots += $p
