@@ -2580,16 +2580,43 @@ namespace
 		return a_distanceMeters <= cap;
 	}
 
-	// The panel's screen position, which differs by mode: outside cruise the ship
-	// scanner puts its planet info card exactly where the cruise panel lives.
+	// ⚠⚠ THE PANEL'S PLACEMENT IS LATCHED, NOT LIVE.
+	//
+	// `PanelOpenInNormal()` goes false the instant the scanner closes - which is
+	// the instant the CLOSING ANIMATION STARTS. Reading the mode live therefore
+	// snapped the panel back to the cruise offset and played the whole close on the
+	// left-hand side of the screen (tester, second flight).
+	//
+	// ⭐ The general shape, worth keeping: AN ANIMATION OUTLIVES THE STATE THAT
+	// STARTED IT. Anything the animation reads must be latched when it begins, not
+	// re-derived per frame from a condition that has already flipped.
+	//
+	// The latch is written on the OPENING edge and simply left alone afterwards, so
+	// the close plays with the geometry the open used. Plain bool: written from the
+	// UI thread's render tick and read from the same, and it only has to be right
+	// by the next frame.
+	bool g_panelPlacedNormal = false;
+
 	float PanelOffsetX()
 	{
-		return PanelOpenInNormal() ? fPanelNormalOffsetX.GetValue() : fPanelOffsetX.GetValue();
+		return g_panelPlacedNormal ? fPanelNormalOffsetX.GetValue() : fPanelOffsetX.GetValue();
 	}
 
 	float PanelOffsetY()
 	{
-		return PanelOpenInNormal() ? fPanelNormalOffsetY.GetValue() : fPanelOffsetY.GetValue();
+		return g_panelPlacedNormal ? fPanelNormalOffsetY.GetValue() : fPanelOffsetY.GetValue();
+	}
+
+	// The cockpit tilt's yaw leans the plate toward the screen centre, so its SIGN
+	// is a fact about which side the panel is on. Left of centre it is the ini value
+	// (-5 by default, measured off vanilla's own quick-container matrix); right of
+	// centre the mirror is the negation, exactly as the original mirroring of
+	// vanilla's right-hand panel was (S*M*S). Without this the plate on the right
+	// leans AWAY from the player and reads as broken (tester, second flight).
+	double PanelTiltYaw()
+	{
+		const double yaw = static_cast<double>(fPanelTiltYaw.GetValue());
+		return g_panelPlacedNormal ? -yaw : yaw;
 	}
 
 	// The user event that requests a data-model dump: the scanner key, i.e. the
@@ -3326,14 +3353,28 @@ namespace
 						MoveHighlight(1);
 						if (bVerboseLog.GetValue())
 							REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
-					} else if (MatchesEventList(lists.confirm, userEvent, button->idCode)) {
-						ConfirmHighlight();
 					} else if (PanelOpenInNormal() &&
 							   MatchesEventList(lists.normalAction, userEvent, button->idCode)) {
-						// ⚠ Checked BEFORE lockCourse, and gated on the mode, because
-						// the two lists can name the same physical key and only one
-						// of them is meaningful here.
+						// ⚠⚠ FIRST in the chain, not merely before lockCourse.
+						//
+						// The first fix put it after `confirm` and the key stayed
+						// dead - because `sNormalActionEvent` carries TogglePOV as
+						// its fallback entry and `sConfirmEvent` IS TogglePOV, so
+						// confirm matched first and swallowed every press. The log
+						// said so plainly: `[panel] locked 0001531B` on the very
+						// presses that were meant to probe a landing.
+						//
+						// ⭐ TWO LISTS THAT CAN NAME THE SAME KEY ARE ORDERED, NOT
+						// INDEPENDENT - and the more specific one (mode-gated) has
+						// to be tested first or it is unreachable. Adding a
+						// fallback entry to one list silently disabled the other.
+						//
+						// Locking has no meaning here anyway: the lock feeds the
+						// cruise arrow and the autopilot, neither of which exists
+						// outside cruise.
 						RequestLandingProbe(g_highlightID.load(std::memory_order_acquire));
+					} else if (MatchesEventList(lists.confirm, userEvent, button->idCode)) {
+						ConfirmHighlight();
 					} else if (MatchesEventList(lists.lockCourse, userEvent, button->idCode)) {
 						// The HIGHLIGHT, not the lock: setting a course is its
 						// own verb and needs no target chosen first. That is the
@@ -8030,6 +8071,58 @@ namespace
 				which);
 	}
 
+	// The cockpit tilt (v0.16.4): the same Matrix3D treatment vanilla gives its
+	// quick container, rebuilt through the engine's own appendRotation - pitch
+	// about X first, yaw about Y second, vanilla's composition order - with the
+	// yaw mirrored for whichever side the panel is on. Assigning matrix3D zeroes
+	// the translation, so the offsets are re-asserted right after (and the
+	// animation keeps writing x/y/scale into the 3D matrix without touching the
+	// rotation).
+	//
+	// ⚠ Extracted from TryCreatePanel in Phase 7 because the tilt is no longer a
+	// build-time constant: the sign of the yaw depends on which side of the screen
+	// the panel is on, and that now changes with the mode. Re-applied on the mode
+	// edge, never per tick - it is several VM calls.
+	void ApplyPanelTilt(RE::Scaleform::GFx::ASMovieRootBase* a_root)
+	{
+		using V = RE::Scaleform::GFx::Value;
+
+		if (!bPanelTilt.GetValue() || !a_root || !g_panelClip.IsDisplayObject())
+			return;
+
+		bool                      tilted = false;
+		RE::Scaleform::GFx::Value m3d;
+		a_root->CreateObject(&m3d, "flash.geom.Matrix3D");
+		if (m3d.IsObject()) {
+			const auto rotate = [&](double a_deg, double a_x, double a_y, double a_z) {
+				RE::Scaleform::GFx::Value axis;
+				V                         axisArgs[]{ V{ a_x }, V{ a_y }, V{ a_z } };
+				a_root->CreateObject(&axis, "flash.geom.Vector3D", axisArgs, 3);
+				if (!axis.IsObject())
+					return false;
+				V rotArgs[2];
+				rotArgs[0] = V{ a_deg };
+				rotArgs[1] = axis;
+				return m3d.Invoke("appendRotation", nullptr, rotArgs, 2);
+			};
+			if (rotate(static_cast<double>(fPanelTiltPitch.GetValue()), 1.0, 0.0, 0.0) &&
+				rotate(PanelTiltYaw(), 0.0, 1.0, 0.0)) {
+				RE::Scaleform::GFx::Value transform;
+				if (g_panelClip.GetMember("transform", &transform) && transform.IsObject() &&
+					transform.SetMember("matrix3D", m3d))
+					tilted = true;
+			}
+		}
+		if (tilted) {
+			g_panelClip.SetMember("x", V{ static_cast<double>(PanelOffsetX()) });
+			g_panelClip.SetMember("y", V{ static_cast<double>(PanelOffsetY()) });
+			REX::INFO("[panel] cockpit tilt applied (pitch {}, yaw {})",
+				fPanelTiltPitch.GetValue(), PanelTiltYaw());
+		} else {
+			REX::WARN("[panel] cockpit tilt could not be applied - the panel stays flat");
+		}
+	}
+
 	void TryCreatePanel()
 	{
 		if (!bPanel.GetValue() || g_panelReady.load(std::memory_order_acquire) ||
@@ -8906,46 +8999,7 @@ namespace
 		g_panelClip.SetMember("y", V{ static_cast<double>(PanelOffsetY()) });
 		g_panelClip.SetMember("visible", V{ false });
 
-		// The cockpit tilt (v0.16.4): the same Matrix3D treatment vanilla
-		// gives its quick container, rebuilt through the engine's own
-		// appendRotation - pitch about X first, yaw about Y second,
-		// vanilla's composition order - with the yaw mirrored for the left
-		// side. Assigning matrix3D zeroes the translation, so the offsets
-		// are re-asserted right after (and the animation keeps writing
-		// x/y/scale into the 3D matrix without touching the rotation).
-		if (bPanelTilt.GetValue()) {
-			bool                      tilted = false;
-			RE::Scaleform::GFx::Value m3d;
-			root->CreateObject(&m3d, "flash.geom.Matrix3D");
-			if (m3d.IsObject()) {
-				const auto rotate = [&](double a_deg, double a_x, double a_y, double a_z) {
-					RE::Scaleform::GFx::Value axis;
-					V                         axisArgs[]{ V{ a_x }, V{ a_y }, V{ a_z } };
-					root->CreateObject(&axis, "flash.geom.Vector3D", axisArgs, 3);
-					if (!axis.IsObject())
-						return false;
-					V rotArgs[2];
-					rotArgs[0] = V{ a_deg };
-					rotArgs[1] = axis;
-					return m3d.Invoke("appendRotation", nullptr, rotArgs, 2);
-				};
-				if (rotate(static_cast<double>(fPanelTiltPitch.GetValue()), 1.0, 0.0, 0.0) &&
-					rotate(static_cast<double>(fPanelTiltYaw.GetValue()), 0.0, 1.0, 0.0)) {
-					RE::Scaleform::GFx::Value transform;
-					if (g_panelClip.GetMember("transform", &transform) && transform.IsObject() &&
-						transform.SetMember("matrix3D", m3d))
-						tilted = true;
-				}
-			}
-			if (tilted) {
-				g_panelClip.SetMember("x", V{ static_cast<double>(PanelOffsetX()) });
-				g_panelClip.SetMember("y", V{ static_cast<double>(PanelOffsetY()) });
-				REX::INFO("[panel] cockpit tilt applied (pitch {}, yaw {})",
-					fPanelTiltPitch.GetValue(), fPanelTiltYaw.GetValue());
-			} else {
-				REX::WARN("[panel] cockpit tilt could not be applied - the panel stays flat");
-			}
-		}
+		ApplyPanelTilt(root);
 
 		g_panelListTop.store(listTop, std::memory_order_release);
 		g_panelHeight.store(height, std::memory_order_release);
@@ -9474,20 +9528,42 @@ namespace
 			g_panelClip.SetMember("y", V{ static_cast<double>(PanelOffsetY()) });
 		}
 
-		// The header follows the mode. Edge-triggered on the mode itself rather
-		// than written every tick: this is a SetText on a static child, exactly the
-		// per-tick work v0.9.1's wheel regression was traced to, and it changes
-		// about once a minute.
-		if (g_panelTitle.IsObject() || g_panelTitle.IsDisplayObject()) {
-			static int  s_lastTitleMode = -1;
-			const int   mode = PanelOpenInNormal() ? 1 : 0;
-			if (mode != s_lastTitleMode) {
-				s_lastTitleMode = mode;
-				const std::string& want = mode == 1 ? g_titleNormal : g_titleCruise;
-				if (!want.empty()) {
-					g_panelTitle.SetMember("text", V{ want.c_str() });
-					if (g_panelTitleFormat.IsObject())
-						g_panelTitle.Invoke("setTextFormat", nullptr, &g_panelTitleFormat, 1);
+		// ---- the mode edge: placement latch, header, tilt ----------------------
+		//
+		// ⚠ Taken on the OPENING edge only. The panel's geometry has to survive the
+		// close animation, which by definition plays after the state that started it
+		// has gone (see g_panelPlacedNormal) - so this asks "is it open in normal
+		// flight" and, when the answer stops being yes, changes nothing and lets the
+		// close finish where it began.
+		//
+		// Edge-triggered rather than per-tick: the header is a SetText on a static
+		// child and the tilt is several VM calls, which is exactly the per-tick work
+		// v0.9.1's wheel regression was traced to. This fires about once a minute.
+		{
+			static int s_lastPanelMode = -1;
+			const bool nowNormal = PanelOpenInNormal();
+			const int  mode = nowNormal ? 1 : (PanelOpenInCruise() ? 0 : -1);
+
+			if (mode >= 0 && mode != s_lastPanelMode) {
+				s_lastPanelMode = mode;
+				g_panelPlacedNormal = (mode == 1);
+
+				if (g_panelTitle.IsObject() || g_panelTitle.IsDisplayObject()) {
+					const std::string& want = g_panelPlacedNormal ? g_titleNormal : g_titleCruise;
+					if (!want.empty()) {
+						g_panelTitle.SetMember("text", V{ want.c_str() });
+						if (g_panelTitleFormat.IsObject())
+							g_panelTitle.Invoke("setTextFormat", nullptr, &g_panelTitleFormat, 1);
+					}
+				}
+
+				// The yaw's sign is a fact about which side of the screen the plate
+				// is on, so the tilt has to be rebuilt, not just repositioned.
+				if (const auto ui = RE::UI::GetSingleton()) {
+					static const RE::BSFixedString s_hud{ kShipHudMenu };
+					if (const auto menu = ui->GetMenu(s_hud);
+						menu && menu->uiMovie && menu->uiMovie->asMovieRoot)
+						ApplyPanelTilt(menu->uiMovie->asMovieRoot.get());
 				}
 			}
 		}

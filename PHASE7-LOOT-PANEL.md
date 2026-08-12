@@ -429,6 +429,29 @@ ROSTER, not the drawing.** Every other `b*` field on this payload modifies how o
 is treated; this one changes how many targets there are. Nothing in the AS3 says so,
 because the AS3 only ever consumes what it is handed.
 
+#### ⭐⭐ It is triggered by FIELD OF VIEW, not by range — measured 2026-08-12
+
+The tester flew it with the list up and watched the rows:
+
+> *"Having the New Atlantis cluster of landing markers in-FOV culls them all to 'The Lodge'.
+> Turning away, they all appear."*
+
+So the collapse is **view-dependent**. Point the ship at the cluster and the roster becomes
+one row; look away and all seven come back. That refines §8.2's reading — the 6,815 km
+capture showed five districts not because it was *far* but because the cluster was **off
+screen** (The Lodge reported `bBehindCelestialBody = true` in that capture, and again while
+hovered).
+
+⛔ **And it makes the feature strictly worse than the range reading did.** If the collapse
+were about distance there would be a window — list them from out here, act on one, fly in.
+It is not: **the roster is withdrawn precisely when the player aims at it**, which is the
+only moment landing is possible. There is no state in which the panel can both show the
+districts and act on one.
+
+⭐ This is the same shape as the whole Phase 7 lesson, arriving a third time: **check what
+the feed does in the state the feature TARGETS.** A capture taken looking anywhere else
+shows a roster that does not exist when it matters.
+
 ### 8.4 ⛔ Why the panel cannot do the landing as asked — two independent blocks
 
 **Block 1 — there is no id to send.** `ShipHud_Land` is a **parameterless** event:
@@ -572,6 +595,29 @@ not. To get a clean pair, capture with the target set static.
 
 ⚠ **Still unmeasured after three flights: an actual landing-marker distance.** Both attempts
 lost it to this artifact.
+
+### 8.8b ⚗ Open: the markers grey out for under a second when the list is scrolled
+
+Reported on the second flight: scrolling between landing markers makes **all** of them turn
+grey briefly, then return to their normal icon.
+
+**It is not the mod's blip machinery, and the log proves it rather than argues it**: that
+session logged **zero `[blip]` lines and zero cruise transitions**, so `ManageVanillaBlips`
+early-returned on every tick it ran (outside cruise with nothing dirty, it returns before
+touching anything). Nothing in the mod writes icon alpha or icon frames in this mode.
+
+Two candidates remain, and they are distinguishable by one A/B:
+
+1. **Vanilla's own overlap pass.** Outside cruise `RefreshTargets` calls `HideOverlappingClips`
+   (`ShipReticle.as:1553`) rather than the cruise variant, and a co-located cluster is exactly
+   what it exists to thin out.
+2. **The wheel still zooming the scanner.** The mod hides the wheel from `PlayerCamera`, not
+   from the scanner, so a notch may still change the view — which moves every icon's screen
+   position and re-runs the overlap pass above.
+
+⭐ **The A/B: set `bWheelFilter=false` and browse with the D-pad.** If the grey flash stops,
+it is (2) and the splice needs to cover the scanner too; if it persists, it is (1) and it is
+vanilla behaviour the mod provoked only by giving the player a reason to scroll.
 
 ### 8.9 Verdict on landing markers
 
