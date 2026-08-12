@@ -7,22 +7,29 @@ AND THEY CAME OUT OPPOSITE WAYS.**
   the panel already reads, outside cruise, with a real name and a per-entry distance in
   metres. What remains is not data: it is the mode gate, the input route and the sort
   order (§6).
-- **LANDING MARKERS (§8): the list is free, the LANDING is DEAD as asked.** ⛔ At the exact
-  moment the player needs to choose, **the engine collapses a marker cluster into ONE feed
-  entry and withdraws the members** — so there is no choice set to present, on top of
-  `ShipHud_Land` carrying no id. One narrow route survives and it changes what the feature
-  is (§8.5).
+- **LANDING MARKERS (§8): the list works, the LANDING IS CLOSED.** ⛔ Settled three ways —
+  `ShipHud_Land` carries no id; the engine withdraws a cluster's members the moment the ship
+  points at it; and the one id-taking verb left, `ShipHud_FarTravel`, **fades the screen to
+  black and strands the player** (flown 2026-08-12, probe deleted). ⚠⚠ That last one
+  upgraded a safety rule for the whole project: **a by-id UI verb proceeds with an
+  unresolved destination rather than refusing — cost the next one as "breaks the session",
+  not "does nothing"** (§8.5).
 
 Every census was taken with the **shipped v1.2.0 DLL** and one ini line — no feature code was
 needed to answer any of it.
 
-**BUILD STATUS: on branch `experimental/normal-flight-panel`, built and deployed, AWAITING
-ITS FIRST FLIGHT. No version bump — the DLL still stamps 1.2.0.0** and will until this is
-judged worth releasing. What is in it: the panel opens outside cruise by riding the vanilla
-ship scanner (no key taken), lists loot and landing markers nearest-first, and carries the
-default-off landing probe of §8.5. Blip management, the arrow and the survey sweep all stay
-cruise-only on purpose (§6.3) — this build reads the feed and draws a list, and touches
-nothing on the HUD.
+**BUILD STATUS: on branch `experimental/normal-flight-panel`, built and deployed, THREE
+FLIGHTS IN. No version bump — the DLL still stamps 1.2.0.0** and will until this is judged
+worth releasing. What is in it: the panel opens outside cruise by riding the vanilla ship
+scanner (no key taken), lists loot and landing markers nearest-first, marks the highlighted
+row on the HUD, and sits on the right with its tilt mirrored because the scanner's planet
+card owns the left. The landing probe is **gone** (§8.5). Blip management and the survey
+sweep stay cruise-only on purpose (§6.3) — outside cruise this build reads the feed and
+draws a list, and writes nothing to the vanilla HUD.
+
+**Open in the build:** whether the marker rows earn their place at all (§8.9), and a grey
+flash on the markers while scrolling that is **not** the mod and has one A/B left to
+identify it (§8.8b).
 
 Assessment requested by the user 2026-08-12; all three flights flown the same day.
 
@@ -481,27 +488,55 @@ naming a marker from some other source. Block 2 says the panel is not merely una
 ⚠ And vanilla's map detour is therefore not laziness: it is the only surface that still has
 the roster. Landing is being asked to disambiguate a set the ship HUD no longer holds.
 
-### 8.5 The one surviving route, and what it costs
+### 8.5 ⛔⛔ THE LAST ROUTE — PROBED, DEAD, AND THE PROBE IS DELETED
 
-Cache the cluster members from the **far-range** feed — where they *are* separate entries
-with **static** form ids (§8.2) — then land via
-`ShipHud_FarTravel {uValue: <district marker id>}`.
+The route was: cache the cluster members from the far-range feed and land via
+`ShipHud_FarTravel {uValue: <landing marker id>}`. It was built default-off, flown
+2026-08-12, and **it is dead.**
 
-Three things have to be true, and only the first is cheap to settle:
+**What happens:** the screen **fades to black and stays there.** No landing, no arrival, no
+error. The tester escaped only by targeting something at random and pressing the fast-travel
+key again to travel out of it.
 
-1. ⚗ **Far travel must resolve a landing marker.** UNPROVEN. Precedent cuts both ways: it
-   resolved a *station* by id, while `Reticle_OnCruiseLockCourse` refused everything that
-   was not a PNDT. **One dispatch settles it** and the probe is recoverable from history
-   (`5f6c7a1`). ⚠ It moves the player, so it needs the loud gating the first one had.
-2. ⚠ **The cache must survive the withdrawal.** The mod would be offering a choice the
-   engine has actively retracted — presenting rows for markers the feed says are gone. That
-   is a new hazard class for this project, and FF-prefixed members (the Science Outposts)
-   cannot be cached at all, being recyclable.
-3. ⛔ **It stops being "land from the panel".** It becomes *fast travel* from the panel —
-   which is what the map already does, one screen away. **The user's own disposition on the
-   cruise far-travel probe applies with more force here, not less**, and that call is
-   theirs: a mod about flying somewhere should be slow to ship a second button that skips
-   the flying.
+**So the answer is not "it does nothing" — it is worse than nothing.** A dispatch that
+silently strands the player is a failure mode no ini switch is allowed to carry.
+
+#### ⭐⭐ The reusable engine fact, and this is the third instance of it
+
+**A by-id UI verb does not refuse an id it cannot resolve. It proceeds with an unresolved
+destination.** Compare:
+
+| verb | given something it cannot resolve | result |
+|---|---|---|
+| `Reticle_OnCruiseLockCourse {uBodyID}` | a non-PNDT row | course taken, **no destination** — ship flies at the system origin, no orange indicator |
+| `ShipHud_FarTravel {uValue}` | a landing marker | travel begins, **no destination** — fade to black, player stranded |
+
+⭐ The 2026-08-03 conclusion said the engine "neither refuses nor picks another body: it
+takes the course with an UNRESOLVED destination". **That now generalises past the course
+handler to the whole by-id family**, and it upgrades the safety rule that goes with it:
+
+⚠⚠ **Any future by-id probe must be costed as "proceeds into a broken state", never as
+"does nothing".** "Nothing will happen if the id is wrong" was the implicit assumption
+behind flying this one, and it was wrong in the one direction that costs a player their
+session. Save-first warnings are not sufficient mitigation for a verb that can strand.
+
+#### Disposition: removed, not defaulted off
+
+`bProbeLanding`, `sNormalActionEvent`, `RequestLandingProbe`, `RunLandingProbe` and the
+event-list plumbing are **deleted from the build**. Git history keeps them.
+
+This follows the cruise far-travel precedent (`5f6c7a1`) and strengthens its reasoning: an
+experimental switch left in a player's ini is a promise. That one promised the opposite of
+the mod; **this one promises a soft-lock.**
+
+#### ⛔ The UI vocabulary is now exhausted for landing
+
+Every parameterised UI→engine verb has been tried or ruled out against this target class,
+and the two structural blocks of §8.4 stand unaltered. Papyrus adds a predicate without its
+verb (§8.6). **There is no route to landing on a chosen marker from a panel row, and the
+FOV finding (§8.3) means there would be nothing to choose from even if there were.**
+
+Do not reopen this by finding another id-taking event. The question is closed twice over.
 
 ### 8.6 The Papyrus surface — a predicate without its verb
 
@@ -619,18 +654,30 @@ Two candidates remain, and they are distinguishable by one A/B:
 it is (2) and the splice needs to cover the scanner too; if it persists, it is (1) and it is
 vanilla behaviour the mod provoked only by giving the player a reason to scroll.
 
-### 8.9 Verdict on landing markers
+### 8.9 Verdict on landing markers — CLOSED
 
-**List: yes, and it earns its place** (§8.7). **Land: no, not as asked** — blocked twice
-over, once by a verb with no parameter and once, decisively, by an engine that deletes the
-alternatives at the moment of choosing. The surviving route (§8.5) is one cheap probe away
-from being characterised, but even if it works it delivers *fast travel from a panel row*,
-not *landing from the cockpit*, and that is a product decision rather than a technical one.
+**Land: NO. Settled, three independent ways, and the line is closed.**
 
-⭐ **The honest framing for the mod page, if the list ships without the landing:** the panel
-tells you what is down there and which sites are landable, including the ones behind the
-planet; choosing between stacked city markers remains the map's job, because the ship HUD
-is not given them.
+1. **No id to send** — `ShipHud_Land` is parameterless (§8.4).
+2. **No choice set to send one for** — the engine withdraws the cluster's members the moment
+   the player looks at it (§8.3).
+3. **The one id-taking verb strands the player** — measured, not reasoned (§8.5).
+
+Any one of those would have been enough. **The tester's own conclusion is the right one:**
+*"I think it's safe to assume there's no way to implement this feature."*
+
+**List: still yes, but on its own merits and with its own caveat.** The rows are real,
+named, and include sites the cockpit HUD cannot draw (§8.7). ⚠ But the count changes with
+where the ship is pointed — seven markers looking away, one looking at them — so a player
+reading the list as an inventory of what is down there will be misled at exactly the moment
+they care. `bListLandingMarkers` exists to turn them off, and **whether they earn their
+place at all is a product call, not a technical one.**
+
+⭐ **The honest framing for a mod page, if the list ships:** the panel tells you what is
+down there and which sites you can reach, including ones behind the planet; **choosing
+between stacked city markers remains the map's job, because the ship HUD is never given
+them.** Do not word it as a limitation of the mod — it is a limitation of the surface the
+mod reads, and the map exists precisely because of it.
 
 ---
 

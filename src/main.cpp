@@ -231,25 +231,22 @@ namespace
 	REX::TIniSetting<float> fPanelNormalOffsetX{ "Panel", "fPanelNormalOffsetX", 355.0f };
 	REX::TIniSetting<float> fPanelNormalOffsetY{ "Panel", "fPanelNormalOffsetY", -180.0f };
 
-	// ⚠⚠ THE PANEL'S CONTROLS ARE BOUND TO DIFFERENT USER EVENTS OUTSIDE CRUISE,
-	// and the first flight is what found it: with the list up, Q reported
-	// `LShoulder` and Spacebar reported `SwitchFlightModes`, so `sConfirmEvent`
-	// (TogglePOV) and `sLockCourseEvent` (LockCourse) matched NOTHING and both keys
-	// appeared dead. The mod's own "key id=N reports 'X'" line named them.
+	// ⚠⚠ NOTE FOR ANYONE ADDING A CONTROL TO THIS MODE: THE PANEL'S KEYS REPORT
+	// DIFFERENT USER EVENTS OUTSIDE CRUISE. Measured 2026-08-12 with the list up -
+	// Q reported `LShoulder` and Spacebar reported `SwitchFlightModes`, so
+	// `sConfirmEvent` (TogglePOV) and `sLockCourseEvent` (LockCourse) matched
+	// NOTHING and both keys appeared dead. The mod's own "key id=N reports 'X'"
+	// line is what named them.
 	//
-	// This is lesson 2 from the cruise input work arriving in a new context: ONE
-	// PHYSICAL KEY REPORTS SEVERAL USER-EVENT NAMES, and which one you get depends
-	// on the context the engine is in - not only on press versus release. A name
-	// learned in cruise is not a name that holds outside it.
+	// Cruise input lesson 2, arriving in a new context: ONE PHYSICAL KEY REPORTS
+	// SEVERAL USER-EVENT NAMES, and which one you get depends on the CONTEXT the
+	// engine is in - not only on press versus release. A name learned in cruise is
+	// not a name that holds outside it. Read the key's name out of the log for the
+	// mode you are actually in, and never reuse a cruise name on faith.
 	//
-	// Same list syntax as sConfirmEvent. `TogglePOV` is kept as a second entry so
-	// that a setup where Q reports its cruise name still works, and because a list
-	// costs nothing.
-	//
-	// ⚠ Unlike the cruise confirm key, this press is NOT spliced away from anything.
-	// If `LShoulder` turns out to do a real job in normal flight, the probe will
-	// happen alongside it rather than instead of it.
-	REX::TIniSetting<std::string> sNormalActionEvent{ "Panel", "sNormalActionEvent", "LShoulder,TogglePOV" };
+	// (The setting this note was written for, `sNormalActionEvent`, is gone with
+	// the landing probe it served - see PHASE7-LOOT-PANEL.md §8.5. The lesson is
+	// kept because the next control added here will need it.)
 
 	// Mark the highlighted row on the HUD outside cruise. The list alone tells you
 	// which container is nearest; this tells you WHICH BLIP that is, which is the
@@ -588,30 +585,14 @@ namespace
 	// though the whole probe is already opt-in.
 	REX::TIniSetting<bool> bProbeSurveyBind{ "Recon", "bProbeSurveyBind", true };
 
-	// PHASE 7 landing probe (PHASE7-LOOT-PANEL.md §8.5). ONE question: does
-	// `ShipHud_FarTravel {uValue}` resolve a LANDING MARKER's form id, the way it
-	// resolved a station's on 2026-08-03?
+	// ⛔⛔ THE PHASE 7 LANDING PROBE WAS BUILT, FLOWN, AND IS DELETED. Do not rebuild
+	// it. `ShipHud_FarTravel {uValue: <landing marker id>}` FADES THE SCREEN TO BLACK
+	// AND STRANDS THE PLAYER - no landing, no arrival, no way back except targeting
+	// something else and fast-travelling out of it. Measured 2026-08-12.
 	//
-	// It is the only route left to landing from a panel row, because `ShipHud_Land`
-	// is a PARAMETERLESS event - it takes the engine's own hover target and there
-	// is no id to hand it (§8.4). Precedent cuts both ways and that is exactly why
-	// it is worth one dispatch: far travel resolved a station, while
-	// `Reticle_OnCruiseLockCourse` refused everything that was not a PNDT. Proof by
-	// CONTRAST beats proof by elimination and costs a single press.
-	//
-	// ⚠⚠ THIS MOVES THE SHIP. Nothing else on this branch does. Save first; the
-	// startup banner and the dispatch line both say so, and it stays default-off.
-	//
-	// ⚠ NO AUDIT IS POSSIBLE. Nothing publishes "a far travel began" the way
-	// `bIsCruiseTargetLock` publishes a course, so the log line plus the tester's
-	// eyes ARE the measurement - the same limitation the 2026-08-03 probe had, and
-	// the code says so rather than leaving a silence.
-	//
-	// ⛔ Even if it works this is FAST TRAVEL from a panel row, not landing from the
-	// cockpit - which is what the map already does one screen away. Whether that is
-	// wanted at all is the user's call, not this probe's: see §8.5's third point
-	// and the cruise far-travel disposition it echoes.
-	REX::TIniSetting<bool> bProbeLanding{ "Recon", "bProbeLanding", false };
+	// It is removed rather than left default-off because a switch in a player's ini
+	// is a promise, and this one promises a soft-lock. Full account and the reusable
+	// engine fact in PHASE7-LOOT-PANEL.md §8.5; git history has the code.
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -2206,9 +2187,6 @@ namespace
 	// thread, exactly as the panel sounds do. Vanilla toggles a course by
 	// re-sending the same id, so 0 is never a value this needs to carry.
 	std::atomic<std::uint32_t> g_pendingCourseID{ 0 };
-	// PHASE 7 landing probe: same hand-off shape as the course id above - the input
-	// thread stores, the UI thread dispatches and clears.
-	std::atomic<std::uint32_t> g_pendingLandingID{ 0 };
 
 	// The locked body's feed presence, CONFIRMED since the last movie
 	// teardown - the id of the lock that has actually been seen in a live
@@ -2736,17 +2714,12 @@ namespace
 		// the game, or from the "that key is not one of the panel's controls"
 		// advice below.
 		std::string lockCourse;
-		// PHASE 7. The action key OUTSIDE cruise, which is a different user-event
-		// name for the same physical key - see sNormalActionEvent. Empty while the
-		// probe is off, by the same rule as lockCourse above.
-		std::string normalAction;
 
 		static EventLists Read()
 		{
 			return EventLists{ sBrowseUpEvent.GetValue(), sBrowseDownEvent.GetValue(),
 				sConfirmEvent.GetValue(),
-				bLockCourse.GetValue() ? sLockCourseEvent.GetValue() : std::string{},
-				bProbeLanding.GetValue() ? sNormalActionEvent.GetValue() : std::string{} };
+				bLockCourse.GetValue() ? sLockCourseEvent.GetValue() : std::string{} };
 		}
 
 		// The mouse wheel by default, and on a controller the D-pad. Matching
@@ -2757,8 +2730,7 @@ namespace
 			return MatchesEventList(browseUp, a_userEvent, a_idCode) ||
 			       MatchesEventList(browseDown, a_userEvent, a_idCode) ||
 			       MatchesEventList(confirm, a_userEvent, a_idCode) ||
-			       MatchesEventList(lockCourse, a_userEvent, a_idCode) ||
-			       MatchesEventList(normalAction, a_userEvent, a_idCode);
+			       MatchesEventList(lockCourse, a_userEvent, a_idCode);
 		}
 	};
 
@@ -3139,44 +3111,6 @@ namespace
 	// earlier version stood aside there on the theory that vanilla's own press
 	// would do the job; with the press taken away, standing aside meant nothing
 	// happened at all.
-	// PHASE 7's landing probe, request half. Runs on the INPUT thread, so it stores
-	// an id and nothing else - identical discipline to RequestLockCourse.
-	//
-	// ⚠ The type gate is the row's `uTargetType`, never "the row has an id". That
-	// is the rule four wrong course gates were built by ignoring, and it is cheap
-	// to keep: a loot row and a landing row sit side by side in this list, and
-	// far-travelling to a wreck is not the experiment.
-	void RequestLandingProbe(std::uint32_t a_id)
-	{
-		if (!bProbeLanding.GetValue() || a_id == 0)
-			return;
-
-		std::uint32_t type = 0;
-		std::string   name;
-		{
-			std::lock_guard lock{ g_candidateMutex };
-			for (const auto& row : g_candidates) {
-				if (row.id == a_id) {
-					type = row.type;
-					name = row.name;
-					break;
-				}
-			}
-		}
-
-		if (type != kTargetTypeLandingMarker) {
-			REX::INFO("[landing] {:08X} '{}' is uTargetType {} - the probe only aims at "
-					  "landing markers ({}), so this press does nothing",
-				a_id, name, type, kTargetTypeLandingMarker);
-			return;
-		}
-
-		REX::WARN("[landing] PROBE ARMED for {:08X} '{}' - this MOVES THE SHIP. If you did "
-				  "not mean to, you wanted bProbeLanding=false.",
-			a_id, name);
-		g_pendingLandingID.store(a_id, std::memory_order_release);
-	}
-
 	void RequestLockCourse(std::uint32_t a_id)
 	{
 		if (!bLockCourse.GetValue() || a_id == 0)
@@ -3353,26 +3287,6 @@ namespace
 						MoveHighlight(1);
 						if (bVerboseLog.GetValue())
 							REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
-					} else if (PanelOpenInNormal() &&
-							   MatchesEventList(lists.normalAction, userEvent, button->idCode)) {
-						// ⚠⚠ FIRST in the chain, not merely before lockCourse.
-						//
-						// The first fix put it after `confirm` and the key stayed
-						// dead - because `sNormalActionEvent` carries TogglePOV as
-						// its fallback entry and `sConfirmEvent` IS TogglePOV, so
-						// confirm matched first and swallowed every press. The log
-						// said so plainly: `[panel] locked 0001531B` on the very
-						// presses that were meant to probe a landing.
-						//
-						// ⭐ TWO LISTS THAT CAN NAME THE SAME KEY ARE ORDERED, NOT
-						// INDEPENDENT - and the more specific one (mode-gated) has
-						// to be tested first or it is unreachable. Adding a
-						// fallback entry to one list silently disabled the other.
-						//
-						// Locking has no meaning here anyway: the lock feeds the
-						// cruise arrow and the autopilot, neither of which exists
-						// outside cruise.
-						RequestLandingProbe(g_highlightID.load(std::memory_order_acquire));
 					} else if (MatchesEventList(lists.confirm, userEvent, button->idCode)) {
 						ConfirmHighlight();
 					} else if (MatchesEventList(lists.lockCourse, userEvent, button->idCode)) {
@@ -5734,81 +5648,6 @@ namespace
 	// panel was sitting on, with nothing targeted first.
 	// ---------------------------------------------------------------------------
 
-	// ---------------------------------------------------------------------------
-	// PHASE 7 landing probe, dispatch half. UI thread, no lock held on entry.
-	//
-	// The question, in full: `ShipHud_Land` cannot be steered - it is a
-	// PARAMETERLESS Event (ShipReticle.as:2157) that acts on the engine's own hover
-	// target - so the only way a panel row could ever reach a specific landing site
-	// is a verb that takes an id. `ShipHud_FarTravel {uValue}` is the one such verb
-	// left untried against this type, and it DID resolve a station on 2026-08-03.
-	//
-	// ⚠ A result either way is worth the press. If it lands, the route exists and
-	// the feature becomes a product question (§8.5). If it does nothing, the UI
-	// vocabulary is exhausted for landing exactly as it was for targeting, and that
-	// closes the line rather than leaving it open to be re-guessed.
-	//
-	// ⚠⚠ There is NO readback. Nothing publishes "a far travel began" the way
-	// `bIsCruiseTargetLock` publishes a course, so this logs what it asked for and
-	// says plainly that the tester's eyes are the measurement. A silence here means
-	// "unmeasured", never "refused" - do not let a quiet log become a finding.
-	// ---------------------------------------------------------------------------
-
-	void RunLandingProbe()
-	{
-		using V = RE::Scaleform::GFx::Value;
-
-		const auto rowID = g_pendingLandingID.exchange(0, std::memory_order_acq_rel);
-		if (rowID == 0)
-			return;
-
-		std::string name;
-		{
-			std::lock_guard lock{ g_candidateMutex };
-			for (const auto& row : g_candidates) {
-				if (row.id == rowID) {
-					name = row.name;
-					break;
-				}
-			}
-		}
-
-		// Dropped rather than queued: it was a keypress, and a stale one that moves
-		// the ship is worse than none at all.
-		if (!WorldSettled())
-			return;
-
-		const auto                     ui = RE::UI::GetSingleton();
-		static const RE::BSFixedString s_hud{ kShipHudMenu };
-		const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
-		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot) {
-			REX::WARN("[landing] no ship HUD movie to dispatch through");
-			return;
-		}
-		auto* root = menu->uiMovie->asMovieRoot.get();
-
-		V params;
-		root->CreateObject(&params);
-		if (!params.IsObject()) {
-			REX::WARN("[landing] could not build the event params");
-			return;
-		}
-		// Vanilla's own spelling and shape: ShipReticle.as:747 sends
-		// {"uValue": FarTravelID}, where FarTravelID is a target's uniqueID.
-		params.SetMember("uValue", V{ static_cast<double>(rowID) });
-
-		if (DispatchHudEvent(root, "ShipHud_FarTravel", &params)) {
-			REX::WARN("[landing] SENT ShipHud_FarTravel uValue={:08X} '{}'. Nothing reports "
-					  "back whether the engine accepted it - WATCH THE SHIP, and write down "
-					  "what happened. No movement is a real result and closes the route.",
-				rowID, name);
-		} else {
-			REX::WARN("[landing] dispatch FAILED for {:08X} '{}' - the event never left the "
-					  "movie, so this measures the mod and not the engine",
-				rowID, name);
-		}
-	}
-
 	void RunLockCourse()
 	{
 		using V = RE::Scaleform::GFx::Value;
@@ -6235,9 +6074,6 @@ namespace
 			if (bLockCourse.GetValue())
 				RunLockCourse();
 
-			// PHASE 7. Same place, same thread, same no-lock-held requirement.
-			if (bProbeLanding.GetValue())
-				RunLandingProbe();
 
 			// Distances are current by this point, which is what the list shows.
 			RefreshPanel();
@@ -10493,15 +10329,6 @@ namespace
 		if (bNormalFlightPanel.GetValue())
 			REX::INFO("config: outside cruise the list rides the SHIP SCANNER - open the scanner and "
 					  "it appears, nearest first. No key is taken from the game for it.");
-		if (bProbeLanding.GetValue())
-			REX::WARN("config: bProbeLanding=true - with the list up outside cruise, sNormalActionEvent "
-					  "('{}') on a LANDING MARKER row dispatches ShipHud_FarTravel and THIS MOVES THE "
-					  "SHIP. Save first. Nothing reports back whether it worked; the log records what "
-					  "was asked and you record what happened. ⚠ If the key seems dead, look for the "
-					  "\"key id=N reports 'X'\" line - outside cruise your keys report DIFFERENT event "
-					  "names (Q was 'LShoulder', Spacebar was 'SwitchFlightModes') - and put the name "
-					  "it prints into sNormalActionEvent.",
-				sNormalActionEvent.GetValue());
 
 		// The diagnostics dump earns its space only when something is on. A
 		// quiet build says so in one line, and says where the switch is.
