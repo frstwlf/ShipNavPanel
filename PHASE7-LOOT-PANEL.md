@@ -211,7 +211,7 @@ or drawing one.
 ### 4.5 ⚗ formType `0x49` = `kCELL` — a discriminator, but only a hypothesis
 
 The four ship wrecks resolve to form type `0x49`; "Mineral Deposit" to `0x4A`. Per
-[`FormTypes.h:82`](../../commonlibsf/include/RE/F/FormTypes.h:82) those are **`kCELL`
+CommonLibSF's `RE/F/FormTypes.h:82-83` those are **`kCELL`
 (TESObjectCELL)** and **`kREFR` (TESObjectREFR)** — so a lootable ship hulk is identified
 by its runtime *cell*, not by a reference.
 
@@ -228,7 +228,7 @@ wrong for the majority case.
 
 All of it reads from files on disk; none needs the game running.
 
-- **The type enum** — [`TargetIconFrameContainer.as:9-31`](../../Extracted/scripts/shipreticle/scripts/TargetIconFrameContainer.as:9)
+- **The type enum** — `TargetIconFrameContainer.as:9-31` in the exported scripts
   (both shipreticle.swf and spaceshiphudmenu.swf, identical):
   `ACTIVATOR=0, STAR=1, HAILING=2, LOOT=3, POI=4, SHIP=5, STATION=6, PLANET=7,
   DESTRUCTIBLE=8, QUEST=9, LANDING_MARKER=10, COUNT=11`.
@@ -266,7 +266,7 @@ taken too — power allocation is only stood down *inside* cruise
 D-pad is free" does **not** transfer.
 
 But `MonocleModeActive` is a **public getter on `Reticle_mc`**
-([`ShipReticle.as:530`](../../Extracted/scripts/shipreticle/scripts/ShipReticle.as:530)) —
+(`ShipReticle.as:530`) —
 the same object and the same `GetVariable` route `RefreshCruiseState` already uses for
 `CruiseModeHUDActive` one getter below it. Riding the ship scanner means the list appears
 when the player already presses scan, and **no key is taken from anyone.**
