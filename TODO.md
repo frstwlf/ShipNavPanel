@@ -5,8 +5,10 @@ handoff doc that accretes its own history stops being one. The dated
 investigation records are
 [PHASE0-FINDINGS.md](PHASE0-FINDINGS.md), [PHASE1-SWF-FINDINGS.md](PHASE1-SWF-FINDINGS.md),
 [PHASE2-PANEL-PLAN.md](PHASE2-PANEL-PLAN.md), [PHASE3-BLIP-PLAN.md](PHASE3-BLIP-PLAN.md),
-[PHASE4-CHROME-HUNT.md](PHASE4-CHROME-HUNT.md) and
-[PHASE5-STARMAP-DATA.md](PHASE5-STARMAP-DATA.md); git history holds the
+[PHASE4-CHROME-HUNT.md](PHASE4-CHROME-HUNT.md),
+[PHASE5-STARMAP-DATA.md](PHASE5-STARMAP-DATA.md),
+[PHASE6-SURVEY-STATE.md](PHASE6-SURVEY-STATE.md) and
+[PHASE7-LOOT-PANEL.md](PHASE7-LOOT-PANEL.md); git history holds the
 version-by-version story this section used to accumulate.
 
 ## Where it is
