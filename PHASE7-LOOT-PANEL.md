@@ -13,8 +13,16 @@ AND THEY CAME OUT OPPOSITE WAYS.**
   `ShipHud_Land` carrying no id. One narrow route survives and it changes what the feature
   is (§8.5).
 
-**No feature code has been written, and none was needed to get here** — every census was
-taken with the shipped v1.2.0 DLL and one ini line.
+Every census was taken with the **shipped v1.2.0 DLL** and one ini line — no feature code was
+needed to answer any of it.
+
+**BUILD STATUS: on branch `experimental/normal-flight-panel`, built and deployed, AWAITING
+ITS FIRST FLIGHT. No version bump — the DLL still stamps 1.2.0.0** and will until this is
+judged worth releasing. What is in it: the panel opens outside cruise by riding the vanilla
+ship scanner (no key taken), lists loot and landing markers nearest-first, and carries the
+default-off landing probe of §8.5. Blip management, the arrow and the survey sweep all stay
+cruise-only on purpose (§6.3) — this build reads the feed and draws a list, and touches
+nothing on the HUD.
 
 Assessment requested by the user 2026-08-12; all three flights flown the same day.
 
@@ -493,15 +501,54 @@ shows**:
 
 - **The flags are genuinely per-entry.** `bLandingAllowed`, `bLandingDisabled` and
   `bIsGroupMarker` are all on the row — ⭐ the direct contrast with `blootingAllowed`
-  (§4.1), and the reason a landing row can state its own status without inference.
-- **Vanilla row art comes free.** `uPoiType = 7`, `uPoiCategory = 0` — **not** the `(83,10)`
-  sentinel loot carries (§4.4), so the existing `DynamicPoiIcon` path badges these rows with
-  no new work.
+  (§4.1). ⚠⚠ **But `bLandingAllowed` is NOT a capability oracle, and I wrote it up as one
+  before checking — see §8.7b.**
+- **The `(83,10)` sentinel does not block row art.** `uPoiType = 7`, `uPoiCategory = 0`,
+  unlike loot (§4.4). ⚠ That removes one blocker, it does not deliver icons: the shipping
+  badge path is gated on `uTargetType ∈ {POI, Ship, Station}` — the v0.11.2 fix for the
+  pooled-fields bug — and `TT_LANDING_MARKER` is not in that set, so these rows draw no
+  badge until that gate is deliberately widened. **Free of the sentinel is not free.**
 - ⭐ **The feed carries markers on the FAR SIDE of the planet.** The Lodge reported
   `bBehindCelestialBody = true` in both flights, including while hovered. A panel would list
   sites the cockpit HUD cannot draw at all.
 - Incidental: **`Jemison` itself carries `bLandingAllowed = true`** in every capture. The
   planet is a landable row too, not only its markers.
+
+### 8.7b ⛔ `bLandingAllowed` IS NOT "can the player land here"
+
+**Corrected 2026-08-12, on the tester's gameplay report, and it retracts a claim made two
+paragraphs above before it was checked.**
+
+The report: **there is no distance limitation on landing.** Being in the orbit cell above a
+planet is enough to land on any marker on that planet.
+
+That cannot be reconciled with reading `bLandingAllowed` as a capability, and the captures
+say so on their own:
+
+| | `bLandingAllowed` | hovered? |
+|---|---|---|
+| five New Atlantis districts, 6,815 km | **false** | no |
+| two Science Outposts, **same moment, same range** | **true** | no |
+| The Lodge, at landing range | true | yes |
+
+Two readings were available and both are dead. It is **not distance** — the Science Outposts
+were as far away as the districts and read `true`. It is **not hover** — the Science Outposts
+were not hovered and still read `true`, which is the check that kills the tidier theory.
+
+⭐ What it actually is, from vanilla's only use of it: `LandButton.Visible = bLandingAllowed`
+(`ShipReticle.as:952`). **It is a button-visibility flag**, and the mod has no business
+reading it as the player's ability to land. What distinguishes a district from a Science
+Outpost for that purpose is unresolved and is left unresolved rather than guessed at.
+
+⚠ **Nothing in the build depends on it** — deliberately. The normal-flight filter is
+`uTargetType` and range only, and the landing probe gates on `uTargetType` alone. Had this
+been written a day earlier it would have shipped as a row-level "landable" mark that was
+wrong for every city in the game.
+
+⭐ **The lesson is the one this project keeps relearning from a different direction: a flag's
+NAME is not its contract, its only CALLER is.** `blootingAllowed` was on the wrong payload;
+`bIsGroupMarker` described the roster rather than the drawing; this one describes a button.
+Three fields, one phase, same error shape — **go and read what vanilla does with it.**
 
 ### 8.8 ⚠ Methodology — the two capture blocks are NOT one snapshot
 

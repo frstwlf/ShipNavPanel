@@ -170,6 +170,40 @@ namespace
 	REX::TIniSetting<std::string> sBrowseUpEvent{ "Panel", "sBrowseUpEvent", "ZoomIn,Up" };
 	REX::TIniSetting<std::string> sBrowseDownEvent{ "Panel", "sBrowseDownEvent", "ZoomOut,Down" };
 
+	// ---- PHASE 7: the panel outside cruise (EXPERIMENTAL, this branch only) ----
+	//
+	// The same list, a different target class. After a space battle the HUD fills
+	// with nameless ring blips - wrecks and mineral deposits - and vanilla shows a
+	// distance only for the CURRENT target, so finding the nearest one means
+	// steering at each blip in turn. The feed has carried the names and the
+	// distances all along (PHASE7-LOOT-PANEL.md §1); only the renderer withholds
+	// them.
+	//
+	// ⭐ NO KEY IS TAKEN FOR THIS. Outside cruise `SHMonocle` is the vanilla ship
+	// scanner and the mod already stands aside for it (OnTriggerPressed returns
+	// before TogglePanel when not cruising). So the panel RIDES the scanner:
+	// `MonocleModeActive` is a public getter on Reticle_mc, one getter below the
+	// `CruiseModeHUDActive` this mod has read since Phase 1, and the scanner being
+	// open IS the open state. No toggle, no splice, no new binding to document.
+	//
+	// ⚠ That choice is an assumption, not a measurement - the tester has not
+	// judged it in the seat yet. It is one `GetVariable` path to change if the
+	// answer is "give it its own key" (see RefreshPanelMode).
+	REX::TIniSetting<bool> bNormalFlightPanel{ "Panel", "bNormalFlightPanel", true };
+
+	// Which classes the normal-flight list carries. Loot is the feature; landing
+	// markers ride along because they are the same list with another type filter,
+	// and because the landing probe below needs rows to aim at.
+	REX::TIniSetting<bool> bListLoot{ "Panel", "bListLoot", true };
+	REX::TIniSetting<bool> bListLandingMarkers{ "Panel", "bListLandingMarkers", true };
+
+	// Range cap for the normal-flight list, in METRES (the feed's own unit here -
+	// light-seconds are the cruise list's scale and would be absurd for a container
+	// 300 m off the bow). Measured loot after one battle sat at 322-1089 m, and the
+	// nearest planet in the same capture was 3.89e7, so six orders of magnitude
+	// separate the two populations: this cap has no boundary to get wrong.
+	REX::TIniSetting<float> fMaxNormalRowMeters{ "Panel", "fMaxNormalRowMeters", 200000.0f };
+
 	// The control hint along the bottom. The label is a separate setting because
 	// the mod knows the confirm key's user-event NAME, not which physical key it
 	// is bound to, and anyone who has moved it needs to say so here.
@@ -492,6 +526,31 @@ namespace
 	// see the note in DispatchSurveyPercent - so it gets its own switch even
 	// though the whole probe is already opt-in.
 	REX::TIniSetting<bool> bProbeSurveyBind{ "Recon", "bProbeSurveyBind", true };
+
+	// PHASE 7 landing probe (PHASE7-LOOT-PANEL.md §8.5). ONE question: does
+	// `ShipHud_FarTravel {uValue}` resolve a LANDING MARKER's form id, the way it
+	// resolved a station's on 2026-08-03?
+	//
+	// It is the only route left to landing from a panel row, because `ShipHud_Land`
+	// is a PARAMETERLESS event - it takes the engine's own hover target and there
+	// is no id to hand it (§8.4). Precedent cuts both ways and that is exactly why
+	// it is worth one dispatch: far travel resolved a station, while
+	// `Reticle_OnCruiseLockCourse` refused everything that was not a PNDT. Proof by
+	// CONTRAST beats proof by elimination and costs a single press.
+	//
+	// ⚠⚠ THIS MOVES THE SHIP. Nothing else on this branch does. Save first; the
+	// startup banner and the dispatch line both say so, and it stays default-off.
+	//
+	// ⚠ NO AUDIT IS POSSIBLE. Nothing publishes "a far travel began" the way
+	// `bIsCruiseTargetLock` publishes a course, so the log line plus the tester's
+	// eyes ARE the measurement - the same limitation the 2026-08-03 probe had, and
+	// the code says so rather than leaving a silence.
+	//
+	// ⛔ Even if it works this is FAST TRAVEL from a panel row, not landing from the
+	// cockpit - which is what the map already does one screen away. Whether that is
+	// wanted at all is the user's call, not this probe's: see §8.5's third point
+	// and the cruise far-travel disposition it echoes.
+	REX::TIniSetting<bool> bProbeLanding{ "Recon", "bProbeLanding", false };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -834,6 +893,14 @@ namespace
 		// HUD: they have a name and a place in the tree, but no bearing and no
 		// distance, so the arrow cannot point at one.
 		bool fromFeed{ true };
+		// PHASE 7. Whether the HIGH-frequency feed has actually published geometry
+		// for this row yet. The two feeds are separate publications: the low one
+		// fires on CHANGE and the high one on its own tick, so a row can exist with
+		// no distance for a while after it appears - measured at ~450 ms twice, both
+		// times for freshly-arrived landing markers (PHASE7 §8.8). Distance 0.0 is
+		// therefore "not published", NOT "on top of us", and every consumer that
+		// ranks or filters by distance has to know the difference.
+		bool haveDistance{ false };
 		// The cruise AUTOPILOT's current course - the per-entry
 		// bIsCruiseTargetLock the far-travel icon reads to decide whether its
 		// button offers LOCK or CLEAR (FarTravelIconBase.UpdateButton). ⚠ NOT
@@ -1977,6 +2044,11 @@ namespace
 	// panel must stay out of the way there - the gate identified back in Phase 0.
 	std::atomic<bool> g_inCruise{ false };
 
+	// PHASE 7: the ship scanner's own state, read from `Reticle_mc.MonocleModeActive`
+	// beside the cruise flag. Outside cruise this IS the panel's open state - the
+	// mod never consumes the key, it only notices what vanilla did with it.
+	std::atomic<bool> g_scannerOpen{ false };
+
 	// Vanilla blip management. The holder is the mod's container for blips it
 	// keeps visible while the vanilla one is hidden; the vanilla container's
 	// handle is deliberately NOT here - it is timeline-placed art that the
@@ -2073,6 +2145,9 @@ namespace
 	// thread, exactly as the panel sounds do. Vanilla toggles a course by
 	// re-sending the same id, so 0 is never a value this needs to carry.
 	std::atomic<std::uint32_t> g_pendingCourseID{ 0 };
+	// PHASE 7 landing probe: same hand-off shape as the course id above - the input
+	// thread stores, the UI thread dispatches and clears.
+	std::atomic<std::uint32_t> g_pendingLandingID{ 0 };
 
 	// The locked body's feed presence, CONFIRMED since the last movie
 	// teardown - the id of the lock that has actually been seen in a live
@@ -2335,6 +2410,20 @@ namespace
 	constexpr std::uint32_t kTargetTypeStation = 6;
 	constexpr std::uint32_t kTargetTypePlanet = 7;
 
+	// PHASE 7. The full enum is TargetIconFrameContainer.as:9-31 -
+	// ACTIVATOR 0, STAR 1, HAILING 2, LOOT 3, POI 4, SHIP 5, STATION 6,
+	// PLANET 7, DESTRUCTIBLE 8, QUEST 9, LANDING_MARKER 10, COUNT 11.
+	// Every value this project had already measured in game matches it, which is
+	// why LOOT could be predicted before the flight and then confirmed by one.
+	//
+	// ⚠ LOOT is BOTH categories the feature was asked about: a destroyed ship's
+	// wreck and a shot asteroid's "Mineral Deposit" ride as the SAME type. The two
+	// things are one thing to the engine, so one filter covers both. (Their form
+	// types differ - kCELL for hulks, kREFR for deposits - but that is 4 samples
+	// against 1 and is not leaned on anywhere.)
+	constexpr std::uint32_t kTargetTypeLoot = 3;
+	constexpr std::uint32_t kTargetTypeLandingMarker = 10;
+
 	// Which rows the mod can aim the autopilot at by id. **Measured, not
 	// reasoned** (tester, 2026-08-03): planets and moons work, and stations,
 	// POIs and ships do not - so `TT_PLANET`, which is what moons ride as too.
@@ -2368,6 +2457,53 @@ namespace
 	bool IsSecondaryRow(std::uint32_t a_type)
 	{
 		return a_type == kTargetTypePOI || a_type == kTargetTypeShip;
+	}
+
+	// ---- PHASE 7: which mode the panel is in, and what it lists there --------
+	//
+	// ⭐ ONE reader for "is the panel up", because there are two ways for it to be
+	// and they must never both answer. Cruise is a TOGGLE the mod owns; normal
+	// flight is the vanilla scanner's own state, which the mod only observes. Cruise
+	// WINS when both are somehow true - it is the shipped behaviour and nothing
+	// experimental gets to disturb it.
+	bool NormalPanelActive()
+	{
+		return bNormalFlightPanel.GetValue() && !g_inCruise.load(std::memory_order_acquire);
+	}
+
+	bool PanelOpenInCruise()
+	{
+		return g_panelOpen.load(std::memory_order_acquire) &&
+		       g_inCruise.load(std::memory_order_acquire);
+	}
+
+	bool PanelOpenInNormal()
+	{
+		return NormalPanelActive() && g_scannerOpen.load(std::memory_order_acquire);
+	}
+
+	bool PanelIsOpen()
+	{
+		return PanelOpenInCruise() || PanelOpenInNormal();
+	}
+
+	// The normal-flight population: loot, and landing markers if asked for.
+	//
+	// ⚠ The range test uses `a_haveDistance` rather than trusting a 0. A candidate
+	// past the end of the high-frequency feed keeps distance 0.0, and `0 <= cap`
+	// would quietly admit it as "very close" - which is the check-that-cannot-fail
+	// in a new hat. An unknown distance is ADMITTED (the row is real, the feed
+	// simply has not published its geometry yet) but it is admitted honestly, and
+	// CollectLocalRows sorts it to the bottom instead of the top.
+	bool IsNormalFlightRow(std::uint32_t a_type, double a_distanceMeters, bool a_haveDistance)
+	{
+		const bool wanted = (a_type == kTargetTypeLoot && bListLoot.GetValue()) ||
+		                    (a_type == kTargetTypeLandingMarker && bListLandingMarkers.GetValue());
+		if (!wanted)
+			return false;
+		if (!a_haveDistance)
+			return true;
+		return a_distanceMeters <= static_cast<double>(fMaxNormalRowMeters.GetValue());
 	}
 
 	// The user event that requests a data-model dump: the scanner key, i.e. the
@@ -2702,6 +2838,45 @@ namespace
 	{
 		a_out.clear();
 
+		// ---- PHASE 7: the normal-flight list is a different list ----------------
+		//
+		// Not a filter change on the cruise list: a different population, a
+		// different order, and no moon nesting (loot has no galaxy data and landing
+		// markers are not bodies). Kept as an early return so the cruise path below
+		// is reached with EXACTLY the control flow it shipped with - the whole point
+		// of an experimental branch is that the released behaviour is still there,
+		// unmodified, when the new mode is off.
+		//
+		// Order is DISTANCE ASCENDING, which is the entire feature: vanilla draws a
+		// distance only for the current target, so "which of these is nearest" is
+		// the question the HUD cannot answer. Rows whose geometry has not been
+		// published yet sort last rather than first (Candidate::haveDistance).
+		if (PanelOpenInNormal()) {
+			for (std::size_t i = 0; i < g_candidates.size(); ++i) {
+				auto& row = g_candidates[i];
+				if (!row.fromFeed)
+					continue;  // master-file bodies have no place in this list
+				if (!IsNormalFlightRow(row.type, row.distance, row.haveDistance))
+					continue;
+				row.isMoon = false;
+				a_out.push_back(i);
+			}
+
+			std::stable_sort(a_out.begin(), a_out.end(),
+				[](std::size_t a_lhs, std::size_t a_rhs) {
+					const auto& l = g_candidates[a_lhs];
+					const auto& r = g_candidates[a_rhs];
+					// Unknown distance sorts after every known one; two unknowns
+					// keep feed order, which is what stable_sort preserves.
+					if (l.haveDistance != r.haveDistance)
+						return l.haveDistance;
+					if (!l.haveDistance)
+						return false;
+					return l.distance < r.distance;
+				});
+			return;
+		}
+
 		const bool nest = bNestMoons.GetValue();
 
 		const auto isChildOf = [&](const Candidate& a_child, const Candidate& a_parent) {
@@ -2845,6 +3020,44 @@ namespace
 	// earlier version stood aside there on the theory that vanilla's own press
 	// would do the job; with the press taken away, standing aside meant nothing
 	// happened at all.
+	// PHASE 7's landing probe, request half. Runs on the INPUT thread, so it stores
+	// an id and nothing else - identical discipline to RequestLockCourse.
+	//
+	// ⚠ The type gate is the row's `uTargetType`, never "the row has an id". That
+	// is the rule four wrong course gates were built by ignoring, and it is cheap
+	// to keep: a loot row and a landing row sit side by side in this list, and
+	// far-travelling to a wreck is not the experiment.
+	void RequestLandingProbe(std::uint32_t a_id)
+	{
+		if (!bProbeLanding.GetValue() || a_id == 0)
+			return;
+
+		std::uint32_t type = 0;
+		std::string   name;
+		{
+			std::lock_guard lock{ g_candidateMutex };
+			for (const auto& row : g_candidates) {
+				if (row.id == a_id) {
+					type = row.type;
+					name = row.name;
+					break;
+				}
+			}
+		}
+
+		if (type != kTargetTypeLandingMarker) {
+			REX::INFO("[landing] {:08X} '{}' is uTargetType {} - the probe only aims at "
+					  "landing markers ({}), so this press does nothing",
+				a_id, name, type, kTargetTypeLandingMarker);
+			return;
+		}
+
+		REX::WARN("[landing] PROBE ARMED for {:08X} '{}' - this MOVES THE SHIP. If you did "
+				  "not mean to, you wanted bProbeLanding=false.",
+			a_id, name);
+		g_pendingLandingID.store(a_id, std::memory_order_release);
+	}
+
 	void RequestLockCourse(std::uint32_t a_id)
 	{
 		if (!bLockCourse.GetValue() || a_id == 0)
@@ -3005,8 +3218,7 @@ namespace
 
 				if (named && std::strcmp(userEvent, kDumpTriggerEvent) == 0) {
 					OnTriggerPressed();
-				} else if (g_panelOpen.load(std::memory_order_acquire) &&
-						   g_inCruise.load(std::memory_order_acquire)) {
+				} else if (PanelIsOpen()) {
 					// The browse keys are spliced away from the camera
 					// elsewhere; here they are simply read. One press - or one
 					// wheel notch - is one step, because this whole block only
@@ -3029,7 +3241,16 @@ namespace
 						// own verb and needs no target chosen first. That is the
 						// whole reason it is worth having - straight off the row
 						// under the bar.
-						RequestLockCourse(g_highlightID.load(std::memory_order_acquire));
+						//
+						// PHASE 7: outside cruise the same key drives the landing
+						// probe instead, because a course is a cruise verb and
+						// there is nothing for this key to do here otherwise. Both
+						// paths only STORE an id - the dispatch happens on the UI
+						// thread, which is the rule this function has always kept.
+						if (PanelOpenInNormal())
+							RequestLandingProbe(g_highlightID.load(std::memory_order_acquire));
+						else
+							RequestLockCourse(g_highlightID.load(std::memory_order_acquire));
 					} else {
 						// Everything else pressed while the panel is open, once
 						// per key and capped. This is the answer to "I bound my
@@ -3211,9 +3432,11 @@ namespace
 		// panel is open - this is the shipped behaviour now, not a test. The
 		// setting survives only as an escape hatch if the camera hook ever
 		// misbehaves.
-		const bool filtering = bWheelFilter.GetValue() &&
-		                       g_panelOpen.load(std::memory_order_acquire) &&
-		                       g_inCruise.load(std::memory_order_acquire);
+		// PHASE 7: the same splice serves the normal-flight list, and it matters
+		// MORE there. In cruise the wheel's vanilla job (POV cycling) is idle
+		// anyway; outside cruise it zooms the camera for real, so browsing the list
+		// without this would swing the view on every notch.
+		const bool filtering = bWheelFilter.GetValue() && PanelIsOpen();
 
 		if (!filtering) {
 			if (original)
@@ -4913,10 +5136,17 @@ namespace
 				const auto      previous = std::move(g_candidates);
 				g_candidates = std::move(collector.rows);
 				// Carry distances over; they come from the other feed.
+				//
+				// ⚠ `haveDistance` must travel WITH the distance it describes. A
+				// rebuild that carried the number but reset the flag would make
+				// every known distance look unpublished on the next low-feed tick -
+				// and the low feed publishes on target-set changes, which in a
+				// firefight is constantly. The pair is one fact; move it as one.
 				for (auto& row : g_candidates) {
 					for (const auto& old : previous) {
 						if (old.id == row.id) {
 							row.distance = old.distance;
+							row.haveDistance = old.haveDistance;
 							break;
 						}
 					}
@@ -4981,6 +5211,23 @@ namespace
 					}
 				}
 			}
+
+			// PHASE 7. The normal-flight list has no open-time settle of its own -
+			// nothing calls TogglePanel there, because the vanilla scanner IS the
+			// toggle - so the highlight is settled here instead, on every rebuild.
+			//
+			// ⭐ This has to be a per-rebuild heal rather than a one-shot on open,
+			// because THIS LIST CHURNS: containers are looted and vanish, wrecks
+			// arrive as ships die. A highlight pinned to a row that no longer
+			// exists would strand the bar with nothing under it, and the landing
+			// probe would aim at an id the feed has withdrawn.
+			//
+			// MoveHighlight(0) is a no-op when the highlight is still in the list
+			// (delta 0 on a found row), so the cost is one lock per publish and the
+			// behaviour is "heal only if stale". ⚠ Called AFTER the candidate lock
+			// above has gone out of scope - it takes that mutex itself.
+			if (PanelOpenInNormal())
+				MoveHighlight(0);
 
 			if (g_captureRequested.exchange(false, std::memory_order_acq_rel))
 				CaptureTargetData(data);
@@ -5356,6 +5603,81 @@ namespace
 	// panel was sitting on, with nothing targeted first.
 	// ---------------------------------------------------------------------------
 
+	// ---------------------------------------------------------------------------
+	// PHASE 7 landing probe, dispatch half. UI thread, no lock held on entry.
+	//
+	// The question, in full: `ShipHud_Land` cannot be steered - it is a
+	// PARAMETERLESS Event (ShipReticle.as:2157) that acts on the engine's own hover
+	// target - so the only way a panel row could ever reach a specific landing site
+	// is a verb that takes an id. `ShipHud_FarTravel {uValue}` is the one such verb
+	// left untried against this type, and it DID resolve a station on 2026-08-03.
+	//
+	// ⚠ A result either way is worth the press. If it lands, the route exists and
+	// the feature becomes a product question (§8.5). If it does nothing, the UI
+	// vocabulary is exhausted for landing exactly as it was for targeting, and that
+	// closes the line rather than leaving it open to be re-guessed.
+	//
+	// ⚠⚠ There is NO readback. Nothing publishes "a far travel began" the way
+	// `bIsCruiseTargetLock` publishes a course, so this logs what it asked for and
+	// says plainly that the tester's eyes are the measurement. A silence here means
+	// "unmeasured", never "refused" - do not let a quiet log become a finding.
+	// ---------------------------------------------------------------------------
+
+	void RunLandingProbe()
+	{
+		using V = RE::Scaleform::GFx::Value;
+
+		const auto rowID = g_pendingLandingID.exchange(0, std::memory_order_acq_rel);
+		if (rowID == 0)
+			return;
+
+		std::string name;
+		{
+			std::lock_guard lock{ g_candidateMutex };
+			for (const auto& row : g_candidates) {
+				if (row.id == rowID) {
+					name = row.name;
+					break;
+				}
+			}
+		}
+
+		// Dropped rather than queued: it was a keypress, and a stale one that moves
+		// the ship is worse than none at all.
+		if (!WorldSettled())
+			return;
+
+		const auto                     ui = RE::UI::GetSingleton();
+		static const RE::BSFixedString s_hud{ kShipHudMenu };
+		const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
+		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot) {
+			REX::WARN("[landing] no ship HUD movie to dispatch through");
+			return;
+		}
+		auto* root = menu->uiMovie->asMovieRoot.get();
+
+		V params;
+		root->CreateObject(&params);
+		if (!params.IsObject()) {
+			REX::WARN("[landing] could not build the event params");
+			return;
+		}
+		// Vanilla's own spelling and shape: ShipReticle.as:747 sends
+		// {"uValue": FarTravelID}, where FarTravelID is a target's uniqueID.
+		params.SetMember("uValue", V{ static_cast<double>(rowID) });
+
+		if (DispatchHudEvent(root, "ShipHud_FarTravel", &params)) {
+			REX::WARN("[landing] SENT ShipHud_FarTravel uValue={:08X} '{}'. Nothing reports "
+					  "back whether the engine accepted it - WATCH THE SHIP, and write down "
+					  "what happened. No movement is a real result and closes the route.",
+				rowID, name);
+		} else {
+			REX::WARN("[landing] dispatch FAILED for {:08X} '{}' - the event never left the "
+					  "movie, so this measures the mod and not the engine",
+				rowID, name);
+		}
+	}
+
 	void RunLockCourse()
 	{
 		using V = RE::Scaleform::GFx::Value;
@@ -5488,8 +5810,13 @@ namespace
 			{
 				std::lock_guard lock{ g_candidateMutex };
 				const auto      count = std::min(g_candidates.size(), bearings.rows.size());
-				for (std::size_t i = 0; i < count; ++i)
+				for (std::size_t i = 0; i < count; ++i) {
 					g_candidates[i].distance = bearings.rows[i].distance;
+					// Only the rows the high feed actually reached. Everything past
+					// `count` keeps distance 0.0 and must stay flagged as unknown -
+					// see Candidate::haveDistance.
+					g_candidates[i].haveDistance = true;
+				}
 
 				// The arrow follows the highlight while the panel is open - that
 				// is the preview - and falls back to the locked body once it
@@ -5759,6 +6086,10 @@ namespace
 			// point, which is the requirement for entering the VM.
 			if (bLockCourse.GetValue())
 				RunLockCourse();
+
+			// PHASE 7. Same place, same thread, same no-lock-held requirement.
+			if (bProbeLanding.GetValue())
+				RunLandingProbe();
 
 			// Distances are current by this point, which is what the list shows.
 			RefreshPanel();
@@ -6231,6 +6562,7 @@ namespace
 		static const RE::BSFixedString s_shipHud{ kShipHudMenu };
 		if (!ui->IsMenuOpen(s_shipHud)) {
 			g_inCruise.store(false, std::memory_order_release);
+			g_scannerOpen.store(false, std::memory_order_release);
 			return;
 		}
 		const auto menu = ui->GetMenu(s_shipHud);
@@ -6239,10 +6571,26 @@ namespace
 
 		auto*             root = menu->uiMovie->asMovieRoot.get();
 		const char*       rootPath = menu->GetRootPath();
-		const std::string path = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc.CruiseModeHUDActive";
+		const std::string base = std::string{ rootPath ? rootPath : "root" } + ".Reticle_mc.";
+		const std::string path = base + "CruiseModeHUDActive";
 
 		RE::Scaleform::GFx::Value flag;
 		const bool                cruising = root->GetVariable(&flag, path.c_str()) && flag.IsBoolean() && flag.GetBoolean();
+
+		// PHASE 7: the ship scanner, read the same way one getter along
+		// (ShipReticle.as:530, `public function get MonocleModeActive`). Read
+		// unconditionally so the flag is never stale when the mode is switched on
+		// mid-session, and so a log tail always says what the scanner was doing.
+		{
+			RE::Scaleform::GFx::Value monocle;
+			const std::string         mpath = base + "MonocleModeActive";
+			const bool                scanner = root->GetVariable(&monocle, mpath.c_str()) &&
+			                      monocle.IsBoolean() && monocle.GetBoolean();
+			if (g_scannerOpen.exchange(scanner, std::memory_order_acq_rel) != scanner &&
+				!cruising && bNormalFlightPanel.GetValue())
+				REX::INFO("[panel] ship scanner {} - normal-flight list {}",
+					scanner ? "opened" : "closed", scanner ? "up" : "down");
+		}
 		const bool                was = g_inCruise.exchange(cruising, std::memory_order_acq_rel);
 		if (was != cruising) {
 			REX::INFO("[arrow] cruise {}", cruising ? "entered - panel active" : "left - panel idle");
@@ -8930,8 +9278,9 @@ namespace
 
 		using V = RE::Scaleform::GFx::Value;
 
-		const bool open = g_panelOpen.load(std::memory_order_acquire) &&
-		                  g_inCruise.load(std::memory_order_acquire);
+		// PHASE 7: one reader, two ways to be open. In cruise this is the mod's own
+		// toggle; outside it, the vanilla scanner's state.
+		const bool open = PanelIsOpen();
 
 		// The open/close animation (v0.13.0): a state machine on wall time,
 		// advanced here because this runs every feed tick - the cadence that
@@ -9395,11 +9744,26 @@ namespace
 					// form id and re-resolved against the feed every update, so
 					// it starts guiding the moment the body is tracked, with no
 					// need to lock it again.
+					// ⚠ PHASE 7 added the METRES branch, and it is not cosmetic.
+					// The old ladder bottomed out at kilometres, so everything
+					// under 500 m rendered "0 km" - and the normal-flight list is
+					// made of exactly those distances: the five containers measured
+					// after one battle were 322 to 1089 m, i.e. FOUR of the five
+					// would have read "0 km" or "1 km" and the sort order would have
+					// looked like a bug in a list whose entire purpose is telling
+					// them apart. Cruise is untouched by this: its rows are 10^7 m
+					// and up, so they never reach the new branch.
+					//
+					// A zero distance still renders BLANK rather than "0 m" - it
+					// means the high-frequency feed has not published this row's
+					// geometry yet (Candidate::haveDistance), and a confident "0 m"
+					// would read as "you are on top of it".
 					const double lightSeconds = row.distance / kMetersPerLightSecond;
-					const auto   dist = !row.fromFeed       ? std::string{ isLocked ? "..." : "-" } :
-					                    row.distance <= 0.0 ? std::string{} :
-					                    lightSeconds >= 1.0 ? std::format("{:.0f} LS", lightSeconds) :
-					                                          std::format("{:.0f} km", row.distance / 1000.0);
+					const auto   dist = !row.fromFeed        ? std::string{ isLocked ? "..." : "-" } :
+					                    row.distance <= 0.0  ? std::string{} :
+					                    lightSeconds >= 1.0  ? std::format("{:.0f} LS", lightSeconds) :
+					                    row.distance >= 1000.0 ? std::format("{:.0f} km", row.distance / 1000.0) :
+					                                             std::format("{:.0f} m", row.distance);
 					distField.SetMember("text", V{ dist.c_str() });
 					if (g_panelDistFormat.IsObject())
 						distField.Invoke("setTextFormat", nullptr, &g_panelDistFormat, 1);
@@ -9906,6 +10270,23 @@ namespace
 		REX::INFO("config: sConfirmEvent='{}' (bPanelHints={}) - the footer pill resolves the key from "
 				  "the binding itself; sConfirmKeyLabel='{}' is only used if that pill cannot be built",
 			sConfirmEvent.GetValue(), bPanelHints.GetValue(), sConfirmKeyLabel.GetValue());
+
+		// PHASE 7, EXPERIMENTAL. Announced unconditionally: this branch changes what
+		// the mod does outside cruise, which every previous release left alone
+		// entirely, and a log that does not say so is a log that cannot be triaged.
+		REX::INFO("config: [EXPERIMENTAL] bNormalFlightPanel={} bListLoot={} bListLandingMarkers={} "
+				  "fMaxNormalRowMeters={}",
+			bNormalFlightPanel.GetValue(), bListLoot.GetValue(), bListLandingMarkers.GetValue(),
+			fMaxNormalRowMeters.GetValue());
+		if (bNormalFlightPanel.GetValue())
+			REX::INFO("config: outside cruise the list rides the SHIP SCANNER - open the scanner and "
+					  "it appears, nearest first. No key is taken from the game for it.");
+		if (bProbeLanding.GetValue())
+			REX::WARN("config: bProbeLanding=true - with the list up outside cruise, '{}' on a LANDING "
+					  "MARKER row dispatches ShipHud_FarTravel and THIS MOVES THE SHIP. Save first. "
+					  "Nothing reports back whether it worked; the log records what was asked and you "
+					  "record what happened.",
+				sLockCourseEvent.GetValue());
 
 		// The diagnostics dump earns its space only when something is on. A
 		// quiet build says so in one line, and says where the switch is.
