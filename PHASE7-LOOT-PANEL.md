@@ -7,7 +7,12 @@ AND THEY CAME OUT OPPOSITE WAYS.**
   the panel already reads, outside cruise, with a real name and a per-entry distance in
   metres. What remains is not data: it is the mode gate, the input route and the sort
   order (§6).
-- **LANDING MARKERS (§8): the list works, the LANDING IS CLOSED.** ⛔ Settled three ways —
+- **LANDING MARKERS (§8): CUT ENTIRELY, list and all** (tester's call, 2026-08-12). The
+  landing was closed three ways; the *list* then failed on its own merits, because the
+  engine withdraws a cluster's members the moment the ship points at it — so the row count
+  changed with the camera and the list disagreed with itself. ⭐ **A list that cannot be
+  acted on and cannot be trusted is not a reduced feature, it is a liability.** Settled
+  three ways —
   `ShipHud_Land` carries no id; the engine withdraws a cluster's members the moment the ship
   points at it; and the one id-taking verb left, `ShipHud_FarTravel`, **fades the screen to
   black and strands the player** (flown 2026-08-12, probe deleted). ⚠⚠ That last one
@@ -21,15 +26,15 @@ needed to answer any of it.
 **BUILD STATUS: on branch `experimental/normal-flight-panel`, built and deployed, THREE
 FLIGHTS IN. No version bump — the DLL still stamps 1.2.0.0** and will until this is judged
 worth releasing. What is in it: the panel opens outside cruise by riding the vanilla ship
-scanner (no key taken), lists loot and landing markers nearest-first, marks the highlighted
-row on the HUD, and sits on the right with its tilt mirrored because the scanner's planet
-card owns the left. The landing probe is **gone** (§8.5). Blip management and the survey
-sweep stay cruise-only on purpose (§6.3) — outside cruise this build reads the feed and
-draws a list, and writes nothing to the vanilla HUD.
+scanner (no key taken), lists **loot** nearest-first, **hides the off-screen blips while
+the scanner is up** so the ring stops being a wall of identical marks (§6.3), marks the
+highlighted row, and sits on the right with its tilt mirrored because the scanner's planet
+card owns the left. Landing markers and the landing probe are both **gone** (§8.5, §8.9).
+The survey sweep stays cruise-only.
 
-**Open in the build:** whether the marker rows earn their place at all (§8.9), and a grey
-flash on the markers while scrolling that is **not** the mod and has one A/B left to
-identify it (§8.8b).
+**Open in the build:** the grey flash while scrolling, which is **not** the mod and has one
+A/B left to identify it (§8.8b) — and which the blip cull may well have made moot, since
+the icons it dimmed are the ones now hidden.
 
 Assessment requested by the user 2026-08-12; all three flights flown the same day.
 
@@ -312,12 +317,41 @@ So this is a *find it* panel, not a *fly me there* panel: sorted rows plus the e
 pointer arrow. Which is exactly the ask — and it needs none of the machinery that was hard
 last time.
 
-### 6.3 Leave the blips alone
+### 6.3 ~~Leave the blips alone~~ — ⛔ REVERSED 2026-08-12, and the reversal is the feature
 
-`bHideVanillaBlips` and the keep/cull passes are cruise-gated today. **They should stay
-that way.** Hiding HUD blips during or just after combat is a different risk class from
-hiding them in cruise, and §4.2 means any blip work here starts by owing the duplicate-name
-machinery. The list alone answers the ask.
+**This section said the blip passes should stay cruise-only. That was wrong about what the
+feature IS, and the tester's correction is the sharper statement:**
+
+> *"The loot list needs the same blip hiding mechanic as in cruise mode to have significant
+> value; the decluttering of the HUD is the major selling point."*
+
+⭐ **The list was never the product — the list is how you choose WHICH blip survives.** The
+original problem statement (§0) is a HUD overwhelmed by identical nameless marks; naming
+them in a side panel while the wall of marks is still there solves the smaller half. This
+is the same reframing the cruise panel went through in Phase 3, where hiding vanilla blips
+turned a list into the thing people actually use.
+
+**The combat objection I raised does not reach the state this runs in.** Blips are hidden
+only while the **ship scanner is open**, because the scanner *is* the panel's open state
+here — close it and the HUD is vanilla on the same frame. That scope is structural, not a
+guard that can be got wrong, and nobody dogfights with the scanner up.
+
+⚠ Two things remain true and are handled rather than dismissed:
+
+- **The container is vanilla's and it is one clip**, so hiding it hides *every* off-screen
+  blip for as long as the scanner is up, not only the loot. `bNormalFlightBlips` turns it
+  off. The feed does carry a per-entry `hostile` flag if keeping enemy blips through a
+  scanner-open moment is ever wanted; it is not captured today.
+- **§4.2's duplicate names are now load-bearing, exactly as predicted.** Two wrecks sharing
+  a display name is ordinary here, so the v0.18.2 bearing-agreement machinery is what keeps
+  the surviving blip the right one. It was already in the code and engages on its own
+  (`the selection's name is shared by 2+ feed entries`) — the prediction that any blip work
+  here would owe it was correct; it simply turned out to be a debt already paid.
+
+⭐ **The lesson about the recommendation itself:** I scoped this build to "read the feed,
+draw a list, touch nothing" because that was the *safe* subset, and safe was doing work that
+*valuable* should have been doing. **When a feature's whole premise is that a display is too
+noisy, quieting the display is not the risky extra — it is the deliverable.**
 
 ### 6.4 ⚠ Completeness is genuinely unmeasured
 

@@ -191,11 +191,9 @@ namespace
 	// answer is "give it its own key" (see RefreshPanelMode).
 	REX::TIniSetting<bool> bNormalFlightPanel{ "Panel", "bNormalFlightPanel", true };
 
-	// Which classes the normal-flight list carries. Loot is the feature; landing
-	// markers ride along because they are the same list with another type filter,
-	// and because the landing probe below needs rows to aim at.
+	// The normal-flight list carries LOOT and nothing else - see IsNormalFlightRow
+	// for why landing markers were removed after two builds.
 	REX::TIniSetting<bool> bListLoot{ "Panel", "bListLoot", true };
-	REX::TIniSetting<bool> bListLandingMarkers{ "Panel", "bListLandingMarkers", true };
 
 	// Range cap for LOOT, in METRES (the feed's own unit here - light-seconds are
 	// the cruise list's scale and would be absurd for a container 300 m off the
@@ -204,23 +202,6 @@ namespace
 	// populations: this cap has no boundary to get wrong.
 	REX::TIniSetting<float> fMaxNormalRowMeters{ "Panel", "fMaxNormalRowMeters", 200000.0f };
 
-	// ⚠⚠ LANDING MARKERS NEED THEIR OWN CAP, AND IT DEFAULTS TO NONE.
-	//
-	// The first flight listed no surface markers at all and this was why: they were
-	// sharing the loot cap. A container is hundreds of metres away; a landing marker
-	// is on a PLANET, and the tester flies to it from orbit - Jemison sat 6,815 km
-	// out in the Phase 7 captures, which is 34x the 200 km loot cap. Every marker in
-	// the game was excluded by a number chosen for a different population.
-	//
-	// ⭐ And the tester's own gameplay fact says there is no right number to pick:
-	// being in the orbit cell above a planet is enough to land on ANY marker on it,
-	// so range is not what decides whether a marker is useful. 0 means no cap, which
-	// is the honest default; a positive value is available for anyone who wants one.
-	//
-	// The lesson, and it is a cheap one to have paid for once: TWO POPULATIONS IN
-	// ONE LIST NEED TWO LIMITS. A single cap tuned on the population you measured
-	// silently deletes the one you did not.
-	REX::TIniSetting<float> fMaxMarkerRowMeters{ "Panel", "fMaxMarkerRowMeters", 0.0f };
 
 	// ⭐⭐ THE PANEL MOVES RIGHT OUTSIDE CRUISE, because the ship scanner draws the
 	// PLANET INFO CARD on the left and sits straight on top of it (tester, first
@@ -247,6 +228,25 @@ namespace
 	// (The setting this note was written for, `sNormalActionEvent`, is gone with
 	// the landing probe it served - see PHASE7-LOOT-PANEL.md §8.5. The lesson is
 	// kept because the next control added here will need it.)
+
+	// ⭐⭐ THE DECLUTTER, OUTSIDE CRUISE. This is the selling point, not a side
+	// effect: after a battle the HUD carries a nameless ring blip per wreck, and a
+	// list that names them is only half an answer while the ring is still a wall of
+	// identical marks. Same mechanic as cruise - the off-screen container is hidden
+	// and the rows the mod has a stake in are let back through.
+	//
+	// ⚠ SCOPE IS WHAT MAKES THIS SAFE, and it is narrow by construction: blips are
+	// hidden ONLY while the ship scanner is open, because the scanner IS the panel's
+	// open state here. Close it and the HUD is vanilla again the same frame. Nobody
+	// dogfights with the scanner up, so the combat objection that kept this
+	// cruise-only through the first three builds does not reach the state it
+	// actually runs in.
+	//
+	// ⚠ It hides the WHOLE off-screen container, which is every off-screen blip and
+	// not merely the loot - the container is vanilla's, and it is one clip. The feed
+	// does carry a per-entry `hostile` flag if keeping enemy blips through a
+	// scanner-open moment is ever wanted; it is not captured today.
+	REX::TIniSetting<bool> bNormalFlightBlips{ "Panel", "bNormalFlightBlips", true };
 
 	// Mark the highlighted row on the HUD outside cruise. The list alone tells you
 	// which container is nearest; this tells you WHICH BLIP that is, which is the
@@ -2541,18 +2541,20 @@ namespace
 	// CollectLocalRows sorts it to the bottom instead of the top.
 	bool IsNormalFlightRow(std::uint32_t a_type, double a_distanceMeters, bool a_haveDistance)
 	{
-		// ⚠ Per-class cap. Sharing one number between loot and landing markers is
-		// what hid every marker on the first flight - see fMaxMarkerRowMeters.
-		double cap = 0.0;
-		if (a_type == kTargetTypeLoot && bListLoot.GetValue())
-			cap = static_cast<double>(fMaxNormalRowMeters.GetValue());
-		else if (a_type == kTargetTypeLandingMarker && bListLandingMarkers.GetValue())
-			cap = static_cast<double>(fMaxMarkerRowMeters.GetValue());
-		else
+		// ⛔ LOOT ONLY. Landing markers were listed for two builds and are gone -
+		// nothing could ever be DONE with a marker row (PHASE7 §8.9, closed three
+		// ways), and the rows actively misled: the engine withdraws a cluster's
+		// members the moment the ship points at it, so the count changed with the
+		// camera - seven markers looking away, one looking at them. A list that
+		// disagrees with itself depending on where you are facing is worse than no
+		// list. `kTargetTypeLandingMarker` is kept below only as documentation of
+		// the enum.
+		if (a_type != kTargetTypeLoot || !bListLoot.GetValue())
 			return false;
 
+		const double cap = static_cast<double>(fMaxNormalRowMeters.GetValue());
 		if (cap <= 0.0)
-			return true;  // no cap for this class
+			return true;
 		if (!a_haveDistance)
 			return true;
 		return a_distanceMeters <= cap;
@@ -5792,7 +5794,14 @@ namespace
 				// is the preview - and falls back to the locked body once it
 				// closes. Closing without confirming therefore reverts it, which
 				// is exactly what the confirm key is for.
-				selectedID = g_panelOpen.load(std::memory_order_acquire) ?
+				// PHASE 7: outside cruise there is no lock to fall back to - the
+				// scanner IS the panel, so an open scanner means the highlight is
+				// the selection and a closed one means there is none. Without this
+				// the loot blip that survives the cull would be whatever the cruise
+				// lock happened to be holding, which is not on screen at all.
+				selectedID = PanelOpenInNormal() ?
+				                 g_highlightID.load(std::memory_order_acquire) :
+				             g_panelOpen.load(std::memory_order_acquire) ?
 				                 g_highlightID.load(std::memory_order_acquire) :
 				                 g_lockedID.load(std::memory_order_acquire);
 				const auto selected = selectedID;
@@ -6928,10 +6937,19 @@ namespace
 		const bool stateDirty = g_blipsHidden.load(std::memory_order_acquire) ||
 		                        g_iconsFaded.load(std::memory_order_acquire);
 		if (!stateDirty) {
-			if (!g_inCruise.load(std::memory_order_acquire))
-				return false;  // out of cruise, nothing to undo
-			if (!g_panelOpen.load(std::memory_order_acquire) && a_lockedID == 0)
-				return false;  // cruising idle - stay entirely hands-off
+			// PHASE 7: two ways to have a stake now. Cruise is the shipped one -
+			// panel up or a lock held. Outside cruise it is the scanner being open,
+			// which is the same statement: the panel is up.
+			//
+			// ⚠ Cached flags are fine HERE because this gate only decides whether to
+			// START. Once anything is hidden `stateDirty` is true and the pass runs
+			// every tick, where the RESTORE decision is taken from a fresh read - see
+			// below. A tick's lag before hiding is invisible; a tick's lag before
+			// restoring is a bug.
+			const bool cruiseStake = g_inCruise.load(std::memory_order_acquire) &&
+			                         (g_panelOpen.load(std::memory_order_acquire) || a_lockedID != 0);
+			if (!cruiseStake && !(bNormalFlightBlips.GetValue() && PanelOpenInNormal()))
+				return false;  // idle - stay entirely hands-off
 		}
 
 		const auto ui = RE::UI::GetSingleton();
@@ -6971,6 +6989,17 @@ namespace
 			root->GetVariable(&flag, (base + ".Reticle_mc.CruiseModeHUDActive").c_str()) &&
 			flag.IsBoolean() && flag.GetBoolean();
 
+		// PHASE 7: the scanner, read FRESH for the same reason cruise is. The
+		// cached g_scannerOpen follows the low-frequency feed, which publishes on
+		// target-set CHANGES - so in a still scene it can stay true long after the
+		// player closed the scanner, and the blips would stay hidden with nothing on
+		// screen explaining why. The restore has to be frame-accurate; the engage
+		// does not.
+		RE::Scaleform::GFx::Value monocle;
+		const bool                scannerUp =
+			root->GetVariable(&monocle, (base + ".Reticle_mc.MonocleModeActive").c_str()) &&
+			monocle.IsBoolean() && monocle.GetBoolean();
+
 		using V = RE::Scaleform::GFx::Value;
 
 		// The v0.8.7 model, the tester's design: cruise alone leaves the
@@ -6979,8 +7008,14 @@ namespace
 		// visible), or a lock exists (only it stays). Clear the lock with the
 		// panel closed and everything is vanilla again: the decluttering
 		// follows intent instead of the flight mode.
-		const bool wantHidden = cruising &&
-		                        (g_panelOpen.load(std::memory_order_acquire) || a_lockedID != 0);
+		//
+		// Outside cruise the same rule reads more simply, because the scanner IS
+		// the panel: scanner open = stake, scanner closed = vanilla, same frame.
+		const bool cruiseHidden = cruising &&
+		                          (g_panelOpen.load(std::memory_order_acquire) || a_lockedID != 0);
+		const bool normalHidden = !cruising && scannerUp &&
+		                          bNormalFlightPanel.GetValue() && bNormalFlightBlips.GetValue();
+		const bool wantHidden = cruiseHidden || normalHidden;
 		if (!wantHidden) {
 			RestoreFadedIcons(root, base);
 			RestoreVanillaBlips(container);
@@ -6993,7 +7028,8 @@ namespace
 		// there is no per-frame fight to lose.
 		container.SetMember("visible", V{ false });
 		if (!g_blipsHidden.exchange(true, std::memory_order_acq_rel))
-			REX::INFO("[blip] off-screen blips hidden - panel open or target locked");
+			REX::INFO("[blip] off-screen blips hidden - {}",
+				cruising ? "panel open or target locked" : "ship scanner open (normal flight)");
 
 		if (WorldSettled()) {
 			TryCreateBlipHolder(root, base, container);
@@ -10322,10 +10358,10 @@ namespace
 		// PHASE 7, EXPERIMENTAL. Announced unconditionally: this branch changes what
 		// the mod does outside cruise, which every previous release left alone
 		// entirely, and a log that does not say so is a log that cannot be triaged.
-		REX::INFO("config: [EXPERIMENTAL] bNormalFlightPanel={} bListLoot={} bListLandingMarkers={} "
-				  "fMaxNormalRowMeters={}",
-			bNormalFlightPanel.GetValue(), bListLoot.GetValue(), bListLandingMarkers.GetValue(),
-			fMaxNormalRowMeters.GetValue());
+		REX::INFO("config: [EXPERIMENTAL] bNormalFlightPanel={} bListLoot={} fMaxNormalRowMeters={} "
+				  "bNormalFlightBlips={} bNormalFlightMarker={}",
+			bNormalFlightPanel.GetValue(), bListLoot.GetValue(), fMaxNormalRowMeters.GetValue(),
+			bNormalFlightBlips.GetValue(), bNormalFlightMarker.GetValue());
 		if (bNormalFlightPanel.GetValue())
 			REX::INFO("config: outside cruise the list rides the SHIP SCANNER - open the scanner and "
 					  "it appears, nearest first. No key is taken from the game for it.");
