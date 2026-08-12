@@ -197,12 +197,65 @@ namespace
 	REX::TIniSetting<bool> bListLoot{ "Panel", "bListLoot", true };
 	REX::TIniSetting<bool> bListLandingMarkers{ "Panel", "bListLandingMarkers", true };
 
-	// Range cap for the normal-flight list, in METRES (the feed's own unit here -
-	// light-seconds are the cruise list's scale and would be absurd for a container
-	// 300 m off the bow). Measured loot after one battle sat at 322-1089 m, and the
-	// nearest planet in the same capture was 3.89e7, so six orders of magnitude
-	// separate the two populations: this cap has no boundary to get wrong.
+	// Range cap for LOOT, in METRES (the feed's own unit here - light-seconds are
+	// the cruise list's scale and would be absurd for a container 300 m off the
+	// bow). Measured loot after one battle sat at 322-1089 m, and the nearest planet
+	// in the same capture was 3.89e7, so six orders of magnitude separate the two
+	// populations: this cap has no boundary to get wrong.
 	REX::TIniSetting<float> fMaxNormalRowMeters{ "Panel", "fMaxNormalRowMeters", 200000.0f };
+
+	// ⚠⚠ LANDING MARKERS NEED THEIR OWN CAP, AND IT DEFAULTS TO NONE.
+	//
+	// The first flight listed no surface markers at all and this was why: they were
+	// sharing the loot cap. A container is hundreds of metres away; a landing marker
+	// is on a PLANET, and the tester flies to it from orbit - Jemison sat 6,815 km
+	// out in the Phase 7 captures, which is 34x the 200 km loot cap. Every marker in
+	// the game was excluded by a number chosen for a different population.
+	//
+	// ⭐ And the tester's own gameplay fact says there is no right number to pick:
+	// being in the orbit cell above a planet is enough to land on ANY marker on it,
+	// so range is not what decides whether a marker is useful. 0 means no cap, which
+	// is the honest default; a positive value is available for anyone who wants one.
+	//
+	// The lesson, and it is a cheap one to have paid for once: TWO POPULATIONS IN
+	// ONE LIST NEED TWO LIMITS. A single cap tuned on the population you measured
+	// silently deletes the one you did not.
+	REX::TIniSetting<float> fMaxMarkerRowMeters{ "Panel", "fMaxMarkerRowMeters", 0.0f };
+
+	// ⭐⭐ THE PANEL MOVES RIGHT OUTSIDE CRUISE, because the ship scanner draws the
+	// PLANET INFO CARD on the left and sits straight on top of it (tester, first
+	// flight). Cruise has no such card, which is why one offset served until now.
+	// Same units and same anchor as fPanelOffsetX/Y - see those for the geometry.
+	// This default mirrors the cruise position about the screen centre and is a
+	// STARTING POINT to be tuned in the seat, not a measurement.
+	REX::TIniSetting<float> fPanelNormalOffsetX{ "Panel", "fPanelNormalOffsetX", 355.0f };
+	REX::TIniSetting<float> fPanelNormalOffsetY{ "Panel", "fPanelNormalOffsetY", -180.0f };
+
+	// ⚠⚠ THE PANEL'S CONTROLS ARE BOUND TO DIFFERENT USER EVENTS OUTSIDE CRUISE,
+	// and the first flight is what found it: with the list up, Q reported
+	// `LShoulder` and Spacebar reported `SwitchFlightModes`, so `sConfirmEvent`
+	// (TogglePOV) and `sLockCourseEvent` (LockCourse) matched NOTHING and both keys
+	// appeared dead. The mod's own "key id=N reports 'X'" line named them.
+	//
+	// This is lesson 2 from the cruise input work arriving in a new context: ONE
+	// PHYSICAL KEY REPORTS SEVERAL USER-EVENT NAMES, and which one you get depends
+	// on the context the engine is in - not only on press versus release. A name
+	// learned in cruise is not a name that holds outside it.
+	//
+	// Same list syntax as sConfirmEvent. `TogglePOV` is kept as a second entry so
+	// that a setup where Q reports its cruise name still works, and because a list
+	// costs nothing.
+	//
+	// ⚠ Unlike the cruise confirm key, this press is NOT spliced away from anything.
+	// If `LShoulder` turns out to do a real job in normal flight, the probe will
+	// happen alongside it rather than instead of it.
+	REX::TIniSetting<std::string> sNormalActionEvent{ "Panel", "sNormalActionEvent", "LShoulder,TogglePOV" };
+
+	// Mark the highlighted row on the HUD outside cruise. The list alone tells you
+	// which container is nearest; this tells you WHICH BLIP that is, which is the
+	// half that makes it actionable when a dozen identical ones are on screen.
+	// The mod's own drawn marker for now - see the note at the haveSelected gate.
+	REX::TIniSetting<bool> bNormalFlightMarker{ "Panel", "bNormalFlightMarker", true };
 
 	// The control hint along the bottom. The label is a separate setting because
 	// the mod knows the confirm key's user-event NAME, not which physical key it
@@ -363,6 +416,14 @@ namespace
 	// translation at panel build - the default is the word the HUD's cruise
 	// hint itself uses, so the title arrives in the player's language.
 	REX::TIniSetting<bool>        bPanelHeader{ "Panel", "bPanelHeader", true };
+	// The header outside cruise. Composed exactly like sPanelTitle (segments split
+	// on '|', $tokens translated, everything else literal) but it must not say
+	// CRUISE - the first flight showed "Cruise - Available Targets" sitting over a
+	// list of wreckage. `$Outpost_AvailableTargets` alone is the game's own wording
+	// and is true in both modes, so it carries no claim about where the ship is.
+	REX::TIniSetting<std::string> sPanelTitleNormal{ "Panel", "sPanelTitleNormal",
+		"$Outpost_AvailableTargets" };
+
 	REX::TIniSetting<std::string> sPanelTitle{ "Panel", "sPanelTitle",
 		"$CRUISE| - |$Outpost_AvailableTargets" };
 
@@ -2324,6 +2385,11 @@ namespace
 	RE::Scaleform::GFx::Value g_panelHintRightFormat;
 	RE::Scaleform::GFx::Value g_panelTitle;
 	RE::Scaleform::GFx::Value g_panelTitleFormat;
+	// Both titles, translated once at panel build (the one place with VM context)
+	// and swapped by mode afterwards. Plain strings on purpose: a mode change must
+	// not be able to fail, and translation is the only part that can.
+	std::string g_titleCruise;
+	std::string g_titleNormal;
 	std::atomic<bool>          g_panelReady{ false };
 	std::atomic<bool>          g_panelFailed{ false };
 	std::atomic<std::uint32_t> g_panelRowCount{ 0 };
@@ -2497,13 +2563,33 @@ namespace
 	// CollectLocalRows sorts it to the bottom instead of the top.
 	bool IsNormalFlightRow(std::uint32_t a_type, double a_distanceMeters, bool a_haveDistance)
 	{
-		const bool wanted = (a_type == kTargetTypeLoot && bListLoot.GetValue()) ||
-		                    (a_type == kTargetTypeLandingMarker && bListLandingMarkers.GetValue());
-		if (!wanted)
+		// ⚠ Per-class cap. Sharing one number between loot and landing markers is
+		// what hid every marker on the first flight - see fMaxMarkerRowMeters.
+		double cap = 0.0;
+		if (a_type == kTargetTypeLoot && bListLoot.GetValue())
+			cap = static_cast<double>(fMaxNormalRowMeters.GetValue());
+		else if (a_type == kTargetTypeLandingMarker && bListLandingMarkers.GetValue())
+			cap = static_cast<double>(fMaxMarkerRowMeters.GetValue());
+		else
 			return false;
+
+		if (cap <= 0.0)
+			return true;  // no cap for this class
 		if (!a_haveDistance)
 			return true;
-		return a_distanceMeters <= static_cast<double>(fMaxNormalRowMeters.GetValue());
+		return a_distanceMeters <= cap;
+	}
+
+	// The panel's screen position, which differs by mode: outside cruise the ship
+	// scanner puts its planet info card exactly where the cruise panel lives.
+	float PanelOffsetX()
+	{
+		return PanelOpenInNormal() ? fPanelNormalOffsetX.GetValue() : fPanelOffsetX.GetValue();
+	}
+
+	float PanelOffsetY()
+	{
+		return PanelOpenInNormal() ? fPanelNormalOffsetY.GetValue() : fPanelOffsetY.GetValue();
 	}
 
 	// The user event that requests a data-model dump: the scanner key, i.e. the
@@ -2623,12 +2709,17 @@ namespace
 		// the game, or from the "that key is not one of the panel's controls"
 		// advice below.
 		std::string lockCourse;
+		// PHASE 7. The action key OUTSIDE cruise, which is a different user-event
+		// name for the same physical key - see sNormalActionEvent. Empty while the
+		// probe is off, by the same rule as lockCourse above.
+		std::string normalAction;
 
 		static EventLists Read()
 		{
 			return EventLists{ sBrowseUpEvent.GetValue(), sBrowseDownEvent.GetValue(),
 				sConfirmEvent.GetValue(),
-				bLockCourse.GetValue() ? sLockCourseEvent.GetValue() : std::string{} };
+				bLockCourse.GetValue() ? sLockCourseEvent.GetValue() : std::string{},
+				bProbeLanding.GetValue() ? sNormalActionEvent.GetValue() : std::string{} };
 		}
 
 		// The mouse wheel by default, and on a controller the D-pad. Matching
@@ -2639,7 +2730,8 @@ namespace
 			return MatchesEventList(browseUp, a_userEvent, a_idCode) ||
 			       MatchesEventList(browseDown, a_userEvent, a_idCode) ||
 			       MatchesEventList(confirm, a_userEvent, a_idCode) ||
-			       MatchesEventList(lockCourse, a_userEvent, a_idCode);
+			       MatchesEventList(lockCourse, a_userEvent, a_idCode) ||
+			       MatchesEventList(normalAction, a_userEvent, a_idCode);
 		}
 	};
 
@@ -3236,21 +3328,19 @@ namespace
 							REX::INFO("[panel] highlight down -> {:08X}", g_highlightID.load(std::memory_order_acquire));
 					} else if (MatchesEventList(lists.confirm, userEvent, button->idCode)) {
 						ConfirmHighlight();
+					} else if (PanelOpenInNormal() &&
+							   MatchesEventList(lists.normalAction, userEvent, button->idCode)) {
+						// ⚠ Checked BEFORE lockCourse, and gated on the mode, because
+						// the two lists can name the same physical key and only one
+						// of them is meaningful here.
+						RequestLandingProbe(g_highlightID.load(std::memory_order_acquire));
 					} else if (MatchesEventList(lists.lockCourse, userEvent, button->idCode)) {
 						// The HIGHLIGHT, not the lock: setting a course is its
 						// own verb and needs no target chosen first. That is the
 						// whole reason it is worth having - straight off the row
 						// under the bar.
 						//
-						// PHASE 7: outside cruise the same key drives the landing
-						// probe instead, because a course is a cruise verb and
-						// there is nothing for this key to do here otherwise. Both
-						// paths only STORE an id - the dispatch happens on the UI
-						// thread, which is the rule this function has always kept.
-						if (PanelOpenInNormal())
-							RequestLandingProbe(g_highlightID.load(std::memory_order_acquire));
-						else
-							RequestLockCourse(g_highlightID.load(std::memory_order_acquire));
+						RequestLockCourse(g_highlightID.load(std::memory_order_acquire));
 					} else {
 						// Everything else pressed while the panel is open, once
 						// per key and capped. This is the answer to "I bound my
@@ -6012,7 +6102,24 @@ namespace
 
 			if (g_arrowReady.load(std::memory_order_acquire)) {
 				using V = RE::Scaleform::GFx::Value;
-				haveSelected = haveSelected && g_inCruise.load(std::memory_order_acquire);
+				// PHASE 7: the highlight is marked on the HUD outside cruise too,
+				// which is the tester's ask - after a battle every blip looks the
+				// same, so the list saying "this one" is only half an answer until
+				// the HUD agrees which one it means.
+				//
+				// ⚠ A loot row gets the DRAWN marker, not vanilla art: `fauxActive`
+				// below needs Planet/Star or a POI-ish type carrying real
+				// uPoiType/uPoiCategory, and loot carries the (83,10) "no marker"
+				// sentinel pair. Matching the icon the target key draws means
+				// constructing `LootIcon` - available, and by the same proof
+				// `OffScreenIcon` was (both are art-bound default-package symbols in
+				// shipreticle.swf's SymbolClass tag) - but it is an ON-screen
+				// TargetIconBase placed by screen percentage, not a ring blip placed
+				// by bearing, so it needs the blip-to-icon handover the planets have
+				// and is its own piece of work. Not attempted blind.
+				haveSelected = haveSelected &&
+				               (g_inCruise.load(std::memory_order_acquire) ||
+				                   (bNormalFlightMarker.GetValue() && PanelOpenInNormal()));
 				// When vanilla marks the selected body - blip on the ring or
 				// icon in the view - the mod draws NOTHING for it (v0.8.1 and
 				// v0.8.2, the tester's calls). The mod's marker and name exist
@@ -7987,36 +8094,47 @@ namespace
 		// dash (v0.15.0, the tester's composition). Any segment failing to
 		// translate fails the whole title to the English fallback rather
 		// than showing a bare token.
-		std::string title;
-		{
-			const std::string raw = sPanelTitle.GetValue();
-			bool              failed = false;
-			std::size_t       start = 0;
-			while (start <= raw.size()) {
-				const auto        sep = raw.find('|', start);
+		// ⚠ BOTH titles are composed here, in the one place that has VM context,
+		// and cached as plain strings. The panel then swaps between them with a
+		// SetMember on a mode change - no translation, no VM call, nothing that
+		// could fail at the moment the mode flips. The cruise title said "Cruise -
+		// Available Targets" over a list of loot containers on the first flight,
+		// which is the kind of wrongness a player reads as a broken mod.
+		const auto compose = [&](const std::string& a_raw, const char* a_what) {
+			std::string out;
+			bool        failed = false;
+			std::size_t start = 0;
+			while (start <= a_raw.size()) {
+				const auto        sep = a_raw.find('|', start);
 				const std::string seg =
-					raw.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
+					a_raw.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
 				if (!seg.empty() && seg.front() == '$') {
 					const std::string translated = TranslateToken(seg.c_str());
 					if (translated.empty()) {
 						failed = true;
 						break;
 					}
-					title += translated;
+					out += translated;
 				} else {
-					title += seg;
+					out += seg;
 				}
 				if (sep == std::string::npos)
 					break;
 				start = sep + 1;
 			}
 			if (failed) {
-				REX::WARN("[panel] title '{}' did not fully translate - using the fallback words", raw);
-				title = "NAVIGATION TARGETS";
-			} else if (title != raw && !raw.empty()) {
-				REX::INFO("[panel] title '{}' from '{}'", title, raw);
+				REX::WARN("[panel] {} title '{}' did not fully translate - using the fallback words",
+					a_what, a_raw);
+				out = "NAVIGATION TARGETS";
+			} else if (out != a_raw && !a_raw.empty()) {
+				REX::INFO("[panel] {} title '{}' from '{}'", a_what, out, a_raw);
 			}
-		}
+			return out;
+		};
+
+		const std::string title = compose(sPanelTitle.GetValue(), "cruise");
+		g_titleCruise = title;
+		g_titleNormal = compose(sPanelTitleNormal.GetValue(), "normal-flight");
 		// The header mirrors the footer: a title where the hints have their
 		// text, a hairline between it and the rows, and the rows' 6.0 pad
 		// below its rule matching the pad above the footer's. An empty title
@@ -8784,8 +8902,8 @@ namespace
 			}
 		}
 
-		g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
-		g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
+		g_panelClip.SetMember("x", V{ static_cast<double>(PanelOffsetX()) });
+		g_panelClip.SetMember("y", V{ static_cast<double>(PanelOffsetY()) });
 		g_panelClip.SetMember("visible", V{ false });
 
 		// The cockpit tilt (v0.16.4): the same Matrix3D treatment vanilla
@@ -8820,8 +8938,8 @@ namespace
 				}
 			}
 			if (tilted) {
-				g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
-				g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
+				g_panelClip.SetMember("x", V{ static_cast<double>(PanelOffsetX()) });
+				g_panelClip.SetMember("y", V{ static_cast<double>(PanelOffsetY()) });
 				REX::INFO("[panel] cockpit tilt applied (pitch {}, yaw {})",
 					fPanelTiltPitch.GetValue(), fPanelTiltYaw.GetValue());
 			} else {
@@ -8834,7 +8952,7 @@ namespace
 		g_panelRowCount.store(static_cast<std::uint32_t>(made), std::memory_order_release);
 		g_panelReady.store(true, std::memory_order_release);
 		REX::INFO("[panel] ready - {} rows at ({}, {})", made,
-			fPanelOffsetX.GetValue(), fPanelOffsetY.GetValue());
+			PanelOffsetX(), PanelOffsetY());
 	}
 
 	// Phase 4 chrome probe (PHASE4-CHROME-HUNT.md): construct the chosen donor -
@@ -9345,15 +9463,33 @@ namespace
 			g_panelClip.SetMember("scaleX", V{ scale });
 			g_panelClip.SetMember("scaleY", V{ scale });
 			g_panelClip.SetMember("x",
-				V{ static_cast<double>(fPanelOffsetX.GetValue()) + (1.0 - scale) * w * 0.5 });
+				V{ static_cast<double>(PanelOffsetX()) + (1.0 - scale) * w * 0.5 });
 			g_panelClip.SetMember("y",
-				V{ static_cast<double>(fPanelOffsetY.GetValue()) + (1.0 - scale) * h * 0.5 });
+				V{ static_cast<double>(PanelOffsetY()) + (1.0 - scale) * h * 0.5 });
 		} else if (animEntered && anim == PanelAnim::kOpen) {
 			g_panelClip.SetMember("alpha", V{ 1.0 });
 			g_panelClip.SetMember("scaleX", V{ 1.0 });
 			g_panelClip.SetMember("scaleY", V{ 1.0 });
-			g_panelClip.SetMember("x", V{ static_cast<double>(fPanelOffsetX.GetValue()) });
-			g_panelClip.SetMember("y", V{ static_cast<double>(fPanelOffsetY.GetValue()) });
+			g_panelClip.SetMember("x", V{ static_cast<double>(PanelOffsetX()) });
+			g_panelClip.SetMember("y", V{ static_cast<double>(PanelOffsetY()) });
+		}
+
+		// The header follows the mode. Edge-triggered on the mode itself rather
+		// than written every tick: this is a SetText on a static child, exactly the
+		// per-tick work v0.9.1's wheel regression was traced to, and it changes
+		// about once a minute.
+		if (g_panelTitle.IsObject() || g_panelTitle.IsDisplayObject()) {
+			static int  s_lastTitleMode = -1;
+			const int   mode = PanelOpenInNormal() ? 1 : 0;
+			if (mode != s_lastTitleMode) {
+				s_lastTitleMode = mode;
+				const std::string& want = mode == 1 ? g_titleNormal : g_titleCruise;
+				if (!want.empty()) {
+					g_panelTitle.SetMember("text", V{ want.c_str() });
+					if (g_panelTitleFormat.IsObject())
+						g_panelTitle.Invoke("setTextFormat", nullptr, &g_panelTitleFormat, 1);
+				}
+			}
 		}
 
 		// Content belongs to the settled-open state alone. Entering a moving
@@ -10282,11 +10418,14 @@ namespace
 			REX::INFO("config: outside cruise the list rides the SHIP SCANNER - open the scanner and "
 					  "it appears, nearest first. No key is taken from the game for it.");
 		if (bProbeLanding.GetValue())
-			REX::WARN("config: bProbeLanding=true - with the list up outside cruise, '{}' on a LANDING "
-					  "MARKER row dispatches ShipHud_FarTravel and THIS MOVES THE SHIP. Save first. "
-					  "Nothing reports back whether it worked; the log records what was asked and you "
-					  "record what happened.",
-				sLockCourseEvent.GetValue());
+			REX::WARN("config: bProbeLanding=true - with the list up outside cruise, sNormalActionEvent "
+					  "('{}') on a LANDING MARKER row dispatches ShipHud_FarTravel and THIS MOVES THE "
+					  "SHIP. Save first. Nothing reports back whether it worked; the log records what "
+					  "was asked and you record what happened. ⚠ If the key seems dead, look for the "
+					  "\"key id=N reports 'X'\" line - outside cruise your keys report DIFFERENT event "
+					  "names (Q was 'LShoulder', Spacebar was 'SwitchFlightModes') - and put the name "
+					  "it prints into sNormalActionEvent.",
+				sNormalActionEvent.GetValue());
 
 		// The diagnostics dump earns its space only when something is on. A
 		// quiet build says so in one line, and says where the switch is.
