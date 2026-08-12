@@ -1,13 +1,22 @@
-# PHASE 7 — Loot containers in normal flight
+# PHASE 7 — Loot containers and landing markers in normal flight
 
-**Status (2026-08-12): RECON COMPLETE. ONE FLIGHT FLOWN, AND EVERY DATA QUESTION IS
-SETTLED IN FAVOUR OF THE FEATURE.** Loot rides the target feed the panel already reads,
-outside cruise, carrying a real name and a per-entry distance in metres. **No feature code
-has been written, and none was needed to get here** — the census was taken with the shipped
-v1.2.0 DLL and one ini line. The data half of this feature is free. What remains is not
-data: it is the mode gate, the input route, and the sort order (§6).
+**Status (2026-08-12): RECON COMPLETE, THREE FLIGHTS FLOWN, TWO TARGET CLASSES ASSESSED —
+AND THEY CAME OUT OPPOSITE WAYS.**
 
-Assessment requested by the user 2026-08-12; census flown the same day.
+- **LOOT (§1–§7): GO.** Every data question settled in favour. Loot rides the target feed
+  the panel already reads, outside cruise, with a real name and a per-entry distance in
+  metres. What remains is not data: it is the mode gate, the input route and the sort
+  order (§6).
+- **LANDING MARKERS (§8): the list is free, the LANDING is DEAD as asked.** ⛔ At the exact
+  moment the player needs to choose, **the engine collapses a marker cluster into ONE feed
+  entry and withdraws the members** — so there is no choice set to present, on top of
+  `ShipHud_Land` carrying no id. One narrow route survives and it changes what the feature
+  is (§8.5).
+
+**No feature code has been written, and none was needed to get here** — every census was
+taken with the shipped v1.2.0 DLL and one ini line.
+
+Assessment requested by the user 2026-08-12; all three flights flown the same day.
 
 ---
 
@@ -23,6 +32,10 @@ container at once, sorted nearest first.**
 
 This is the cruise panel's own problem statement with the target class changed. It is not
 a new mod concept; it is the same list.
+
+**§1–§7 assess loot.** A second target class — **landing area markers** — was assessed
+afterwards against the same list, and answered differently enough to need its own section:
+**§8**.
 
 ---
 
@@ -338,15 +351,213 @@ capture writes to `Documents\My Games\Starfield\SFSE\Logs\ShipNavPanel.log`:
 cruise, which is expected and harmless — the capture flags are set before the cruise gate
 returns.
 
+⚠⚠ **The two blocks are separate ticks and can disagree — see §8.8.** The high feed answers
+almost at once; the low feed answers on its next *change*. In a scene that is gaining
+contacts the pair can be ~450 ms and several entries apart, so **capture with the target set
+static** if the two are to be read together, and never index-join across the blocks.
+
+---
+
+## 8. Landing markers — the second target class
+
+### 8.1 The ask
+
+List **landing area markers** beside the loot, and **land on the highlighted one from the
+panel**. The motivation is specific and real: several markers occupy the same spot on a
+busy world — New Atlantis carries five — and in that state landing from the cockpit is
+impossible, so the player must open the map to choose. The hoped-for precedent was the
+far-travel probe (§ PHASE 1 history, commit `5f6c7a1`): a by-id verb dispatched from a
+panel row.
+
+### 8.2 ⭐⭐ Two flights, and the feed tells two different stories ON PURPOSE
+
+**Flight B — 2026-08-12 17:37, Jemison at 6,815 km.** Seven `uTargetType = 10`
+(`TT_LANDING_MARKER`) entries, all `formType 4A` (kREFR):
+
+| name | `uniqueID` | `bLandingAllowed` | `bIsGroupMarker` |
+|---|---|---|---|
+| The Lodge | `0x0F9371` | false | false |
+| Residential District | `0x01531B` | false | false |
+| Commercial District | `0x01531E` | false | false |
+| New Atlantis | `0x023642` | false | false |
+| MAST District | `0x24C0A0` | false | false |
+| Science Outpost | `0xFF016C64` | true | false |
+| Science Outpost | `0xFF035BE0` | true | false |
+
+**Flight C — 2026-08-12 18:28, at landing range, reticle held on the New Atlantis cluster.**
+Three captures. The first two carry **no landing markers at all**. The third carries three
+— and the cluster is **gone**:
+
+```
+entry.name            = "The Lodge"
+entry.uniqueID        = 1020913          (0x0F9371)
+entry.handle          = 499923
+entry.uTargetType     = 10
+entry.bIsHoverTarget  = true             <- the reticle is on it
+entry.bLandingAllowed = true
+entry.bLandingDisabled= false
+entry.bIsGroupMarker  = true             <- the cluster, as one row
+```
+
+**Residential District, Commercial District, New Atlantis and MAST District are not in
+`targetArray`.** Not hidden, not flagged, not merged into a child list — absent.
+
+### 8.3 ⛔⛔ THE COLLAPSE IS IN THE FEED, NOT IN THE RENDERER
+
+This is the finding that decides the feature, and it was not visible from the AS3.
+
+Reading `ShipReticle.as:946` alone, the group marker looks like a **display** decision — one
+icon drawn for several targets, with the button swapped from LAND to OPEN PLANET MAP:
+
+```actionscript
+_loc4_ = !!_loc1_.bIsGroupMarker ? this.LandingMarkerMapButtonHintData : this.LandButtonHintData;
+```
+
+It is not. **The engine publishes ONE entry and withdraws the members.** By the time
+`bIsGroupMarker` is true, the four districts have left the data the UI layer can see.
+
+⭐ **The general lesson, and it is worth carrying: a flag named "group" described the
+ROSTER, not the drawing.** Every other `b*` field on this payload modifies how one target
+is treated; this one changes how many targets there are. Nothing in the AS3 says so,
+because the AS3 only ever consumes what it is handed.
+
+### 8.4 ⛔ Why the panel cannot do the landing as asked — two independent blocks
+
+**Block 1 — there is no id to send.** `ShipHud_Land` is a **parameterless** event:
+
+```actionscript
+BSUIDataManager.dispatchEvent(new Event(ShipHud_Land));
+```
+
+The complete UI→engine vocabulary was enumerated for this assessment (34 dispatch sites in
+the ship-HUD scripts). The reference-taking verbs carry `{uValue:…}`
+(`ShipHud_FarTravel`, `ShipHud_HailAccepted`, `ShipHud_TargetShipSystem`), `{handle:…}`
+(`ShipHud_DockRequested`, `ShipHud_HailShip`), `{uHandleID:…}`
+(`ShipHudQuickContainer_TransferItem`) or `{uBodyID:…}` (`Reticle_OnCruiseLockCourse`).
+**`ShipHud_Land` and `ShipHud_LandingMarkerMap` carry nothing at all.** The engine resolves
+the destination from `iHoverTargetIndex` — engine-computed geometry, published engine→UI.
+Same wall as the info target, and the same conclusion: *a dispatchable event gives you the
+engine's VERB, not a way around the engine's GEOMETRY.*
+
+**Block 2 — ⭐ there is no choice set to choose from.** Even a perfect by-id landing verb
+would have nothing to name, because at the moment of choosing the alternatives are not in
+the feed (§8.3).
+
+**Block 2 is the deeper one and it is new.** Block 1 alone would have left the door open to
+naming a marker from some other source. Block 2 says the panel is not merely unable to
+*act* on the districts — it cannot **see** them when it matters.
+
+⚠ And vanilla's map detour is therefore not laziness: it is the only surface that still has
+the roster. Landing is being asked to disambiguate a set the ship HUD no longer holds.
+
+### 8.5 The one surviving route, and what it costs
+
+Cache the cluster members from the **far-range** feed — where they *are* separate entries
+with **static** form ids (§8.2) — then land via
+`ShipHud_FarTravel {uValue: <district marker id>}`.
+
+Three things have to be true, and only the first is cheap to settle:
+
+1. ⚗ **Far travel must resolve a landing marker.** UNPROVEN. Precedent cuts both ways: it
+   resolved a *station* by id, while `Reticle_OnCruiseLockCourse` refused everything that
+   was not a PNDT. **One dispatch settles it** and the probe is recoverable from history
+   (`5f6c7a1`). ⚠ It moves the player, so it needs the loud gating the first one had.
+2. ⚠ **The cache must survive the withdrawal.** The mod would be offering a choice the
+   engine has actively retracted — presenting rows for markers the feed says are gone. That
+   is a new hazard class for this project, and FF-prefixed members (the Science Outposts)
+   cannot be cached at all, being recyclable.
+3. ⛔ **It stops being "land from the panel".** It becomes *fast travel* from the panel —
+   which is what the map already does, one screen away. **The user's own disposition on the
+   cruise far-travel probe applies with more force here, not less**, and that call is
+   theirs: a mod about flying somewhere should be slow to ship a second button that skips
+   the flying.
+
+### 8.6 The Papyrus surface — a predicate without its verb
+
+- ⭐ **`SpaceshipReference.CanLandAtMarker(ObjectReference akLandingMarker) native`** — takes
+  a landing marker by reference, so the engine **does** have by-reference landing logic. It
+  is a **query**; it lands nothing. Notable: **zero callers in the entire base-game Papyrus
+  corpus.** It would let a panel row say honestly whether landing is possible.
+- ⚗ `Game.FastTravel(ObjectReference akDestination) native global` — real, and reachable by
+  the proven `DispatchMethodCall` route (PHASE 6). But it is **player** fast travel, not
+  ship landing: it may teleport rather than fly the sequence, and it is a genuine state
+  change. A bigger hammer than the ask.
+- ⛔ **No `LandAtMarker` verb exists anywhere.** `SpaceshipReference` offers the predicate,
+  `IsLanded()`, and `EnableWithLanding()` (an NPC-spawn helper). **Getters without the
+  setter — the exact shape of the targeting hunt**, arrived at from a third direction.
+
+### 8.7 What IS free, and is worth having on its own
+
+Listing landing markers is cheap and in three respects **better than what the cockpit
+shows**:
+
+- **The flags are genuinely per-entry.** `bLandingAllowed`, `bLandingDisabled` and
+  `bIsGroupMarker` are all on the row — ⭐ the direct contrast with `blootingAllowed`
+  (§4.1), and the reason a landing row can state its own status without inference.
+- **Vanilla row art comes free.** `uPoiType = 7`, `uPoiCategory = 0` — **not** the `(83,10)`
+  sentinel loot carries (§4.4), so the existing `DynamicPoiIcon` path badges these rows with
+  no new work.
+- ⭐ **The feed carries markers on the FAR SIDE of the planet.** The Lodge reported
+  `bBehindCelestialBody = true` in both flights, including while hovered. A panel would list
+  sites the cockpit HUD cannot draw at all.
+- Incidental: **`Jemison` itself carries `bLandingAllowed = true`** in every capture. The
+  planet is a landable row too, not only its markers.
+
+### 8.8 ⚠ Methodology — the two capture blocks are NOT one snapshot
+
+In **both** flights the high-frequency capture truncated **exactly at the first landing
+marker** (19 entries vs 26; 21 vs 24). That is a seductive pattern, and the obvious reading
+— *landing markers do not ride the high feed* — **is wrong.**
+
+`RefreshOnScreenIcon` positions every icon from the **high** entry's
+`screenPositionX/Y`, so a marker with no high-feed entry could never be drawn — and they
+are drawn; hovering one is how the player lands. Therefore the high feed must carry them in
+normal operation.
+
+The truncation is a **capture artifact**: `OnTriggerPressed` sets both flags on one
+keypress, the high feed publishes almost immediately, and the low feed publishes **on the
+next change** — ~450 ms later in both flights, in scenes that were actively gaining
+contacts. The markers entered the low feed after the high snapshot was taken.
+
+⭐ **Consequence: never index-join across the two capture blocks in one log.** The mod's
+*runtime* join is safe (`std::min` at [`main.cpp:5490`](src/main.cpp:5490)); the **log** is
+not. To get a clean pair, capture with the target set static.
+
+⚠ **Still unmeasured after three flights: an actual landing-marker distance.** Both attempts
+lost it to this artifact.
+
+### 8.9 Verdict on landing markers
+
+**List: yes, and it earns its place** (§8.7). **Land: no, not as asked** — blocked twice
+over, once by a verb with no parameter and once, decisively, by an engine that deletes the
+alternatives at the moment of choosing. The surviving route (§8.5) is one cheap probe away
+from being characterised, but even if it works it delivers *fast travel from a panel row*,
+not *landing from the cockpit*, and that is a product decision rather than a technical one.
+
+⭐ **The honest framing for the mod page, if the list ships without the landing:** the panel
+tells you what is down there and which sites are landable, including the ones behind the
+planet; choosing between stacked city markers remains the map's job, because the ship HUD
+is not given them.
+
 ---
 
 ## Verdict
 
-**The data half of this feature is free**, and that is now a measurement rather than the
-inference it was this morning. Loot rides the feed the panel already subscribes to, outside
-cruise, with a real name, a per-entry distance in metres, and one clean type filter that
-covers wrecks and asteroid deposits alike.
+**Loot: build it.** The data half is free, and that is now a measurement rather than an
+inference. Loot rides the feed the panel already subscribes to, outside cruise, with a real
+name, a per-entry distance in metres, and one clean type filter covering wrecks and asteroid
+deposits alike. The remaining work is a **mode** (§6.1), a **sort** (distance ascending,
+replacing planets-first), and the discipline not to let it grow into blip management
+(§6.3). The one thing to measure first is **completeness** (§6.4).
 
-The remaining work is a **mode** (§6.1), a **sort** (distance ascending, replacing
-planets-first), and the discipline not to let it grow into blip management (§6.3). The
-single thing that should be measured before any of that is **completeness** (§6.4).
+**Landing markers: list them, do not promise the landing.** §8.9. Adding them to the same
+list is nearly free and shows more than the cockpit does; the landing action is blocked by
+a feed that withdraws the choices exactly when they are needed.
+
+⭐ **The through-line of this phase, across both classes: the feed is far more generous than
+the HUD, right up until it isn't.** Loot carries names and distances the HUD simply declines
+to draw — pure win. Landing markers carry names and flags the HUD also declines to draw —
+until the engine decides they are one thing, and then the generosity stops at exactly the
+case the feature existed for. **Check what the feed does in the state the feature TARGETS,
+not in the state that is convenient to capture.** Two flights said this feature was easy;
+the third, taken in the right state, is the only one that was informative.
