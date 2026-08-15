@@ -325,7 +325,28 @@ namespace
 	// ⚠ Deliberately NOT applied to the objective rows - only the mission caption is
 	// tinted. Colouring every line turns a list into a rainbow and costs the highlight
 	// its job, which is to be the one thing on screen that stands out.
-	REX::TIniSetting<bool>          bPanelMissionColors{ "Panel", "bPanelMissionColors", true };
+	// ⚠ OFF by default since v0.18. Five category colours turned the list into a
+	// rainbow and cost the highlight its job - being the one thing on screen that
+	// stands out. Captions are told apart by SHAPE now (sPanelCaptionStyle) and by
+	// vanilla's faction symbol, both of which read at a glance without competing with
+	// the bar. Set true to get the old per-category tints back.
+	REX::TIniSetting<bool>          bPanelMissionColors{ "Panel", "bPanelMissionColors", false };
+	// The one colour every caption wears when the tints are off. Distinct from the row
+	// text so a caption still reads as a divider rather than another entry.
+	REX::TIniSetting<std::uint32_t> uPanelCaptionColor{ "Panel", "uPanelCaptionColor", 0xBFC8D2 };
+	// How a mission caption is shaped. This is the differentiation that replaced the
+	// colours, so it is the setting worth trying first:
+	//   plain     Main Quest
+	//   upper     MAIN QUEST
+	//   brackets  [ MAIN QUEST ]
+	//   dash      - MAIN QUEST
+	//   rule      MAIN QUEST ----------
+	// Anything unrecognised falls back to `upper`, the safe one: it changes only case,
+	// so it cannot overflow the field or eat the truncation margin.
+	REX::TIniSetting<std::string>   sPanelCaptionStyle{ "Panel", "sPanelCaptionStyle", "brackets" };
+	// Characters the `rule` style pads to. Kept short of the field width so the
+	// existing ellipsis trim never has to touch a caption.
+	REX::TIniSetting<std::uint32_t> uPanelCaptionRuleWidth{ "Panel", "uPanelCaptionRuleWidth", 28 };
 	REX::TIniSetting<std::uint32_t> uPanelMainQuestColor{ "Panel", "uPanelMainQuestColor", 0xE8C46A };
 	REX::TIniSetting<std::uint32_t> uPanelFactionColor{ "Panel", "uPanelFactionColor", 0x8FB8E8 };
 	REX::TIniSetting<std::uint32_t> uPanelSideQuestColor{ "Panel", "uPanelSideQuestColor", 0x9FD6A0 };
@@ -1091,6 +1112,40 @@ namespace
 		if (a_category != QuestCategory::kUnknown)
 			return pick({ "None" });
 		return {};
+	}
+
+	// ⭐ CAPTION SHAPE, the replacement for the category colours.
+	//
+	// Colour was doing two jobs at once - naming the category AND drawing the eye -
+	// and it lost the second to the highlight bar. Shape only does the first, so the
+	// bar stays the brightest thing on screen.
+	//
+	// ⚠ ASCII only, and deliberately. The caption is measured with `textWidth` and
+	// trimmed with an ellipsis a few lines later; multi-byte box-drawing would change
+	// the measurement without changing the character count. The trim already walks
+	// back over UTF-8 continuation bytes for that reason - no need to give it more
+	// to do.
+	std::string StyleCaption(std::string_view a_name)
+	{
+		std::string upper{ a_name };
+		for (auto& c : upper)
+			c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+
+		const auto style = sPanelCaptionStyle.GetValue();
+		if (style == "plain")
+			return std::string{ a_name };
+		if (style == "brackets")
+			return "[ " + upper + " ]";
+		if (style == "dash")
+			return "- " + upper;
+		if (style == "rule") {
+			const auto  width = static_cast<std::size_t>(uPanelCaptionRuleWidth.GetValue());
+			std::string out = upper + " ";
+			while (out.size() < width)
+				out += '-';
+			return out;
+		}
+		return upper;
 	}
 
 	std::uint32_t CategoryColour(QuestCategory a_category)
@@ -14630,25 +14685,26 @@ namespace
 						if (captionWidth > 0.0)
 							nameField.SetMember("width", V{ captionWidth });
 
-						nameField.SetMember("text", V{ row.name.c_str() });
+						const std::string caption = StyleCaption(row.name);
+						nameField.SetMember("text", V{ caption.c_str() });
 						if (g_panelFormat.IsObject())
 							nameField.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
 
-						if (captionWidth > 0.0 && row.name.size() > 3) {
+						if (captionWidth > 0.0 && caption.size() > 3) {
 							RE::Scaleform::GFx::Value twVal;
 							if (nameField.GetMember("textWidth", &twVal)) {
 								const double tw = AsNumber(twVal);
 								const double target = captionWidth - 6.0;
 								if (tw > target) {
 									std::size_t cut = static_cast<std::size_t>(
-										static_cast<double>(row.name.size()) *
+										static_cast<double>(caption.size()) *
 										std::max(0.1, (target - 12.0) / tw));
-									if (cut >= row.name.size())
-										cut = row.name.size() - 1;
+									if (cut >= caption.size())
+										cut = caption.size() - 1;
 									while (cut > 0 &&
-										   (static_cast<unsigned char>(row.name[cut]) & 0xC0) == 0x80)
+										   (static_cast<unsigned char>(caption[cut]) & 0xC0) == 0x80)
 										--cut;
-									const std::string trimmed = row.name.substr(0, cut) + "\xE2\x80\xA6";
+									const std::string trimmed = caption.substr(0, cut) + "\xE2\x80\xA6";
 									nameField.SetMember("text", V{ trimmed.c_str() });
 									if (g_panelFormat.IsObject())
 										nameField.Invoke("setTextFormat", nullptr, &g_panelFormat, 1);
@@ -14664,7 +14720,7 @@ namespace
 					// - there is no state in which a caption should be left alone.
 					nameField.SetMember("textColor",
 						V{ bPanelMissionColors.GetValue() ? CategoryColour(row.category) :
-														   uPanelTextColor.GetValue() });
+														   uPanelCaptionColor.GetValue() });
 					g_panelRowBright[r] = false;
 					continue;
 				}
