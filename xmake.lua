@@ -1,9 +1,10 @@
 ﻿-- enable commonlib-shared's REX::INI settings support (pulls simpleini)
 set_config("commonlib_ini", true)
 
--- pull in CommonLibSF (and its commonlib-shared submodule) from the shared
--- SDK clone two levels up (this project lives in M:\Starfield\Mods\<name>)
-includes("../../commonlibsf")
+-- pull in CommonLibSF (and its commonlib-shared submodule) from the sibling
+-- SDK clone (this project lives in F:\Claude\<name>; it was M:\Starfield\Mods\<name>
+-- when the path below read "../../commonlibsf")
+includes("../commonlibsf")
 
 -- ESM records are zlib-compressed, and the plugin reads the planet/moon
 -- hierarchy straight out of the master file
