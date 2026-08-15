@@ -575,6 +575,16 @@ namespace
 	// nowhere near the reticle. Tried first; falls through to the old routes if the
 	// star or body id is missing.
 	REX::TIniSetting<bool> bMissionJumpSpoof{ "Panel", "bMissionJumpSpoof", true };
+	// ⚠ OFF, and it does not work - kept only so the attempt is not repeated.
+	//
+	// The idea was sound: the travel animation belongs to `ShipHud_JumpToQuestMarker`,
+	// our route substitution lives inside slot 1, and the HUD action was assumed to
+	// reach slot 1 - so the event should have carried the animation AND our
+	// destination. Measured 2026-08-14: the event dispatches, and the lookup hook
+	// NEVER FIRES. The action is gated before slot 1 - with no real selection it does
+	// nothing at all, so there is nothing for the route to attach to. Zero jumps.
+	// Arming earlier or longer cannot help; slot 1 is never reached.
+	REX::TIniSetting<bool> bMissionJumpAnimated{ "Panel", "bMissionJumpAnimated", false };
 	// Override for the ship's grav jump limit, in parsecs. ⭐ 0 = ASK THE ENGINE,
 	// which is what you want: PHASE 9 §3t found the real range function (id 119854,
 	// the one Papyrus's GetGravJumpRange wraps) and it returns parsecs directly -
@@ -5779,7 +5789,18 @@ namespace
 	};
 	SpoofRouteStorage g_spoofRoute{};
 
-	std::atomic<bool>           g_spoofArmed{ false };
+	// Armed until this timestamp, not a plain flag. The animated route dispatches a
+	// UI event and the engine reaches slot 1 on its own schedule some frames later,
+	// so a flag cleared right after the call would be gone before the lookup runs.
+	std::atomic<std::int64_t> g_spoofArmedUntilMs{ 0 };
+
+	bool SpoofArmed()
+	{
+		const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch())
+							   .count();
+		return nowMs < g_spoofArmedUntilMs.load(std::memory_order_acquire);
+	}
 	std::atomic<std::uintptr_t> g_origLookup{ 0 };
 	std::atomic<bool>           g_lookupHookClaimed{ false };
 
@@ -5804,6 +5825,8 @@ namespace
 
 	// Defined below; the spoof arms a route and then runs it.
 	bool TriggerGravJumpViaHandler();
+	bool DispatchHudEvent(RE::Scaleform::GFx::ASMovieRootBase* a_root, const char* a_type,
+		const RE::Scaleform::GFx::Value* a_params);
 
 	bool TriggerSpoofedGravJump(std::uint32_t a_bodyFormID, std::uint32_t a_systemID,
 		std::string_view a_label)
@@ -6054,9 +6077,40 @@ namespace
 			a_label, starID, SafeStr(starForm->GetFormEditorID()), a_bodyFormID,
 			SafeStr(bodyForm->GetFormEditorID()), systemID);
 
-		g_spoofArmed.store(true, std::memory_order_release);
+		const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch())
+							   .count();
+
+		// ⭐ THE ANIMATION. Slot 1 jumps but arrives with no travel animation; the old
+		// A-press route had one. The difference is WHERE we enter: the animation hangs
+		// off the HUD action `ShipHud_JumpToQuestMarker`, and calling slot 1 directly
+		// skips everything that action stages on the way.
+		//
+		// The route substitution lives INSIDE slot 1, and the HUD action reaches slot 1
+		// too - so dispatching the event with our route armed should give the animation
+		// AND our destination, without the reticle mattering. Armed on a deadline
+		// because the engine gets there some frames later, not inside this call.
+		if (bMissionJumpAnimated.GetValue()) {
+			const auto                     ui = RE::UI::GetSingleton();
+			static const RE::BSFixedString s_hudMenu{ kShipHudMenu };
+			const auto                     hud = ui ? ui->GetMenu(s_hudMenu) : nullptr;
+			if (hud && hud->uiMovie && hud->uiMovie->asMovieRoot) {
+				g_spoofArmedUntilMs.store(nowMs + 3000, std::memory_order_release);
+				if (DispatchHudEvent(hud->uiMovie->asMovieRoot.get(), "ShipHud_JumpToQuestMarker",
+						nullptr)) {
+					REX::INFO("[spoof] dispatched ShipHud_JumpToQuestMarker with our route armed "
+							  "for 3s - this is the path that carries the animation");
+					return true;
+				}
+				g_spoofArmedUntilMs.store(0, std::memory_order_release);
+				REX::WARN("[spoof] the HUD action would not dispatch - falling back to slot 1, "
+						  "which jumps but does not animate");
+			}
+		}
+
+		g_spoofArmedUntilMs.store(nowMs + 3000, std::memory_order_release);
 		const bool ran = TriggerGravJumpViaHandler();
-		g_spoofArmed.store(false, std::memory_order_release);
+		g_spoofArmedUntilMs.store(0, std::memory_order_release);
 
 		if (!ran) {
 			REX::WARN("[spoof] the handler would not run - nothing armed, nothing jumped");
@@ -6113,7 +6167,7 @@ namespace
 			result = reinterpret_cast<std::uint64_t (*)(void*, void*, void*, void*)>(original)(
 				a_subsys, a_out, a_unused, a_shipID);
 
-		if (!g_spoofArmed.load(std::memory_order_acquire) || !a_out)
+		if (!SpoofArmed() || !a_out)
 			return result;
 
 		auto* out = static_cast<void**>(a_out);

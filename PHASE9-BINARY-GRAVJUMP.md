@@ -759,3 +759,37 @@ bypass entirely, not off slot 1. Not yet investigated.
 ### OPEN: mission menu cleanup
 Objective text now takes the NEWEST displayed objective (highest index) rather than
 the oldest; deployed, not yet confirmed in game.
+
+## 3v. The animation: two leads checked, both closed
+
+### Default objects - NOT callable
+Every grav-jump `*_DO` string has exactly two references and neither consumes it:
+the static initializer, and a destructor thunk in a long run of them.
+
+    SpaceshipGravJumpCameraPath_DO  string 0x144B62AF0  holder 0x145EA06F8
+      0x1400873DD  static initializer (atexit)
+      0x1438C69A7  lea rcx,[holder]; jmp <dtor>
+
+Same for GravJumpBeginMusic_DO and all four GravJump*Action_DO. They are resolved
+through the DO manager by index at runtime, so there is nothing statically callable
+- the same wall as §3h.
+
+### Routing the spoof through the HUD action - DOES NOT WORK
+The animation belongs to `ShipHud_JumpToQuestMarker`, and the route substitution
+lives inside slot 1, so dispatching the HUD action with the route armed *should*
+have given animation + arbitrary destination. Arming was made a 3 s deadline so it
+would survive the event's async dispatch.
+
+Measured: the event dispatches, and **the lookup hook never fires**. The action is
+gated BEFORE slot 1 - with no real selection it does nothing at all, so there is
+nothing for the route to attach to. Zero GravJumpInitiated transitions in the run.
+Arming earlier or longer cannot help; slot 1 is never reached.
+
+`bMissionJumpAnimated` defaults to **false** and is kept only to stop the attempt
+being repeated.
+
+### What is left
+The animation is staged somewhere between the HUD action and slot 1, on a path that
+requires the selection. Finding it means identifying what that action does BEFORE
+it reaches the handler - which is the anonymous engine sink from §3e, still the one
+piece of this phase never opened.
