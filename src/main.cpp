@@ -2105,6 +2105,16 @@ namespace
 	// per tick, so a stale false here costs one log line, nothing more.
 	std::atomic<bool> g_blipsHidden{ false };
 
+	// A subscription that SUCCEEDS and then never delivers looks exactly like one
+	// that delivers on every frame: every other line the mod writes is edge- or
+	// change-triggered, so between "SUBSCRIBED" and the end of the log there is
+	// nothing that distinguishes a mod doing per-tick work from a mod sitting
+	// idle. That distinction is the first thing a crash report needs and the
+	// 2026-08-14 report could not answer it. One line per feed per movie, on the
+	// first payload only - the arrival is the fact; the rate is not.
+	std::atomic<bool> g_lowFeedDelivered{ false };
+	std::atomic<bool> g_highFeedDelivered{ false };
+
 	// True once any on-screen icon has been faded for the selection - i.e. a
 	// restore sweep may be owed. Cleared by the sweep.
 	std::atomic<bool> g_iconsFaded{ false };
@@ -3734,6 +3744,12 @@ namespace
 			g_blipHolder = RE::Scaleform::GFx::Value{};
 			g_blipsHidden.store(false, std::memory_order_release);
 
+			// Delivery is a property of THIS movie's subscription, not of the
+			// session: the re-arm above throws both subscriptions away, so the
+			// next movie has to prove its feeds live on their own.
+			g_lowFeedDelivered.store(false, std::memory_order_release);
+			g_highFeedDelivered.store(false, std::memory_order_release);
+
 			// The faux blip was a child of the holder, in the same movie.
 			g_fauxReady.store(false, std::memory_order_release);
 			g_fauxFailed.store(false, std::memory_order_release);
@@ -5130,6 +5146,12 @@ namespace
 			if (a_params.argCount < 1 || !a_params.args)
 				return;
 
+			// Before the payload is even unwrapped: the fact worth recording is
+			// that the engine reached this handler at all, and a payload the mod
+			// then rejects still proves the subscription is live.
+			if (!g_lowFeedDelivered.exchange(true, std::memory_order_acq_rel))
+				REX::INFO("[nav] low feed DELIVERING - first payload of this movie reached the mod");
+
 			// The callback receives a FromClientDataEvent; the payload is `.data`.
 			RE::Scaleform::GFx::Value event = a_params.args[0];
 			RE::Scaleform::GFx::Value data;
@@ -5753,6 +5775,12 @@ namespace
 			RE::Scaleform::GFx::Value data;
 			if (!event.IsObject() || !event.GetMember("data", &data))
 				data = event;
+
+			// Twin of the low feed's line. This one matters more: the high feed
+			// is what drives RefreshPanel, so "subscribed but never delivering"
+			// here means every panel the mod thinks it owns is frozen.
+			if (!g_highFeedDelivered.exchange(true, std::memory_order_acq_rel))
+				REX::INFO("[nav] high feed DELIVERING - first payload of this movie reached the mod");
 
 			RE::Scaleform::GFx::Value entries;
 			if (!GetEntryArray(data, entries))
