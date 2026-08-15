@@ -8277,7 +8277,21 @@ namespace
 				//
 				// Runtime FF locations are NOT this case - those resolve through
 				// ResolveLocationBody now and keep their row.
-				if (entry.bodyID == 0) {
+				// ⚠ DROP ONLY THE ONES WITH NOTHING AT ALL.
+				//
+				// Two different things were being hidden by one rule:
+				//   - quests with NO target reference (Mantis, the Activities) - there
+				//     is genuinely nothing to show and nothing to fly to
+				//   - quests whose target is a RUNTIME location - "Into the Unknown"
+				//     and the radiant kill/survey ones - which have a real destination
+				//     on a real planet that cannot be resolved from an ESM-derived
+				//     table, because the location is minted per playthrough
+				//
+				// The second kind must still be listed. The objective is known and the
+				// mission is live; only the jump is unavailable, and the row says so
+				// with a dash where the destination goes. Hiding them made active
+				// missions look like they had disappeared.
+				if (entry.bodyID == 0 && entry.place == "objective unknown") {
 					++dropped;
 					continue;
 				}
@@ -8296,7 +8310,9 @@ namespace
 				// ("Volii Alpha · 27.9 ly") but the bar widget already shows range,
 				// and printing it twice was spending the panel's narrowest column on
 				// the one thing the player can already see.
-				rowOut.rightText = entry.bodyName;
+				// A runtime-located quest has no body to name. A dash reads as "no
+				// destination available"; an empty column reads as a bug.
+				rowOut.rightText = entry.bodyName.empty() ? std::string{ "-" } : entry.bodyName;
 				panelRows.push_back(std::move(rowOut));
 			}
 
