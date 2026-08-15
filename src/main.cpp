@@ -1026,6 +1026,47 @@ namespace
 		kMisc
 	};
 
+	// ⭐ THE FACTION, FROM THE QUEST'S OWN EDITOR ID.
+	//
+	// `MissionBoardFaction_*` keywords only exist on BOARD quests, so reading only
+	// those left almost every handcrafted questline with no faction and the panel fell
+	// back to the generic Missions/Activities symbol - which is what "no faction
+	// differentiation" looked like.
+	//
+	// Bethesda names quests by their line: CF06 (Crimson Fleet), MQ104A (main quest),
+	// UC01_Tuala_Misc, and so on. That prefix is the faction, and it is available for
+	// every quest rather than just the board ones.
+	//
+	// ⚠ PREFIX, not substring, for the two-letter tags. "DialogueFCNeon_PlayerHomeQuest"
+	// contains "FC" and is not a Freestar quest; matching anywhere in the string would
+	// mislabel it. The longer names are distinctive enough to match anywhere.
+	std::string FactionFromQuestEditorID(std::string_view a_edid)
+	{
+		const auto has = [&](std::string_view a_needle) {
+			return a_edid.find(a_needle) != std::string_view::npos;
+		};
+
+		if (a_edid.starts_with("MQ"))
+			return "Constellation";
+		if (a_edid.starts_with("CF"))
+			return "CF";
+		if (a_edid.starts_with("UC"))
+			return "UC";
+		if (a_edid.starts_with("FC"))
+			return "FC";
+
+		// Distinctive enough that a substring cannot collide.
+		if (has("Ryujin"))
+			return "Ryujin";
+		if (has("Varuun"))
+			return "HV";
+		if (has("Trackers"))
+			return "TA";
+		if (has("Constellation"))
+			return "Constellation";
+		return {};
+	}
+
 	QuestCategory CategoryFromEditorID(std::string_view a_trimmed)
 	{
 		// The strings are the game's own editor ids with the shared "QuestType"
@@ -1073,6 +1114,56 @@ namespace
 	// Candidates per faction, best first. Several are listed because the SWF's string
 	// table carries both bare names ("CrimsonFleet") and Icon-suffixed ones
 	// ("BlackfleetIcon") and only the probe can say which are frames.
+	// ⭐ THE FULL VANILLA SET, as CLASSES rather than frames.
+	//
+	// `ShipReticle_fla.Icon_Faction_66` is an embedded strip and it measured exactly
+	// EIGHT frames - seven factions plus "None". It has no mission-type art, which is
+	// why type icons looked impossible.
+	//
+	// The real library is `Factions.swf`, and shipreticle.swf REFERENCES it (its
+	// string table carries "Factions.swf", FactionUtils, GetFactionIconLabel,
+	// GoToFactionFrame, NoFactionIcon). Every symbol is its own class there, in two
+	// variants:
+	//     <name>Icon        the black-and-white set - what the top-left HUD shows
+	//     <name>ColorIcon   the coloured set
+	// and it includes the two the strip lacks: `MissionsIcon` and `ActivitiesIcon`.
+	//
+	// ⚠ Frame labels and class names are NOT the same vocabulary. The strip's frame is
+	// `None`; the library's class is `NoFactionIcon`. Guessing "NoFactionIcon" as a
+	// FRAME was an early mistake here - it is a real name, just of the other kind.
+	std::string MissionIconClass(std::string_view a_faction, QuestCategory a_category)
+	{
+		if (a_faction == "Constellation")
+			return "ConstellationIcon";
+		if (a_faction == "CF")
+			return "BlackfleetIcon";
+		if (a_faction == "FC")
+			return "FreestarIcon";
+		if (a_faction == "UC")
+			return "UnitedColoniesIcon";
+		if (a_faction == "Ryujin")
+			return "RyujinIndustriesIcon";
+		if (a_faction == "TA")
+			return "TrackersAllianceIcon";
+		if (a_faction == "HV")
+			return "VaruunIcon";
+
+		// No faction - fall back to what KIND of thing it is. This is the half the
+		// embedded strip could never do.
+		switch (a_category) {
+		case QuestCategory::kMainQuest:
+			return "ConstellationIcon";  // the main quest IS Constellation
+		case QuestCategory::kActivity:
+			return "ActivitiesIcon";
+		case QuestCategory::kFaction:
+		case QuestCategory::kSideQuest:
+		case QuestCategory::kMisc:
+			return "MissionsIcon";
+		default:
+			return "NoFactionIcon";
+		}
+	}
+
 	std::string FactionIconFrame(std::string_view a_faction, QuestCategory a_category)
 	{
 		const auto pick = [](std::initializer_list<const char*> a_candidates) -> std::string {
@@ -1237,6 +1328,10 @@ namespace
 		std::string factionKeyword;
 		// The star map's system id for this mission's destination. 0 when the target
 		// could not be placed on a body at all.
+		// ⭐ The missions tab's right column: "Volii Alpha · 27.9 ly". Bodies compute
+		// their distance live from the feed; a mission row has no bearing, so its
+		// right column is composed once when the row is built.
+		std::string   rightText;
 		std::uint32_t systemID{ 0 };
 		// The quest this mission row belongs to. Confirming such a row TRACKS that
 		// quest, which is what puts the marker in the world - the panel's own lock
@@ -3336,6 +3431,18 @@ namespace
 	// vanilla-style name truncation (TruncateSingleLineText).
 	RE::Scaleform::GFx::Value g_panelScrollTrack;
 	RE::Scaleform::GFx::Value g_panelScrollThumb;
+	// Where the right column starts, published at build time. ⚠ Per-row geometry must
+	// be set ABSOLUTELY from this - reading the field's current x and adjusting it
+	// would drift the column a little further every repaint.
+	std::atomic<double>       g_panelDistX{ 0.0 };
+	// The right column's normal width, sized for a body's "27 LS".
+	constexpr double kPanelDistWidth = 96.0;
+	// What a mission row adds to it, taken from the name column. A body name is
+	// longer than a body's "27 LS" but much shorter than the old name-plus-distance,
+	// so this came down from 110 when the distance text was dropped - the objective
+	// gets those pixels back.
+	constexpr double kMissionDistExtra = 55.0;
+
 	std::atomic<double>       g_panelNameWidth{ 0.0 };
 	// The survey mark, per row, in the distance cell (Phase 6). All three clips
 	// are drawn ONCE at build time and driven by transform and visibility
@@ -3347,6 +3454,12 @@ namespace
 	// The fill is a CHILD of the bar because a container's own graphics render
 	// BELOW its children - the one z-order rule this project has proven - so the
 	// fill sits over the track for free and only it is scaled.
+	// The mission symbol drawn from Factions.swf's own classes, one clip per row.
+	// Separate from the Icon_Faction_66 strip so the strip stays as the fallback.
+	RE::Scaleform::GFx::Value g_panelTypeIcons[kPanelMaxRowsHard];
+	std::string               g_panelTypeDrawn[kPanelMaxRowsHard];
+	std::atomic<bool>         g_typeIconsFailed{ false };
+
 	RE::Scaleform::GFx::Value g_panelSurveyBars[kPanelMaxRowsHard];
 	RE::Scaleform::GFx::Value g_panelSurveyFills[kPanelMaxRowsHard];
 	RE::Scaleform::GFx::Value g_panelSurveyBanners[kPanelMaxRowsHard];
@@ -7345,6 +7458,61 @@ namespace
 	// predicting where it ought to be. With the bodies side by side, the system
 	// id is the column that never varies, the planet id is the one that is small
 	// and distinct, and the parent is the one that is mostly zero.
+	// ⭐ WALK UP TO THE PLANET. A quest target's location is often a RUNTIME one.
+	//
+	// Procedural content - the radiant "Kill X on Y" and "Survey Y" missions, and the
+	// pointer quests - resolves to an FF location that no ESM parse can contain, so a
+	// direct table lookup finds nothing and the row reads "not on any body" and cannot
+	// be jumped to. But the game can clearly place them: they open fine from the
+	// vanilla mission menu.
+	//
+	// The join that works is the PARENT CHAIN. A runtime location hangs off an
+	// authored one - a POI under a planet's location - so walking `parentLocation`
+	// upward reaches something the table knows.
+	//
+	// ⚠ `parentLocation` is a CommonLibSF struct offset, and this project has already
+	// been bitten once by that header being generated against a different build
+	// (§3i - its vtable ids are not vtables here). So every step is validated as a
+	// real LCTN form before it is followed: a wrong offset then yields nothing rather
+	// than a plausible, wrong body.
+	std::uint32_t ResolveLocationBody(const RE::BGSLocation* a_location)
+	{
+		constexpr int kMaxDepth = 8;  // deepest authored chain is a few links
+
+		const auto* loc = a_location;
+		for (int depth = 0; loc && depth < kMaxDepth; ++depth) {
+			{
+				std::lock_guard lock{ g_locationBodyMutex };
+				if (const auto found = g_locationToBody.find(loc->GetFormID());
+					found != g_locationToBody.end()) {
+					if (depth > 0)
+						REX::INFO("[quest]   location {:08X} placed via {} parent(s) -> {:08X}",
+							a_location ? a_location->GetFormID() : 0u, depth, loc->GetFormID());
+					return found->second;
+				}
+			}
+
+			const auto* parent = loc->parentLocation.get();
+			if (!parent)
+				break;
+			// The offset check: a real parent is a form the game will hand back by id,
+			// and it is an LCTN. Anything else means the layout is wrong for this
+			// build and the walk stops rather than dereferencing further.
+			const auto* asForm = RE::TESForm::LookupByID(parent->GetFormID());
+			if (asForm != static_cast<const RE::TESForm*>(parent) ||
+				asForm->GetFormType() != RE::FormType::kLCTN) {
+				static std::atomic<bool> s_warned{ false };
+				if (!s_warned.exchange(true, std::memory_order_acq_rel))
+					REX::WARN("[quest] BGSLocation::parentLocation does not read as an LCTN - the "
+							  "struct offset is wrong for this build, so parent-chain resolution "
+							  "is off. Runtime locations will stay unplaced.");
+				break;
+			}
+			loc = parent;
+		}
+		return 0;
+	}
+
 	void DumpPlanetRecords(const std::vector<Candidate>& a_rows)
 	{
 		struct Entry
@@ -7787,13 +7955,7 @@ namespace
 				// zeroes and calling one of those would be a jump into nothing.
 				// See SFSE-ADDRESS-LIBRARY-MAP.md section 3.
 				const auto* location = refr->GetCurrentLocation();
-				std::uint32_t bodyID = 0;
-				if (location) {
-					std::lock_guard lock{ g_locationBodyMutex };
-					if (const auto found = g_locationToBody.find(location->GetFormID());
-						found != g_locationToBody.end())
-						bodyID = found->second;
-				}
+				std::uint32_t bodyID = ResolveLocationBody(location);
 
 				std::string   where = "unplaced";
 				std::uint32_t systemID = 0;
@@ -7922,7 +8084,8 @@ namespace
 		struct MissionRow
 		{
 			std::string   mission;
-			std::string   place;
+			std::string   place;     // the OBJECTIVE text - what the row prints
+			std::string   bodyName;  // the destination body - the right column
 			std::uint32_t bodyID{ 0 };
 			std::uint32_t questID{ 0 };
 			bool          tracked{ false };
@@ -8040,6 +8203,12 @@ namespace
 					}
 				}
 			}
+			// The keyword is authoritative where it exists, but only board quests have
+			// one. Everything else gets its faction from the quest's own editor id.
+			if (row.faction.empty()) {
+				if (const auto* questForm = RE::TESForm::LookupByID(formID))
+					row.faction = FactionFromQuestEditorID(SafeStr(questForm->GetFormEditorID()));
+			}
 			row.tracked = state.tracked;
 			row.bodyID = state.bodyID;
 			row.questID = formID;
@@ -8048,6 +8217,13 @@ namespace
 			// actually for - "Talk to Sarah at the Lodge" says more than "Jemison".
 			// The body is still carried on the row, unprinted, because it is what
 			// the autopilot needs.
+			// The body name is what the right column shows, so it has to be taken
+			// BEFORE `place` is overwritten with the objective text below.
+			if (state.bodyID != 0) {
+				std::lock_guard bodyLock{ g_bodyTableMutex };
+				if (const auto body = g_bodyTable.find(state.bodyID); body != g_bodyTable.end())
+					row.bodyName = body->second.name;
+			}
 			if (state.haveObjective && record != g_questRecords.end()) {
 				if (const auto text = record->second.objectiveText.find(state.objective);
 					text != record->second.objectiveText.end())
@@ -8077,27 +8253,57 @@ namespace
 
 			std::vector<Candidate> panelRows;
 			panelRows.reserve(built.size() * 2);
+			// ⭐ ONE ROW PER MISSION, laid out like the bodies tab: a glyph, a label,
+			// and a right column. No captions.
+			//
+			// The label is the OBJECTIVE, not the quest name - "Meet Naeva at the
+			// Astral Lounge" is what you are actually doing, and the quest name is
+			// mostly redundant next to the faction glyph that already says who it is
+			// for. The right column pairs the destination with the jump distance, so
+			// the tab answers "what next / where / how far" on one line.
+			//
+			// Two rows per mission (caption + sub-entry) is gone: it halved how many
+			// missions fit on screen to print a name the glyph already implies.
+			std::size_t dropped = 0;
 			for (auto& entry : built) {
-				Candidate caption;
-				caption.isHeader = true;
-				caption.fromFeed = false;
-				caption.category = entry.category;
-				caption.factionKeyword = entry.faction;
-				caption.systemID = entry.systemID;
-				caption.name = entry.tracked ? ("* " + entry.mission) : entry.mission;
-				panelRows.push_back(std::move(caption));
+				// ⭐ A MISSION WITH NOWHERE TO GO IS NOT A NAV ROW.
+				//
+				// Some quests carry no target reference at all - "Mantis", "Top of the
+				// L.I.S.T.", the tracked Activities - so there is no location to walk a
+				// parent chain up from and nothing for RB to jump to. They used to be
+				// listed because confirming a row TRACKS the quest, which needs no
+				// body; but this is a navigation panel, and a row that cannot be
+				// travelled to is a dead entry taking a line from one that can.
+				//
+				// Runtime FF locations are NOT this case - those resolve through
+				// ResolveLocationBody now and keep their row.
+				if (entry.bodyID == 0) {
+					++dropped;
+					continue;
+				}
 
-				Candidate place;
-				place.id = entry.bodyID;
-				place.category = entry.category;
-				place.systemID = entry.systemID;
-				place.type = kTargetTypePlanet;  // what the by-id course route wants
-				place.name = entry.place;
-				place.questID = entry.questID;
-				place.fromFeed = false;
-				place.isMoon = true;  // reuse the moon indent for the sub-entry
-				panelRows.push_back(std::move(place));
+				Candidate rowOut;
+				rowOut.id = entry.bodyID;
+				rowOut.category = entry.category;
+				rowOut.factionKeyword = entry.faction;
+				rowOut.systemID = entry.systemID;
+				rowOut.type = kTargetTypePlanet;  // what the by-id course route wants
+				rowOut.name = entry.tracked ? ("* " + entry.place) : entry.place;
+				rowOut.questID = entry.questID;
+				rowOut.fromFeed = false;
+
+				// Just the destination body. The distance used to be appended here
+				// ("Volii Alpha · 27.9 ly") but the bar widget already shows range,
+				// and printing it twice was spending the panel's narrowest column on
+				// the one thing the player can already see.
+				rowOut.rightText = entry.bodyName;
+				panelRows.push_back(std::move(rowOut));
 			}
+
+			if (dropped != 0)
+				REX::INFO("[mission] {} row(s) dropped - no target reference, so nothing to jump "
+						  "to. They are still listed above with their reason.",
+					dropped);
 
 			// Publish the target bodies for the bodies tab to pick up. Only ones
 			// that resolved: a mission with no placeable objective has nothing to
@@ -10100,6 +10306,37 @@ namespace
 		auto expected = id;
 		if (!g_pendingMissionJump.compare_exchange_strong(expected, 0, std::memory_order_acq_rel))
 			return;
+
+		// ⭐ IN THIS SYSTEM? SET A COURSE. That is the whole rule.
+		//
+		// A grav jump crosses systems; the autopilot flies within one. So this is
+		// decided FIRST, before the lock-by-id and jump machinery below runs at all -
+		// which is also what fixes it. `Reticle_OnCruiseLockCourse` TOGGLES, so when
+		// this check lived further down, the jump path had already locked the course
+		// and the second dispatch turned it straight back off:
+		//     .240 locked by id 0005DECE
+		//     .240 set course to 0005DECE
+		//     .264 course lock cleared
+		//
+		// The request goes through `g_pendingCourseID`, which is the same route the
+		// bodies tab uses - so it inherits RunLockCourse's cruise check, its single
+		// dispatch, and its 1.5 s audit that says out loud when the autopilot refuses
+		// a body. No second implementation to keep in step.
+		{
+			std::uint32_t bodySystem = g_missionJumpSystem.load(std::memory_order_acquire);
+			{
+				std::lock_guard lock{ g_bodyTableMutex };
+				if (const auto body = g_bodyTable.find(id); body != g_bodyTable.end())
+					bodySystem = body->second.galaxy.systemID;
+			}
+			if (bodySystem == CurrentSystemAndBody().second) {
+				g_pendingCourseID.store(id, std::memory_order_release);
+				REX::INFO("[missionjump] {:08X} is in THIS system - setting a course instead of "
+						  "jumping, through the same path the bodies tab uses",
+					id);
+				return;
+			}
+		}
 
 		// ⭐⭐ PUT THE ENGINE'S TARGET ON THE DESTINATION FIRST.
 		//
@@ -13220,7 +13457,7 @@ namespace
 		}
 
 		constexpr double kNamePad = 10.0;
-		constexpr double kDistWidth = 96.0;
+		constexpr double kDistWidth = kPanelDistWidth;
 		const double     iconColumn = bPanelIcons.GetValue() ? 20.0 : 0.0;
 		const double     nameWidth =
 			std::max(40.0, width - kNamePad * 2.0 - kDistWidth - 6.0 - iconColumn);
@@ -13394,6 +13631,7 @@ namespace
 
 			if (!makeField(g_panelRows[i], kNamePad + iconColumn, nameWidth, false))
 				break;
+			g_panelDistX.store(distX, std::memory_order_release);
 			if (!makeField(g_panelDists[i], distX, kDistWidth, true))
 				break;
 
@@ -13539,6 +13777,7 @@ namespace
 									}
 								}
 								g_panelFactionIcons[i].Invoke("gotoAndStop", nullptr, nullptr, 0);
+
 							} else {
 								REX::WARN("[icons] Icon_Faction_66 has no totalFrames - it may be a "
 										  "loader rather than a frame strip");
@@ -14725,11 +14964,107 @@ namespace
 					continue;
 				}
 
-				// A body row never wears a mission symbol. Same rule as above: told
-				// explicitly, every frame it is not a caption.
-				if (g_panelFactionIcons[r].IsObject() || g_panelFactionIcons[r].IsDisplayObject()) {
-					g_panelFactionIcons[r].SetMember("visible", V{ false });
-					g_panelFactionDrawn[r].clear();
+				// ⭐ THE FACTION SYMBOL now belongs to the MISSION ROW itself. It used
+				// to ride on the caption, and captions are gone - without this the
+				// glyph would simply never draw again.
+				//
+				// A row is a mission when it carries a quest id. A body row still wears
+				// nothing, and is told so explicitly every frame: skipping the write is
+				// also skipping the restore, so a planet scrolling onto a slot that
+				// last held a mission would otherwise inherit its symbol.
+				// ⭐ PREFERRED: the library class, which has mission-TYPE art. Built
+				// per row and only when the class CHANGES, which is a scroll, not a
+				// frame. If the movie will not make one - Factions.swf not loaded into
+				// this root - it says so once and the frame strip below takes over for
+				// the rest of the session.
+				const std::string wantClass =
+					(row.questID != 0 && bPanelMissionIcons.GetValue()) ?
+						MissionIconClass(row.factionKeyword, row.category) :
+						std::string{};
+				bool drewTypeIcon = false;
+				if (!g_typeIconsFailed.load(std::memory_order_acquire)) {
+					if (!wantClass.empty() && g_panelTypeDrawn[r] != wantClass) {
+						// The panel's own movie root - the icon has to be made by the
+						// same movie it will be added to.
+						const auto                     ui = RE::UI::GetSingleton();
+						static const RE::BSFixedString s_iconMenu{ kShipHudMenu };
+						const auto                     iconMenu = ui ? ui->GetMenu(s_iconMenu) : nullptr;
+						auto* iconRoot = (iconMenu && iconMenu->uiMovie &&
+											 iconMenu->uiMovie->asMovieRoot) ?
+											 iconMenu->uiMovie->asMovieRoot.get() :
+											 nullptr;
+						// ⚠ TAKE THE OLD ONE OFF THE STAGE FIRST.
+						//
+						// Reassigning the Value only drops OUR reference - the clip is
+						// still a child of the panel and keeps drawing. Scrolling a list
+						// then stacks a new symbol over every old one, which reads as
+						// "weird overlapping icons" rather than as a leak.
+						if (g_panelTypeIcons[r].IsObject() ||
+							g_panelTypeIcons[r].IsDisplayObject()) {
+							RE::Scaleform::GFx::Value removed;
+							g_panelClip.Invoke("removeChild", &removed, &g_panelTypeIcons[r], 1);
+							g_panelTypeIcons[r] = RE::Scaleform::GFx::Value{};
+							g_panelTypeDrawn[r].clear();
+						}
+
+						RE::Scaleform::GFx::Value made;
+						if (iconRoot)
+							iconRoot->CreateObject(&made, wantClass.c_str());
+						if (made.IsObject() || made.IsDisplayObject()) {
+							RE::Scaleform::GFx::Value added;
+							if (g_panelClip.Invoke("addChild", &added, &made, 1)) {
+								const double fs =
+									static_cast<double>(fPanelMissionIconScale.GetValue());
+								const double iconCol = bPanelIcons.GetValue() ? 20.0 : 0.0;
+								made.SetMember("x", V{ 10.0 + iconCol * 0.5 });
+								// The row's centre line, taken from the strip clip the
+								// build pass already placed there - no second source of
+								// truth for row geometry.
+								RE::Scaleform::GFx::Value yVal;
+								if (g_panelFactionIcons[r].GetMember("y", &yVal))
+									made.SetMember("y", V{ AsNumber(yVal) });
+								made.SetMember("scaleX", V{ fs });
+								made.SetMember("scaleY", V{ fs });
+								g_panelTypeIcons[r] = made;
+								g_panelTypeDrawn[r] = wantClass;
+							}
+						} else if (!g_typeIconsFailed.exchange(true, std::memory_order_acq_rel)) {
+							REX::WARN("[icons] '{}' would not instantiate - Factions.swf is not "
+									  "loaded into this root, so mission-TYPE art is unavailable "
+									  "and the Icon_Faction_66 strip takes over (factions only).",
+								wantClass);
+						}
+					}
+					auto& typeIcon = g_panelTypeIcons[r];
+					if (typeIcon.IsObject() || typeIcon.IsDisplayObject()) {
+						const bool show = !wantClass.empty() && g_panelTypeDrawn[r] == wantClass;
+						typeIcon.SetMember("visible", V{ show });
+						drewTypeIcon = show;
+					}
+				}
+
+				// FALLBACK: the embedded eight-frame strip. Factions only - it has no
+				// mission-type frames, which is the whole reason for the block above.
+				auto&      rowFaction = g_panelFactionIcons[r];
+				const bool haveRowFaction = rowFaction.IsObject() || rowFaction.IsDisplayObject();
+				if (haveRowFaction) {
+					const std::string frame =
+						(!drewTypeIcon && row.questID != 0) ?
+							FactionIconFrame(row.factionKeyword, row.category) :
+							std::string{};
+					const bool wantFaction = bPanelMissionIcons.GetValue() && !frame.empty();
+					if (wantFaction) {
+						// gotoAndStop only on CHANGE - a timeline seek, not a property
+						// write, and the panel repaints constantly.
+						if (g_panelFactionDrawn[r] != frame) {
+							V label{ frame.c_str() };
+							rowFaction.Invoke("gotoAndStop", nullptr, &label, 1);
+							g_panelFactionDrawn[r] = frame;
+						}
+					} else {
+						g_panelFactionDrawn[r].clear();
+					}
+					rowFaction.SetMember("visible", V{ wantFaction });
 				}
 
 				if (refreshText) {
@@ -14744,8 +15079,26 @@ namespace
 					// indents, so the truncation below measures honestly and
 					// moon names cannot run under the distance column.
 					const double baseWidth = g_panelNameWidth.load(std::memory_order_acquire);
+
+					// ⭐ THE MISSION ROW BORROWS FROM THE NAME COLUMN.
+					//
+					// The distance column is sized for "27 LS". A mission's right
+					// text is "Volii Alpha · 27.9 ly" - four times that - so on the
+					// missions tab the split is moved rather than the panel widened:
+					// the objective still gets the majority, and the right column
+					// gets enough to stop being cut off. Bodies are untouched.
+					const double extraDist = row.rightText.empty() ? 0.0 : kMissionDistExtra;
+					// Absolute, and written every frame for BOTH cases - a body row
+					// scrolling onto a slot that last held a mission has to get the
+					// narrow column back, not inherit the wide one.
+					const double baseDistX = g_panelDistX.load(std::memory_order_acquire);
+					if (baseDistX > 0.0) {
+						distField.SetMember("x", V{ baseDistX - extraDist });
+						distField.SetMember("width", V{ kPanelDistWidth + extraDist });
+					}
+
 					const double fieldWidth =
-						baseWidth > 0.0 ? std::max(40.0, baseWidth - indent) : 0.0;
+						baseWidth > 0.0 ? std::max(40.0, baseWidth - indent - extraDist) : 0.0;
 					if (fieldWidth > 0.0)
 						nameField.SetMember("width", V{ fieldWidth });
 
@@ -14861,7 +15214,11 @@ namespace
 					// it starts guiding the moment the body is tracked, with no
 					// need to lock it again.
 					const double lightSeconds = row.distance / kMetersPerLightSecond;
-					const auto   dist = !row.fromFeed       ? std::string{ isLocked ? "..." : "-" } :
+					// ⭐ A mission row composed its own right column when it was built -
+					// it has no feed bearing, so the live distance below cannot speak
+					// for it and would print a bare "-".
+					const auto   dist = !row.rightText.empty() ? row.rightText :
+					                    !row.fromFeed       ? std::string{ isLocked ? "..." : "-" } :
 					                    row.distance <= 0.0 ? std::string{} :
 					                    lightSeconds >= 1.0 ? std::format("{:.0f} LS", lightSeconds) :
 					                                          std::format("{:.0f} km", row.distance / 1000.0);
@@ -14871,7 +15228,24 @@ namespace
 				}
 				// Redrawn only when this row's class actually changes, which is
 				// rare - scrolling a list, not every frame.
-				if (haveIcon || havePoiIcon || haveGiantIcon) {
+				// ⚠ A MISSION ROW HAS ALREADY DRAWN ITS SYMBOL.
+				//
+				// Mission rows now carry a body id and a planet type - that is what
+				// makes the by-id course route work - so the planet-class icon below
+				// treats them as bodies and draws a second glyph in the SAME column.
+				// That is the overlap: not two mission icons stacking, but the panel's
+				// original planet icon sitting under the faction/type one.
+				if (row.questID != 0) {
+					const auto stand = [&](RE::Scaleform::GFx::Value& a_v) {
+						if (a_v.IsObject() || a_v.IsDisplayObject())
+							a_v.SetMember("visible", V{ false });
+					};
+					stand(g_panelIcons[r]);
+					stand(g_panelPoiIcons[r]);
+					stand(g_panelGiantIcons[r]);
+					// Forget what was drawn here, so a body scrolling back in redraws.
+					g_panelIconClass[r] = PlanetClass::kUnknown;
+				} else if (haveIcon || havePoiIcon || haveGiantIcon) {
 					PlanetClass rowClass = PlanetClass::kUnknown;
 					bool        rowSettled = false;
 					{
