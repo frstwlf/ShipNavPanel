@@ -7475,42 +7475,25 @@ namespace
 	// (§3i - its vtable ids are not vtables here). So every step is validated as a
 	// real LCTN form before it is followed: a wrong offset then yields nothing rather
 	// than a plausible, wrong body.
+	// Location -> body, by table lookup only.
+	//
+	// ⚠ There WAS a parent-chain walk here, to place quests whose target sits on a
+	// runtime (FF) location. It never resolved a single one in any session, and the
+	// offset scan it needed to find `parentLocation` crashed the game: it read qwords
+	// that were not pointers and called GetFormID() on them. Risk with no measured
+	// benefit, so it is gone.
+	//
+	// Runtime locations therefore stay unplaced, and their quests are dropped from the
+	// panel with a reason in the log. That is a known limit, not a silent one - and it
+	// is unrelated to quests with SEVERAL targets, which are handled by taking the
+	// first target that actually resolves rather than only target 0.
 	std::uint32_t ResolveLocationBody(const RE::BGSLocation* a_location)
 	{
-		constexpr int kMaxDepth = 8;  // deepest authored chain is a few links
-
-		const auto* loc = a_location;
-		for (int depth = 0; loc && depth < kMaxDepth; ++depth) {
-			{
-				std::lock_guard lock{ g_locationBodyMutex };
-				if (const auto found = g_locationToBody.find(loc->GetFormID());
-					found != g_locationToBody.end()) {
-					if (depth > 0)
-						REX::INFO("[quest]   location {:08X} placed via {} parent(s) -> {:08X}",
-							a_location ? a_location->GetFormID() : 0u, depth, loc->GetFormID());
-					return found->second;
-				}
-			}
-
-			const auto* parent = loc->parentLocation.get();
-			if (!parent)
-				break;
-			// The offset check: a real parent is a form the game will hand back by id,
-			// and it is an LCTN. Anything else means the layout is wrong for this
-			// build and the walk stops rather than dereferencing further.
-			const auto* asForm = RE::TESForm::LookupByID(parent->GetFormID());
-			if (asForm != static_cast<const RE::TESForm*>(parent) ||
-				asForm->GetFormType() != RE::FormType::kLCTN) {
-				static std::atomic<bool> s_warned{ false };
-				if (!s_warned.exchange(true, std::memory_order_acq_rel))
-					REX::WARN("[quest] BGSLocation::parentLocation does not read as an LCTN - the "
-							  "struct offset is wrong for this build, so parent-chain resolution "
-							  "is off. Runtime locations will stay unplaced.");
-				break;
-			}
-			loc = parent;
-		}
-		return 0;
+		if (!a_location)
+			return 0;
+		std::lock_guard lock{ g_locationBodyMutex };
+		const auto      found = g_locationToBody.find(a_location->GetFormID());
+		return found != g_locationToBody.end() ? found->second : 0u;
 	}
 
 	void DumpPlanetRecords(const std::vector<Candidate>& a_rows)
@@ -7928,6 +7911,9 @@ namespace
 			REX::INFO("[quest] {:08X} {:<38} {} name='{}' dnam=[{}] - {} target(s):", _formID, _name,
 				hasFull ? "NAMED  " : "unnamed", displayName, dnamHex, array->size());
 
+			// Set once a target has actually placed, so a later one cannot be
+			// overwritten by a still-later unplaced one.
+			bool storedResolved = false;
 			for (std::uint32_t i = 0; i < array->size(); ++i) {
 				const auto& element = (*array)[i];
 				if (!element.is<RE::BSScript::Object>()) {
@@ -7982,9 +7968,23 @@ namespace
 				REX::INFO("[quest]   [{}] refr {:08X} -> {}", i, refr->GetFormID(), where);
 
 				// File it against the quest so the mission list can print a place
-				// beside a name. First target wins: a quest with several is rare
-				// and the current stage's first is the one being pointed at.
-				if (i == 0) {
+				// ⭐ THE FIRST TARGET THAT RESOLVES WINS - not literally target 0.
+				//
+				// This took `i == 0` and dropped everything else, which quietly lost
+				// every quest whose first target does not place. "Into the Unknown"
+				// carries THREE targets; if [0] comes back unplaced the row got
+				// bodyID 0 and was dropped from the panel entirely, even when [1] or
+				// [2] would have resolved. That is what "missing multiple option
+				// quests" was.
+				//
+				// Target 0 is still stored first so its `where` text describes the
+				// quest when nothing resolves - a row that says why it is unplaced
+				// beats a blank one - but any later target that DOES resolve replaces
+				// it.
+				const bool firstResolved = bodyID != 0 && !storedResolved;
+				if (i == 0 || firstResolved) {
+					if (firstResolved)
+						storedResolved = true;
 					std::lock_guard lock{ g_menuStateMutex };
 					auto&           state = g_menuState[_formID];
 					state.bodyID = bodyID;
