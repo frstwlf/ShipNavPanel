@@ -2011,6 +2011,21 @@ namespace
 	// filtered on before anyone has seen a value.
 	struct QuestRecord
 	{
+		// ⭐ LOCATION ALIASES THAT NAME A PLANET, as {aliasIndex, name}.
+		//
+		// A random-planet quest stores its choice in a named alias, filled when the
+		// quest is RECEIVED and saved with the game - which is why the choice is stable
+		// across loads, and why nothing on the location object itself reveals it.
+		// "Into the Unknown" carries `Location01Planet` (idx 27) and `Location02Planet`
+		// (idx 29); the radiant board quests carry `TargetPlanetLocation`.
+		//
+		// ALLS is the LOCATION-alias id, ALST the reference-alias id, and ALID is the
+		// name that follows whichever came first. Reading only ALST made two aliases
+		// report the same index, which is the tell that the location ones were missed.
+		std::vector<std::pair<std::uint32_t, std::string>> planetAliases;
+		std::uint32_t pendingAlias{ 0 };
+		bool          pendingAliasIsLocation{ false };
+
 		std::uint8_t  type{ 0xFF };
 		std::uint16_t flags{ 0 };
 		std::uint16_t dnamSize{ 0 };
@@ -2079,6 +2094,16 @@ namespace
 		std::string   where;
 		std::uint16_t objective{ 0 };
 		bool          haveObjective{ false };
+		// ⭐ HOW MANY TARGETS THE QUEST ACTUALLY HAS, which is NOT the same as whether
+		// one could be placed. A quest with no targets at all (Mantis, the Activities)
+		// has nothing to show and is dropped; a quest with targets we could not place
+		// is a live mission and stays listed. Telling those apart needs the count, not
+		// the outcome.
+		std::uint32_t targetCount{ 0 };
+		bool          answeredTargets{ false };
+		// Every target that DID place. "Into the Unknown" gets two - Vladimir names two
+		// locations - and both are worth listing, the extras nested under the first.
+		std::vector<std::uint32_t> allBodies;
 	};
 
 	// ⭐ THE MENU'S OWN CATEGORIES, resolved from QTYP in game rather than guessed:
@@ -2202,6 +2227,21 @@ namespace
 							if (kw != 0)
 								slot.keywords.push_back(kw);
 						}
+					} else if (a_sig == "ALST" && a_length >= 4) {
+						std::memcpy(&slot.pendingAlias, a_payload, 4);
+						slot.pendingAliasIsLocation = false;
+					} else if (a_sig == "ALLS" && a_length >= 4) {
+						std::memcpy(&slot.pendingAlias, a_payload, 4);
+						slot.pendingAliasIsLocation = true;
+					} else if (a_sig == "ALID" && a_length > 1) {
+						const auto* chars = reinterpret_cast<const char*>(a_payload);
+						const std::string aliasName(chars, strnlen(chars, a_length));
+						// Only LOCATION aliases, and only ones whose name says planet.
+						// A quest has dozens of aliases; these are the two or three
+						// worth asking the VM about.
+						if (slot.pendingAliasIsLocation &&
+							aliasName.find("Planet") != std::string::npos)
+							slot.planetAliases.emplace_back(slot.pendingAlias, aliasName);
 					} else if (a_sig == "QTYP" && a_length >= 1) {
 						slot.hasType = true;
 						slot.qtypSize = static_cast<std::uint8_t>(a_length);
@@ -2925,6 +2965,13 @@ namespace
 					g_questFormIDs.insert(g_questFormIDs.end(), quests.begin(), quests.end());
 					for (auto& [id, record] : records) {
 						auto& slot = g_questRecords[id];
+						// ⚠ THIS MERGE IS FIELD BY FIELD. A new field on QuestRecord is
+						// parsed correctly and then silently dropped here unless it is
+						// added - which is exactly what happened to planetAliases: the
+						// subrecord census proved ALLS/ALID were being read (3282 and
+						// 24040 of them) while every quest still reported aliases=0.
+						if (!record.planetAliases.empty())
+							slot.planetAliases = std::move(record.planetAliases);
 						if (!record.editorID.empty())
 							slot.editorID = std::move(record.editorID);
 						if (record.hasFull) {
@@ -3100,6 +3147,34 @@ namespace
 	std::atomic<std::uint32_t> g_trackWatchBody{ 0 };
 	std::mutex                 g_trackSeenMutex;
 	std::unordered_set<std::uint32_t> g_trackSeenBefore;
+	// Answers from Location.GetCurrentPlanet, and which locations have been asked.
+	std::mutex                                       g_questPlanetMutex;
+	std::unordered_map<std::uint32_t, std::uint32_t> g_questPlanetFromVM;
+	// Attempts per location, NOT a one-shot. The first sweep can run before the world
+	// is ready, and a location asked too early answers nothing; marking it asked there
+	// burned the only attempt and left the quest unplaced until something else - like
+	// tracking it - resolved it another way. A few attempts across sweeps costs
+	// nothing and is what makes resolution happen on LOAD rather than on track.
+	std::unordered_map<std::uint32_t, std::uint32_t> g_questPlanetAttempts;
+	// Bodies named by a quest's own planet aliases - the stored, stable answer.
+	std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> g_questAliasBodies;
+	std::unordered_map<std::uint32_t, std::uint32_t>              g_questAliasAttempts;
+	// ⭐ WHICH QUEST THE WATCH IS FOR, and what tracking resolved it to.
+	//
+	// A quest whose target is a runtime location cannot be placed from any ESM table -
+	// "Into the Unknown" picks its planet per playthrough. But TRACKING it makes the
+	// game publish the destination system's star onto the HUD feed, which is the game
+	// doing the resolution for us. This remembers the answer per quest so the row can
+	// use it instead of reading "-".
+	std::atomic<std::uint32_t>                      g_trackWatchQuest{ 0 };
+	std::mutex                                      g_questSystemMutex;
+	// ⭐ ALL the systems tracking published for a quest, in order - not one.
+	//
+	// Tracking "Into the Unknown" publishes TWO stars, Piazzi and Narion: the two
+	// places Vladimir names. Storing a single value overwrote the first with the
+	// second and lost half the answer. This is also where nested destinations come
+	// from for dynamic quests - the engine hands us the list, we just have to keep it.
+	std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> g_questSystemFromTracking;
 
 	// Rebuild the missions list this many ms after a sweep is dispatched. The VM
 	// answers asynchronously, so assembling immediately gets an empty list and
@@ -7593,6 +7668,440 @@ namespace
 	// arrives on decides whether the shipping sweep has to marshal, and the round
 	// trip decides whether a sweep can ride a refresh tick or must wait for a
 	// trigger.
+	// ---------------------------------------------------------------------------
+	// ⭐ ASK THE GAME WHICH PLANET A RUNTIME LOCATION IS ON.
+	//
+	// `Location.psc` exposes `GetCurrentPlanet` - noted in PHASE5 §4 alongside
+	// GetParentLocations - and it is the robust answer to the dynamic quests. A quest
+	// like "Into the Unknown" picks its planet per playthrough, so its location is
+	// minted at runtime and no ESM-derived table can contain it; but the LOCATION
+	// object knows, and Papyrus will say.
+	//
+	// This replaces three failed guesses, all measured: the location holds no form
+	// pointer at any offset, the reference's worldspace is itself runtime, and the
+	// reference's position is cell-local rather than galaxy coordinates. Rather than a
+	// fourth guess, this asks the game the question directly, by name.
+	//
+	// ⚠ Asynchronous, like every VM call here - the answer lands a moment later and is
+	// written down for the row to pick up on a subsequent rebuild.
+	void AskLocationParents(std::uint32_t a_questID, std::uint32_t a_locationID);
+
+	class LocationPlanetCallback : public RE::BSScript::IStackCallbackFunctor
+	{
+	public:
+		LocationPlanetCallback(std::uint32_t a_questID, std::uint32_t a_locationID) :
+			_questID(a_questID), _locationID(a_locationID)
+		{}
+
+		void operator()(RE::BSScript::Variable a_result) override
+		{
+			// A Papyrus form comes back as a script Object; the form itself is
+			// recovered from its handle, the same way quest targets are read above.
+			auto obj = RE::BSScript::get<RE::BSScript::Object>(a_result);
+			if (!obj) {
+				// ⭐ NOT ON A PLANET - so climb. A quest target can sit on a SYSTEM
+				// location rather than a planet one, and GetCurrentPlanet has nothing
+				// to say about those. `Location.psc` also exposes GetParentLocations
+				// (PHASE5 §4), so ask for the chain and take the first parent our table
+				// already knows. Still a named API - no offsets, nothing dereferenced
+				// blind.
+				REX::INFO("[quest] location {:08X} - GetCurrentPlanet returned nothing, asking for "
+						  "its parent locations",
+					_locationID);
+				AskLocationParents(_questID, _locationID);
+				return;
+			}
+
+			const auto game = RE::GameVM::GetSingleton();
+			const auto vm = game ? game->GetVM() : nullptr;
+			if (!vm)
+				return;
+			auto&       handles = vm->GetObjectHandlePolicy();
+			const auto* planet = static_cast<const RE::TESForm*>(handles.GetObjectForHandle(
+				RE::BSScript::GetVMTypeID<RE::BGSPlanet::PlanetData>(), obj->GetHandle()));
+			if (!planet) {
+				REX::INFO("[quest] location {:08X} - GetCurrentPlanet gave a handle that is not a "
+						  "planet",
+					_locationID);
+				return;
+			}
+
+			const auto planetID = planet->GetFormID();
+			std::uint32_t system = 0;
+			std::string   name;
+			{
+				std::lock_guard lock{ g_bodyTableMutex };
+				if (const auto body = g_bodyTable.find(planetID); body != g_bodyTable.end()) {
+					system = body->second.galaxy.systemID;
+					name = body->second.name;
+				}
+			}
+			if (name.empty()) {
+				REX::INFO("[quest] location {:08X} -> planet {:08X}, which the body table does "
+						  "not know",
+					_locationID, planetID);
+				return;
+			}
+
+			{
+				std::lock_guard lock{ g_questPlanetMutex };
+				g_questPlanetFromVM[_questID] = planetID;
+			}
+			// Correct the quest's own placement text too. Without this the mission log
+			// keeps printing "not on any body" for a quest that HAS been placed, which
+			// reads as the fix not working.
+			{
+				std::lock_guard lock{ g_menuStateMutex };
+				auto&           state = g_menuState[_questID];
+				if (state.bodyID == 0) {
+					state.bodyID = planetID;
+					state.systemID = system;
+					state.where = std::format("{} (system {}, via Location.GetCurrentPlanet)", name,
+						system);
+				}
+			}
+			REX::INFO("[quest] ⭐ location {:08X} -> planet {:08X} '{}' (system {}) - quest {:08X} "
+					  "is now placeable",
+				_locationID, planetID, name, system, _questID);
+		}
+
+		// The rest of the functor interface. Nothing to do on either - the answer
+		// only matters when it arrives, and a cancelled call simply leaves the quest
+		// unplaced, which is the state it was already in.
+		void CallQueued() override {}
+		void CallCanceled() override {}
+		void StartMultiDispatch() override {}
+		void EndMultiDispatch() override {}
+
+	private:
+		std::uint32_t _questID{ 0 };
+		std::uint32_t _locationID{ 0 };
+	};
+
+	// The parent-chain answer: an array of Locations, innermost first. The first one
+	// our LCTN table can place is the quest's home body.
+	class LocationParentsCallback : public RE::BSScript::IStackCallbackFunctor
+	{
+	public:
+		LocationParentsCallback(std::uint32_t a_questID, std::uint32_t a_locationID) :
+			_questID(a_questID), _locationID(a_locationID)
+		{}
+
+		void operator()(RE::BSScript::Variable a_result) override
+		{
+			auto array = RE::BSScript::get<RE::BSScript::Array>(a_result);
+			if (!array || array->size() == 0) {
+				REX::INFO("[quest] location {:08X} - no parent locations either", _locationID);
+				return;
+			}
+
+			const auto game = RE::GameVM::GetSingleton();
+			const auto vm = game ? game->GetVM() : nullptr;
+			if (!vm)
+				return;
+			auto& handles = vm->GetObjectHandlePolicy();
+
+			for (std::uint32_t i = 0; i < array->size(); ++i) {
+				auto element = RE::BSScript::get<RE::BSScript::Object>((*array)[i]);
+				if (!element)
+					continue;
+				const auto* parent = static_cast<const RE::TESForm*>(handles.GetObjectForHandle(
+					RE::BSScript::GetVMTypeID<RE::BGSLocation>(), element->GetHandle()));
+				if (!parent)
+					continue;
+
+				std::uint32_t bodyID = 0;
+				{
+					std::lock_guard lock{ g_locationBodyMutex };
+					if (const auto found = g_locationToBody.find(parent->GetFormID());
+						found != g_locationToBody.end())
+						bodyID = found->second;
+				}
+				if (bodyID == 0)
+					continue;
+
+				std::uint32_t system = 0;
+				std::string   name;
+				{
+					std::lock_guard lock{ g_bodyTableMutex };
+					if (const auto body = g_bodyTable.find(bodyID); body != g_bodyTable.end()) {
+						system = body->second.galaxy.systemID;
+						name = body->second.name;
+					}
+				}
+				{
+					std::lock_guard lock{ g_questPlanetMutex };
+					g_questPlanetFromVM[_questID] = bodyID;
+				}
+				{
+					std::lock_guard lock{ g_menuStateMutex };
+					auto&           state = g_menuState[_questID];
+					if (state.bodyID == 0) {
+						state.bodyID = bodyID;
+						state.systemID = system;
+						state.where = std::format("{} (system {}, via parent location {:08X})",
+							name, system, parent->GetFormID());
+					}
+				}
+				REX::INFO("[quest] ⭐ location {:08X} placed through parent {:08X} -> {} "
+						  "(system {}) - quest {:08X}",
+					_locationID, parent->GetFormID(), name, system, _questID);
+				return;
+			}
+			REX::INFO("[quest] location {:08X} - {} parent(s), none of them placeable",
+				_locationID, array->size());
+		}
+
+		void CallQueued() override {}
+		void CallCanceled() override {}
+		void StartMultiDispatch() override {}
+		void EndMultiDispatch() override {}
+
+	private:
+		std::uint32_t _questID{ 0 };
+		std::uint32_t _locationID{ 0 };
+	};
+
+	// ---------------------------------------------------------------------------
+	// ⭐ THE STORED ANSWER: the quest's own planet alias.
+	//
+	// A random-planet quest picks its planets when the quest is RECEIVED and keeps them
+	// in named LOCATION aliases, saved with the game. That is why the choice survives a
+	// reload while nothing about the location object reveals it - the location is a
+	// stub, and the association lives on the QUEST.
+	//
+	// Chain: Quest.GetAlias(idx) -> LocationAlias.GetLocation() -> our LCTN table. Two
+	// dispatches, both named functions, no offsets. The index comes from the ESM parse
+	// (ALLS + ALID) so only the two or three planet-bearing aliases are ever asked.
+	// ---------------------------------------------------------------------------
+	class AliasLocationCallback : public RE::BSScript::IStackCallbackFunctor
+	{
+	public:
+		AliasLocationCallback(std::uint32_t a_questID, std::string a_aliasName) :
+			_questID(a_questID), _aliasName(std::move(a_aliasName))
+		{}
+
+		void operator()(RE::BSScript::Variable a_result) override
+		{
+			auto obj = RE::BSScript::get<RE::BSScript::Object>(a_result);
+			if (!obj)
+				return;
+			const auto game = RE::GameVM::GetSingleton();
+			const auto vm = game ? game->GetVM() : nullptr;
+			if (!vm)
+				return;
+			auto&       handles = vm->GetObjectHandlePolicy();
+			const auto* loc = static_cast<const RE::TESForm*>(handles.GetObjectForHandle(
+				RE::BSScript::GetVMTypeID<RE::BGSLocation>(), obj->GetHandle()));
+			if (!loc)
+				return;
+
+			std::uint32_t bodyID = 0;
+			{
+				std::lock_guard lock{ g_locationBodyMutex };
+				if (const auto found = g_locationToBody.find(loc->GetFormID());
+					found != g_locationToBody.end())
+					bodyID = found->second;
+			}
+			if (bodyID == 0) {
+				REX::INFO("[quest] alias '{}' -> location {:08X}, which the body table does not "
+						  "place",
+					_aliasName, loc->GetFormID());
+				return;
+			}
+
+			std::uint32_t system = 0;
+			std::string   name;
+			{
+				std::lock_guard lock{ g_bodyTableMutex };
+				if (const auto body = g_bodyTable.find(bodyID); body != g_bodyTable.end()) {
+					system = body->second.galaxy.systemID;
+					name = body->second.name;
+				}
+			}
+			{
+				std::lock_guard lock{ g_questPlanetMutex };
+				auto&           list = g_questAliasBodies[_questID];
+				if (std::find(list.begin(), list.end(), bodyID) == list.end())
+					list.push_back(bodyID);
+			}
+			REX::INFO("[quest] ⭐ alias '{}' of quest {:08X} -> {} (system {}) - the stored choice",
+				_aliasName, _questID, name, system);
+		}
+
+		void CallQueued() override {}
+		void CallCanceled() override {}
+		void StartMultiDispatch() override {}
+		void EndMultiDispatch() override {}
+
+	private:
+		std::uint32_t _questID{ 0 };
+		std::string   _aliasName;
+	};
+
+	// GetAlias hands back an Alias; the location comes from a second call on it.
+	class QuestAliasCallback : public RE::BSScript::IStackCallbackFunctor
+	{
+	public:
+		QuestAliasCallback(std::uint32_t a_questID, std::string a_aliasName) :
+			_questID(a_questID), _aliasName(std::move(a_aliasName))
+		{}
+
+		void operator()(RE::BSScript::Variable a_result) override
+		{
+			auto alias = RE::BSScript::get<RE::BSScript::Object>(a_result);
+			if (!alias)
+				return;
+			const auto game = RE::GameVM::GetSingleton();
+			const auto vm = game ? game->GetVM() : nullptr;
+			if (!vm)
+				return;
+			const auto args = [](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; };
+			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+				new AliasLocationCallback(_questID, _aliasName)
+			};
+			vm->DispatchMethodCall(alias, RE::BSFixedString("GetLocation"), args, callback, 0);
+		}
+
+		void CallQueued() override {}
+		void CallCanceled() override {}
+		void StartMultiDispatch() override {}
+		void EndMultiDispatch() override {}
+
+	private:
+		std::uint32_t _questID{ 0 };
+		std::string   _aliasName;
+	};
+
+	void AskQuestPlanetAliases(std::uint32_t a_questID,
+		const std::vector<std::pair<std::uint32_t, std::string>>& a_aliases)
+	{
+		if (a_aliases.empty())
+			return;
+		{
+			std::lock_guard lock{ g_questPlanetMutex };
+			if (g_questAliasBodies.contains(a_questID))
+				return;
+			constexpr std::uint32_t kMaxAttempts = 4;
+			auto&                   attempts = g_questAliasAttempts[a_questID];
+			if (attempts >= kMaxAttempts)
+				return;
+			++attempts;
+		}
+
+		const auto* form = RE::TESForm::LookupByID(a_questID);
+		if (!form)
+			return;
+		const auto game = RE::GameVM::GetSingleton();
+		const auto vm = game ? game->GetVM() : nullptr;
+		if (!vm)
+			return;
+
+		auto&      handles = vm->GetObjectHandlePolicy();
+		const auto handle =
+			handles.GetHandleForObject(RE::BSScript::GetVMTypeID<RE::TESQuest>(), form);
+		if (handle == handles.EmptyHandle())
+			return;
+
+		RE::BSTSmartPointer<RE::BSScript::Object> object;
+		if (!vm->FindBoundObject(handle, "Quest", false, object, false) || !object)
+			return;
+
+		for (const auto& [index, name] : a_aliases) {
+			const auto args = [index](RE::BSScrapArray<RE::BSScript::Variable>& a_args) {
+				a_args.resize(1);
+				a_args[0] = static_cast<std::int32_t>(index);
+				return true;
+			};
+			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+				new QuestAliasCallback(a_questID, name)
+			};
+			vm->DispatchMethodCall(object, RE::BSFixedString("GetAlias"), args, callback, 0);
+		}
+	}
+
+	void AskLocationParents(std::uint32_t a_questID, std::uint32_t a_locationID)
+	{
+		const auto* form = RE::TESForm::LookupByID(a_locationID);
+		if (!form || form->GetFormType() != RE::FormType::kLCTN)
+			return;
+
+		const auto game = RE::GameVM::GetSingleton();
+		const auto vm = game ? game->GetVM() : nullptr;
+		const auto vmInternal = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+		if (!vm || !vmInternal)
+			return;
+
+		auto&      handles = vm->GetObjectHandlePolicy();
+		const auto handle =
+			handles.GetHandleForObject(RE::BSScript::GetVMTypeID<RE::BGSLocation>(), form);
+		if (handle == handles.EmptyHandle())
+			return;
+
+		RE::BSTSmartPointer<RE::BSScript::Object> object;
+		if (!vm->FindBoundObject(handle, "Location", false, object, false) || !object) {
+			if (!vm->CreateObject(RE::BSFixedString("Location"), object) || !object)
+				return;
+			vmInternal->BindObject(object, handle, false);
+			if (!object)
+				return;
+		}
+
+		const auto args = [](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; };
+		const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+			new LocationParentsCallback(a_questID, a_locationID)
+		};
+		vm->DispatchMethodCall(object, RE::BSFixedString("GetParentLocations"), args, callback, 0);
+	}
+
+	// Ask once per location per session - the planet does not move once chosen.
+	void AskLocationForPlanet(std::uint32_t a_questID, const RE::BGSLocation* a_location)
+	{
+		if (!a_location)
+			return;
+		const auto locationID = a_location->GetFormID();
+		{
+			std::lock_guard lock{ g_questPlanetMutex };
+			// Already answered - nothing to do.
+			if (g_questPlanetFromVM.contains(a_questID))
+				return;
+			// Otherwise allow a handful of tries across sweeps. 4 is enough to span a
+			// load: the sweep runs at startup, on panel open and on tab switch.
+			constexpr std::uint32_t kMaxAttempts = 4;
+			auto&                   attempts = g_questPlanetAttempts[locationID];
+			if (attempts >= kMaxAttempts)
+				return;
+			++attempts;
+		}
+
+		const auto game = RE::GameVM::GetSingleton();
+		const auto vm = game ? game->GetVM() : nullptr;
+		const auto vmInternal = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+		if (!vm || !vmInternal)
+			return;
+
+		auto&      handles = vm->GetObjectHandlePolicy();
+		const auto handle = handles.GetHandleForObject(
+			RE::BSScript::GetVMTypeID<RE::BGSLocation>(), a_location);
+		if (handle == handles.EmptyHandle())
+			return;
+
+		RE::BSTSmartPointer<RE::BSScript::Object> object;
+		if (!vm->FindBoundObject(handle, "Location", false, object, false) || !object) {
+			if (!vm->CreateObject(RE::BSFixedString("Location"), object) || !object)
+				return;
+			vmInternal->BindObject(object, handle, false);
+			if (!object)
+				return;
+		}
+
+		const auto args = [](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; };
+		const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+			new LocationPlanetCallback(a_questID, locationID)
+		};
+		vm->DispatchMethodCall(object, RE::BSFixedString("GetCurrentPlanet"), args, callback, 0);
+	}
+
 	class SurveyProbeCallback : public RE::BSScript::IStackCallbackFunctor
 	{
 	public:
@@ -7876,6 +8385,22 @@ namespace
 				return;
 
 			auto array = RE::BSScript::get<RE::BSScript::Array>(a_result);
+
+			// ⚠ RECORD THE COUNT BEFORE THE EARLY RETURN.
+			//
+			// This block used to sit after it, so a quest with ZERO targets returned
+			// without ever setting `answeredTargets` - which left `hasTargets`
+			// defaulted to true and meant nothing was ever dropped. An empty answer is
+			// still an answer, and it is the only one that identifies a quest with
+			// nothing to fly to.
+			{
+				std::lock_guard lock{ g_menuStateMutex };
+				auto&           state = g_menuState[_formID];
+				state.targetCount = array ? static_cast<std::uint32_t>(array->size()) : 0u;
+				state.answeredTargets = true;
+				state.allBodies.clear();
+			}
+
 			if (!array || array->size() == 0)
 				return;
 
@@ -7943,6 +8468,11 @@ namespace
 				const auto* location = refr->GetCurrentLocation();
 				std::uint32_t bodyID = ResolveLocationBody(location);
 
+				// Runtime location: no table can place it, so ask the game. The answer
+				// arrives asynchronously and is used on a later rebuild.
+				if (bodyID == 0 && location)
+					AskLocationForPlanet(_formID, location);
+
 				std::string   where = "unplaced";
 				std::uint32_t systemID = 0;
 				if (bodyID != 0) {
@@ -7981,6 +8511,14 @@ namespace
 				// quest when nothing resolves - a row that says why it is unplaced
 				// beats a blank one - but any later target that DOES resolve replaces
 				// it.
+				if (bodyID != 0) {
+					std::lock_guard lock{ g_menuStateMutex };
+					auto&           state = g_menuState[_formID];
+					if (std::find(state.allBodies.begin(), state.allBodies.end(), bodyID) ==
+						state.allBodies.end())
+						state.allBodies.push_back(bodyID);
+				}
+
 				const bool firstResolved = bodyID != 0 && !storedResolved;
 				if (i == 0 || firstResolved) {
 					if (firstResolved)
@@ -8086,6 +8624,13 @@ namespace
 			std::string   mission;
 			std::string   place;     // the OBJECTIVE text - what the row prints
 			std::string   bodyName;  // the destination body - the right column
+			// Extra destinations beyond the first, listed nested under it.
+			std::vector<std::uint32_t> extraBodies;
+			// Whether the quest has any targets at all - see QuestMenuState.
+			bool          hasTargets{ false };
+			std::uint32_t targetCount{ 0 };
+			bool          answeredTargets{ false };
+			std::uint32_t planetAliasCount{ 0 };
 			std::uint32_t bodyID{ 0 };
 			std::uint32_t questID{ 0 };
 			bool          tracked{ false };
@@ -8209,7 +8754,25 @@ namespace
 				if (const auto* questForm = RE::TESForm::LookupByID(formID))
 					row.faction = FactionFromQuestEditorID(SafeStr(questForm->GetFormEditorID()));
 			}
+			// ⚠ NO LOCK HERE. `g_questFormMutex` is already held by this function
+			// (taken at the top of the loop) and std::mutex is not recursive, so
+			// re-locking it threw "resource deadlock would occur" and crashed the game.
+			// The record iterator is already in scope; use it.
+			if (record != g_questRecords.end())
+				row.planetAliasCount =
+					static_cast<std::uint32_t>(record->second.planetAliases.size());
 			row.tracked = state.tracked;
+			// ⚠ NOT `!answered || count > 0`. Measured: Mantis and the Activities come
+			// back answered=false count=0 - they are never dispatched at all, having no
+			// objectives or no bound Quest script - and the old default treated that as
+			// "has targets", which is why nothing was ever dropped through three
+			// attempts at this rule. Never answered IS the no-target case.
+			row.hasTargets = state.targetCount > 0;
+			row.targetCount = state.targetCount;
+			row.answeredTargets = state.answeredTargets;
+			for (const auto extra : state.allBodies)
+				if (extra != state.bodyID)
+					row.extraBodies.push_back(extra);
 			row.bodyID = state.bodyID;
 			row.questID = formID;
 
@@ -8238,6 +8801,107 @@ namespace
 			}
 			if (row.place.empty())
 				row.place = "objective unknown";
+
+			// ⭐ A RUNTIME OBJECTIVE THAT TRACKING HAS ALREADY RESOLVED.
+			//
+			// No ESM table can place it, but the game published its system's star onto
+			// the feed when the quest was tracked, and that was written down. Take a
+			// body in that system so the row has both halves of a jump route - the
+			// exact objective body is unknowable offline, and the system is where the
+			// game itself would send you.
+			// ⭐⭐ BEST ANSWER: the quest's own planet aliases - the stored choice,
+			// stable across loads and available without tracking.
+			{
+				std::vector<std::uint32_t> aliasBodies;
+				{
+					std::lock_guard lock{ g_questPlanetMutex };
+					if (const auto found = g_questAliasBodies.find(formID);
+						found != g_questAliasBodies.end())
+						aliasBodies = found->second;
+				}
+				for (const auto body : aliasBodies) {
+					std::uint32_t system = 0;
+					std::string   name;
+					{
+						std::lock_guard bodyLock{ g_bodyTableMutex };
+						if (const auto found = g_bodyTable.find(body); found != g_bodyTable.end()) {
+							system = found->second.galaxy.systemID;
+							name = found->second.name;
+						}
+					}
+					if (name.empty())
+						continue;
+					if (row.bodyID == 0) {
+						row.bodyID = body;
+						row.systemID = system;
+						row.bodyName = name;
+					} else if (body != row.bodyID &&
+							   std::find(row.extraBodies.begin(), row.extraBodies.end(), body) ==
+								   row.extraBodies.end()) {
+						row.extraBodies.push_back(body);
+					}
+				}
+			}
+
+			// ⭐ FIRST CHOICE: the planet Location.GetCurrentPlanet named. It is the
+			// actual objective body, not just its system.
+			if (row.bodyID == 0) {
+				std::uint32_t fromVM = 0;
+				{
+					std::lock_guard lock{ g_questPlanetMutex };
+					if (const auto found = g_questPlanetFromVM.find(formID);
+						found != g_questPlanetFromVM.end())
+						fromVM = found->second;
+				}
+				if (fromVM != 0) {
+					std::lock_guard bodyLock{ g_bodyTableMutex };
+					if (const auto body = g_bodyTable.find(fromVM); body != g_bodyTable.end()) {
+						row.bodyID = fromVM;
+						row.systemID = body->second.galaxy.systemID;
+						row.bodyName = body->second.name;
+					}
+				}
+			}
+
+			// Fallback: the system the game published when the quest was tracked.
+			// Every system tracking published. The first becomes the row's own
+			// destination; the rest nest beneath it, which is how a two-destination
+			// quest like "Into the Unknown" ends up showing both.
+			{
+				std::vector<std::uint32_t> systems;
+				{
+					std::lock_guard qLock{ g_questSystemMutex };
+					if (const auto found = g_questSystemFromTracking.find(formID);
+						found != g_questSystemFromTracking.end())
+						systems = found->second;
+				}
+				for (const auto system : systems) {
+					std::uint32_t pick = 0;
+					std::string   pickName;
+					{
+						std::lock_guard bodyLock{ g_bodyTableMutex };
+						for (const auto& [bodyFormID, entry] : g_bodyTable) {
+							if (entry.galaxy.systemID == system && entry.authored &&
+								entry.galaxy.parentPlanetID == 0) {
+								pick = bodyFormID;
+								pickName = entry.name;
+								break;
+							}
+						}
+					}
+					if (pick == 0)
+						continue;
+					if (row.bodyID == 0) {
+						row.bodyID = pick;
+						row.systemID = system;
+						row.bodyName = pickName;
+					} else if (pick != row.bodyID &&
+							   std::find(row.extraBodies.begin(), row.extraBodies.end(), pick) ==
+								   row.extraBodies.end()) {
+						row.extraBodies.push_back(pick);
+					}
+				}
+			}
 			built.push_back(std::move(row));
 		}
 
@@ -8291,7 +8955,24 @@ namespace
 				// mission is live; only the jump is unavailable, and the row says so
 				// with a dash where the destination goes. Hiding them made active
 				// missions look like they had disappeared.
-				if (entry.bodyID == 0 && entry.place == "objective unknown") {
+				// ⚠ DROP ON "NO TARGETS", NOT ON "COULD NOT PLACE".
+				//
+				// Those are different failures and were being conflated. A quest with
+				// no target reference at all - Mantis, the Activities - has nothing to
+				// show and nothing to fly to. A quest whose targets exist but did not
+				// resolve is a live mission, and hiding it made active missions look
+				// like they had vanished. The count comes from the target array itself
+				// rather than from whether a lookup succeeded.
+				// ⚠ TRACE THE DECISION. Three attempts at this filter have failed for
+				// three different reasons, each invisible from the outside. Print what
+				// the rule actually saw so the next wrong answer names itself.
+				if (bCensusQuestKeywords.GetValue())
+					REX::INFO("[mission] filter '{}': answered={} count={} hasTargets={} "
+							  "bodyID={:08X} aliases={}",
+						entry.mission, entry.answeredTargets, entry.targetCount, entry.hasTargets,
+						entry.bodyID, entry.planetAliasCount);
+
+				if (!entry.hasTargets) {
 					++dropped;
 					continue;
 				}
@@ -8314,6 +8995,37 @@ namespace
 				// destination available"; an empty column reads as a bug.
 				rowOut.rightText = entry.bodyName.empty() ? std::string{ "-" } : entry.bodyName;
 				panelRows.push_back(std::move(rowOut));
+
+				// ⭐ NESTED EXTRA DESTINATIONS. "Into the Unknown" sends you to two
+				// places - Vladimir names both - and either is a real thing to fly to.
+				// They ride under the first as indented rows, reusing the moon indent,
+				// and each is independently selectable so RB flies to the one you pick.
+				for (const auto extra : entry.extraBodies) {
+					std::string   extraName;
+					std::uint32_t extraSystem = 0;
+					{
+						std::lock_guard lock{ g_bodyTableMutex };
+						if (const auto body = g_bodyTable.find(extra); body != g_bodyTable.end()) {
+							extraName = body->second.name;
+							extraSystem = body->second.galaxy.systemID;
+						}
+					}
+					if (extraName.empty())
+						continue;
+
+					Candidate sub;
+					sub.id = extra;
+					sub.category = entry.category;
+					sub.factionKeyword = entry.faction;
+					sub.systemID = extraSystem;
+					sub.type = kTargetTypePlanet;
+					sub.questID = entry.questID;
+					sub.fromFeed = false;
+					sub.isMoon = true;  // the indent, so it reads as belonging above
+					sub.name = "also: " + extraName;
+					sub.rightText = extraName;
+					panelRows.push_back(std::move(sub));
+				}
 			}
 
 			if (dropped != 0)
@@ -8472,6 +9184,7 @@ namespace
 			g_trackWatchBody.store(g_lockedID.load(std::memory_order_acquire),
 				std::memory_order_release);
 			g_trackWatchUntil.store(nowMs + 10000, std::memory_order_release);
+			g_trackWatchQuest.store(questID, std::memory_order_release);
 			REX::INFO("[mission] watching the feed for 10 s to see what tracking publishes");
 		} else {
 			REX::WARN("[mission] SetActive REFUSED for {:08X}", questID);
@@ -8735,6 +9448,25 @@ namespace
 
 		const auto snapshotMs =
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+		// Did the ESM parse find any planet-bearing location aliases at all? Every
+		// quest reported aliases=0, which is either a parse that never reaches ALLS/ALID
+		// or a filter that matches nothing. One line separates those.
+		{
+			std::size_t withAliases = 0;
+			std::size_t totalAliases = 0;
+			{
+				std::lock_guard lock{ g_questFormMutex };
+				for (const auto& [id, rec] : g_questRecords) {
+					if (!rec.planetAliases.empty()) {
+						++withAliases;
+						totalAliases += rec.planetAliases.size();
+					}
+				}
+			}
+			REX::INFO("[quest] planet aliases parsed: {} quest(s), {} alias(es) total",
+				withAliases, totalAliases);
+		}
+
 		REX::INFO("[quest] ==== probe: {} QUST forms snapshotted in {:.1f} ms ====", quests.size(),
 			snapshotMs);
 
@@ -8794,8 +9526,34 @@ namespace
 					objectives = record->second.objectives;
 			}
 			if (objectives.empty()) {
+				// ⚠ A SKIPPED QUEST STILL NEEDS AN ANSWER RECORDED.
+				//
+				// These are never dispatched, so QuestTargetCallback never runs and
+				// `answeredTargets` stayed false - which left hasTargets defaulted to
+				// true and meant nothing was ever dropped, however the filter was
+				// written. Not being asked IS the answer for these: no objectives means
+				// no targets means nothing to fly to.
+				{
+					std::lock_guard lock{ g_menuStateMutex };
+					auto&           state = g_menuState[formID];
+					state.targetCount = 0;
+					state.answeredTargets = true;
+				}
 				++noObjectives;
 				continue;
+			}
+
+			// ⭐ The stored planet choice, asked on the SWEEP - so it resolves on load,
+			// not only once the quest is tracked.
+			{
+				std::vector<std::pair<std::uint32_t, std::string>> planetAliases;
+				{
+					std::lock_guard lock{ g_questFormMutex };
+					if (const auto record = g_questRecords.find(formID);
+						record != g_questRecords.end())
+						planetAliases = record->second.planetAliases;
+				}
+				AskQuestPlanetAliases(formID, planetAliases);
 			}
 
 			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
@@ -9599,6 +10357,39 @@ namespace
 							// are in it.
 								REX::INFO("[mission] feed gained {:08X} '{}' type={} distance={:.3g}",
 									row.id, row.name, row.type, row.distance);
+
+								// ⭐ THE DYNAMIC-QUEST ANSWER. The star that just
+								// arrived names the destination SYSTEM, so map it back
+								// through the STDT table and remember it against the
+								// quest being watched. That is how a randomly-placed
+								// objective becomes travellable: the game resolved it,
+								// we just wrote the answer down.
+								if (const auto watched =
+										g_trackWatchQuest.load(std::memory_order_acquire);
+									watched != 0) {
+									std::uint32_t system = 0;
+									{
+										std::lock_guard starLock{ g_starMutex };
+										for (const auto& [sysID, starID] : g_starBySystem)
+											if (starID == row.id) {
+												system = sysID;
+												break;
+											}
+									}
+									if (system != 0) {
+										{
+											std::lock_guard qLock{ g_questSystemMutex };
+											auto& list = g_questSystemFromTracking[watched];
+											if (std::find(list.begin(), list.end(), system) ==
+												list.end())
+												list.push_back(system);
+										}
+										REX::INFO("[mission] ⭐ tracking resolved quest {:08X} to "
+												  "system {} - a runtime objective is now "
+												  "travellable",
+											watched, system);
+									}
+								}
 							}
 						}
 					}
