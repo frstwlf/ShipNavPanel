@@ -3,7 +3,6 @@
 #include "REX/TIniSetting.h"
 
 #include "RE/Starfield.h"
-#include "RE/I/INIPrefSettingCollection.h"
 
 // For VirtualQuery: the GNAM scan reads past a declared struct, so it checks
 // the page is committed and readable before touching it.
@@ -517,20 +516,6 @@ namespace
 	REX::TIniSetting<bool>        bProbeStarmapFeed{ "Recon", "bProbeStarmapFeed", false };
 	REX::TIniSetting<std::string> sStarmapFeed{ "Recon", "sStarmapFeed", "StarmapSystemBodyInfoProvider" };
 
-	// PHASE 8, the route that reads MISSIONS rather than UI. Papyrus `Quest`
-	// publishes `ObjectReference[] GetCurrentStageTargets()` - "the array of object
-	// reference targets pertinent to the current quest stage" - which is the
-	// mission-location set at its source, refreshable on demand instead of
-	// whenever the player happens to open a menu.
-	//
-	// ⚠ READ-ONLY BY CONSTRUCTION. It dispatches only against quests that ALREADY
-	// have a bound script object and never creates one, so unlike the survey
-	// feature it cannot add a single entry to the VM's tables. Most vanilla quests
-	// carry a script, so the coverage cost of that choice is expected to be small -
-	// and "small" is a thing this probe measures rather than assumes.
-	REX::TIniSetting<bool>          bProbeQuestTargets{ "Recon", "bProbeQuestTargets", false };
-	REX::TIniSetting<std::uint32_t> uQuestProbeMax{ "Recon", "uQuestProbeMax", 4000 };
-
 	// PHASE 8: the missions tab, and the keys that reach it. Left/Right are free in
 	// cruise for the same MEASURED reason Up/Down are - vanilla spends the D-pad on
 	// power allocation, and InitiateCruiseMode calls EnableInput(false) on it for
@@ -539,96 +524,25 @@ namespace
 	// ⚠ The one setting in this mod that gates a SAVED change. Confirming a mission
 	// row calls Quest.SetActive, which is the player's tracked mission and persists.
 	REX::TIniSetting<bool>        bMissionTrack{ "Panel", "bMissionTrack", true };
-	// ⚠ OFF by default: it MOVES THE SHIP, which almost nothing else in this mod
-	// does, and an untested verb that relocates the player is not a thing to switch
-	// on for someone. See the header above RunMissionJump.
-	REX::TIniSetting<bool>        bMissionJump{ "Panel", "bMissionJump", false };
-	// ⚠ MEASURED AND DISPROVED, default OFF - kept only so the finding stays
-	// reproducible. See the header above TriggerGravJump for the numbers.
-	REX::TIniSetting<bool>        bMissionJumpPower{ "Panel", "bMissionJumpPower", false };
-	// ⚠ The old route, kept only so the finding is reproducible: dispatches
-	// ShipHud_FarTravel instead of a grav jump. That is FAST TRAVEL - the wrong
-	// verb - and it did nothing at all when handed a star id. Off, and it should
-	// stay off.
-	REX::TIniSetting<bool>        bMissionFarTravel{ "Panel", "bMissionFarTravel", false };
-	// ⚠ EXPERIMENTAL, default OFF: it replays a real input event to cycle vanilla's
-	// target onto the body the panel is pointing at. See the header above
-	// MaybeCaptureAcquireTemplate for why it replays rather than fabricates.
-	// PHASE 9. Resolves the grav-jump DEFAULT OBJECTS by editor id and reports what
-	// each binds to. Read-only, published API only - see the header above
-	// ProbeGravJumpObjects.
-	REX::TIniSetting<bool> bProbeGravJumpObjects{ "Recon", "bProbeGravJumpObjects", false };
-	// PHASE 9. Watches the star map's grav-jump confirmation and prints the two ids
-	// it carries. Read-only: the hook logs and then calls the engine's own function,
-	// so a jump confirmed with this on behaves exactly as it would without it.
-	// On by default for this build: it IS the test. Read-only, and it hands off to
-	// the engine's own function, so leaving it on costs a few log lines.
-	REX::TIniSetting<bool> bCapturePlotConfirm{ "Recon", "bCapturePlotConfirm", true };
-	// PHASE 9. Watches all three Calls on GravJumpInitiateCompleteHandler - the
-	// handler the engine runs when the hold-X mission jump's hold completes. Logs and
-	// chains to the original, so a jump with this on behaves exactly as without it.
-	REX::TIniSetting<bool> bCaptureJumpHandler{ "Recon", "bCaptureJumpHandler", true };
-	// PHASE 9 §3h. Watches PlayerControls::GravJumpHandler - the hold-X INPUT handler
-	// itself, upstream of every Scaleform event this phase chased. Logs the press, the
-	// hold time and the handler's own state bytes, and chains to the engine, so a jump
-	// behaves exactly as without it.
-	REX::TIniSetting<bool> bCaptureGravJumpInput{ "Recon", "bCaptureGravJumpInput", true };
-	// PHASE 9 §3r. Polls the grav jump route twice a second and logs only on change,
-	// to find out which action actually PLOTS it. Read-only.
-	REX::TIniSetting<bool> bWatchJumpRoute{ "Recon", "bWatchJumpRoute", true };
-	// PHASE 9. Patches the call sites of the plot setter and logs the destination pair
-	// it is handed. Logs and chains, so a jump behaves identically with it on.
-	// The PHASE 9 capture hooks. All off now that the jump works: they are evidence,
-	// not machinery, and the shipped path touches none of them.
-	REX::TIniSetting<bool> bCapturePlotSetter{ "Recon", "bCapturePlotSetter", false };
-	// Census: print each shown mission's KWDA keywords, resolved to editor ids. The
-	// read that decides whether faction icons are possible - see the log site.
-	REX::TIniSetting<bool> bCensusQuestKeywords{ "Recon", "bCensusQuestKeywords", true };
-	// ⚠ MOVES THE SHIP. Routes the panel's jump through that same handler instead of
-	// setting the actor value, which is the whole point: it is the hold-X path, so it
-	// carries hold-X's destination. See the header above TriggerGravJumpViaHandler.
-	REX::TIniSetting<bool> bMissionJumpViaHandler{ "Panel", "bMissionJumpViaHandler", true };
-	// ⭐ The "X Mission" action, by the engine's own name for it. Tried first; the
-	// handler route above is the fallback. See the header inside RunMissionJump.
+	// The missions tab's travel action. Same-system rows request a course; remote
+	// rows use the verified, guarded route substitution below.
+	REX::TIniSetting<bool>        bMissionJump{ "Panel", "bMissionJump", true };
+	// The engine's own "X Mission" action. This is retained as a safe fallback if
+	// the direct, destination-bearing route cannot be armed.
 	REX::TIniSetting<bool> bMissionJumpQuestMarker{ "Panel", "bMissionJumpQuestMarker", true };
 	// PHASE 9 §3o. Hands the engine a {star, body} route directly instead of trying to
 	// make it SELECT the target. The only route that can work when the destination is
 	// nowhere near the reticle. Tried first; falls through to the old routes if the
 	// star or body id is missing.
 	REX::TIniSetting<bool> bMissionJumpSpoof{ "Panel", "bMissionJumpSpoof", true };
-	// ⚠ OFF, and it does not work - kept only so the attempt is not repeated.
-	//
-	// The idea was sound: the travel animation belongs to `ShipHud_JumpToQuestMarker`,
-	// our route substitution lives inside slot 1, and the HUD action was assumed to
-	// reach slot 1 - so the event should have carried the animation AND our
-	// destination. Measured 2026-08-14: the event dispatches, and the lookup hook
-	// NEVER FIRES. The action is gated before slot 1 - with no real selection it does
-	// nothing at all, so there is nothing for the route to attach to. Zero jumps.
-	// Arming earlier or longer cannot help; slot 1 is never reached.
-	REX::TIniSetting<bool> bMissionJumpAnimated{ "Panel", "bMissionJumpAnimated", false };
 	// Override for the ship's grav jump limit, in parsecs. ⭐ 0 = ASK THE ENGINE,
 	// which is what you want: PHASE 9 §3t found the real range function (id 119854,
 	// the one Papyrus's GetGravJumpRange wraps) and it returns parsecs directly -
 	// the same unit as the star positions. Set a number here only to test a limit
 	// the ship does not actually have.
 	REX::TIniSetting<float> fMaxJumpParsecs{ "Panel", "fMaxJumpParsecs", 0.0f };
-	// Send ShipHud_Target (the A-press) before the jump event. See the header inside
-	// RunMissionJump: the jump event is the right verb with nothing selected.
+	// Send ShipHud_Target (the A-press) before the fallback quest-marker event.
 	REX::TIniSetting<bool> bMissionJumpTargetFirst{ "Panel", "bMissionJumpTargetFirst", true };
-	// How long to wait between confirming a row (which tracks the quest) and firing
-	// the jump (whose destination appears to come from that tracking). Not a fudge
-	// factor - see the header above RunMissionJump for the measurement behind it.
-	// ⚠ 0 since 2026-08-13, and it should stay 0. This existed for the theory that the
-	// destination came from quest tracking and needed time to propagate - a theory the
-	// 4 s wait itself disproved, since it changed nothing. The real answer was
-	// ShipHud_Target + ShipHud_JumpToQuestMarker, and tracking already happened on the
-	// CONFIRM press, which is a separate keypress well before this one. Kept as a
-	// setting only in case a race ever shows up on a slower machine.
-	REX::TIniSetting<std::uint32_t> uMissionJumpDelayMs{ "Panel", "uMissionJumpDelayMs", 0 };
-	// ⭐ Cycle vanilla's target onto the mission's destination before jumping, instead
-	// of relying on where the ship happens to be pointed. See the header in
-	// RunMissionJump; the loop itself is PHASE 8's RequestAcquire.
-	REX::TIniSetting<bool>          bMissionJumpAcquire{ "Panel", "bMissionJumpAcquire", true };
 	// ⭐⭐ SELECT THE MISSION'S TARGET BY ID, using the one by-id verb this layer has.
 	// See the COURSE LOCK header: `Reticle_OnCruiseLockCourse` carries a uBodyID and
 	// reaches the engine with NOTHING selected first. Tried before the A-press and
@@ -643,48 +557,8 @@ namespace
 	// mission. The drift bug came from ids NOT ON THE FEED AT ALL, and that guard
 	// stays.
 	REX::TIniSetting<bool>          bMissionJumpLockAnyFeedID{ "Panel", "bMissionJumpLockAnyFeedID", true };
-	// ⭐ The ANGULAR cone the ship's target-select searches, which is the whole reason
-	// a mission jump needs the destination "close on the reticle". Vanilla default is
-	// 30.0 - read out of Starfield.exe, not guessed, because it is in no ini file.
-	//
-	// 0 means "leave it alone". Any other value is written into the live setting at
-	// startup, so this can be tuned from the mod's own ini instead of the game's - and
-	// so a value that turns out to be bad is one line to undo.
-	REX::TIniSetting<float>         fTargetLockAngleOverride{ "Panel", "fTargetLockAngleOverride", 0.0f };
-	// ⭐⭐ THE BY-ID ROUTE VERBS, found 2026-08-13 by searching the interface archive for
-	// events whose payload carries uBodyID. galaxystarmapmenu.swf has three the ship
-	// HUD does not:
-	//
-	//     StarMapMenu_FocusSystem   (uSystemID / uBodyID / uBodyLocationID)
-	//     StarMapMenu_ExecuteRoute  <- bound to the map's JUMP button
-	//     StarMapMenu_OnClearRoute
-	//
-	// These are the first verbs found that combine "by id" with "go somewhere". Every
-	// other by-id door was a COURSE (autopilot), and every jump door needed a selected
-	// target.
-	//
-	// ⚠ BOTH DEFAULT OFF, deliberately. Two unknowns: whether an event from the SHIP
-	// HUD movie reaches a dispatcher the star map registers (plausible - UI->engine
-	// events are not movie-scoped the way data flushes are, proven earlier this
-	// project - but not measured), and what payload they expect. ExecuteRoute is a
-	// LIVE JUMP verb; sending it with a wrong or absent destination is how the ship
-	// ends up somewhere unintended. Turn on FocusSystem first, read the log, then the
-	// other.
-	REX::TIniSetting<bool>          bMissionJumpFocusSystem{ "Panel", "bMissionJumpFocusSystem", false };
-	REX::TIniSetting<bool>          bMissionJumpExecuteRoute{ "Panel", "bMissionJumpExecuteRoute", false };
-
-	REX::TIniSetting<bool>          bAcquireByCycling{ "Recon", "bAcquireByCycling", false };
-	REX::TIniSetting<std::uint32_t> uAcquireMaxPresses{ "Recon", "uAcquireMaxPresses", 24 };
-	REX::TIniSetting<std::uint32_t> uAcquirePressGapMs{ "Recon", "uAcquirePressGapMs", 120 };
-	REX::TIniSetting<std::string> sTabLeftEvent{ "Panel", "sTabLeftEvent", "Left" };
-	REX::TIniSetting<std::string> sTabRightEvent{ "Panel", "sTabRightEvent", "Right" };
-
-	// PHASE 8. Subscribes the star map's OWN movie to its marker feed and harvests
-	// the markers the game reports as carrying a quest target. Off by default: it
-	// is the first thing this mod has ever installed into a menu that is not the
-	// ship HUD, and the payload's id scheme is not yet known to join against the
-	// panel's PNDT form ids. See the header above MapMarkersHandler.
-	REX::TIniSetting<bool> bProbeMapMarkers{ "Recon", "bProbeMapMarkers", false };
+	REX::TIniSetting<std::string> sTabLeftEvent{ "Panel", "sTabLeftEvent", "Quickkey2,Left" };
+	REX::TIniSetting<std::string> sTabRightEvent{ "Panel", "sTabRightEvent", "Quickkey3,Right" };
 
 	// Phase 6 probe A (PHASE6-SURVEY-STATE.md). One question decides whether the
 	// panel can show a body's fully-surveyed state at all: can this plugin
@@ -704,7 +578,7 @@ namespace
 	// has none. It is the only part of the probe that is not purely read-only -
 	// see the note in DispatchSurveyPercent - so it gets its own switch even
 	// though the whole probe is already opt-in.
-	REX::TIniSetting<bool> bProbeSurveyBind{ "Recon", "bProbeSurveyBind", true };
+	REX::TIniSetting<bool> bProbeSurveyBind{ "Recon", "bProbeSurveyBind", false };
 	REX::TIniSetting<float> fPanelMoonIndent{ "Panel", "fPanelMoonIndent", 16.0f };
 
 	// Hide the mouse wheel - and the confirm key - from the camera while the
@@ -866,8 +740,6 @@ namespace
 	std::atomic<bool>          g_starmapDumpRequested{ false };
 	std::atomic<bool>          g_dumpPlanetsRequested{ false };
 	std::atomic<bool>          g_surveyVmProbeRequested{ false };
-	std::atomic<bool>          g_questProbeRequested{ false };
-	std::atomic<bool>          g_gravJumpProbeRequested{ false };
 	// Last body dossier the info-target feed published, kept so probe A's float
 	// can be checked against the number the vanilla planet card would draw for
 	// the same body. That the two are the same quantity is an inference from a
@@ -1332,6 +1204,9 @@ namespace
 		// their distance live from the feed; a mission row has no bearing, so its
 		// right column is composed once when the row is built.
 		std::string   rightText;
+		// Runtime display name of the objective's target reference. Used to expand
+		// objective text such as <Alias=PrimaryRef>.
+		std::string   aliasTargetText;
 		std::uint32_t systemID{ 0 };
 		// The quest this mission row belongs to. Confirming such a row TRACKS that
 		// quest, which is what puts the marker in the world - the panel's own lock
@@ -2009,6 +1884,13 @@ namespace
 	// quests whose identity is obvious from their editor id (MQ104A is a main
 	// quest, MB_Bounty01Far is a bounty) and calibrated from that, rather than
 	// filtered on before anyone has seen a value.
+	struct QuestAliasRecord
+	{
+		std::uint32_t index{ 0 };
+		std::string   name;
+		bool          location{ false };
+	};
+
 	struct QuestRecord
 	{
 		// ⭐ LOCATION ALIASES THAT NAME A PLANET, as {aliasIndex, name}.
@@ -2023,6 +1905,7 @@ namespace
 		// name that follows whichever came first. Reading only ALST made two aliases
 		// report the same index, which is the tell that the location ones were missed.
 		std::vector<std::pair<std::uint32_t, std::string>> planetAliases;
+		std::vector<QuestAliasRecord> aliases;
 		std::uint32_t pendingAlias{ 0 };
 		bool          pendingAliasIsLocation{ false };
 
@@ -2061,6 +1944,10 @@ namespace
 		// found them in equal numbers - QOBJ=2693, NNAM=2693 - which is what says
 		// they pair one-to-one rather than merely co-occurring.
 		std::unordered_map<std::uint16_t, std::string> objectiveText;
+		// QTGL is the quest's Text Display Globals list. Objective strings refer to
+		// these by editor id (`<Global=SomeName>`); the value itself is runtime state,
+		// so retain the resolved form ids and read TESGlobal only when building rows.
+		std::vector<std::uint32_t> textGlobals;
 		// ⭐ QTYP - the census found it on 544 records, against 551 that carry
 		// objectives. Two independent subrecords agreeing to within seven is not a
 		// coincidence: these are the quests the game categorises, i.e. the ones it
@@ -2071,6 +1958,103 @@ namespace
 		bool          hasType{ false };
 	};
 
+	std::string LowerASCII(std::string_view a_text)
+	{
+		std::string lower{ a_text };
+		std::ranges::transform(lower, lower.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return lower;
+	}
+
+	std::string QuestGlobalValue(const QuestRecord& a_record, std::string_view a_editorID)
+	{
+		const auto wanted = LowerASCII(a_editorID);
+		for (const auto formID : a_record.textGlobals) {
+			const auto* form = RE::TESForm::LookupByID(formID);
+			const auto* global = form ? form->As<RE::TESGlobal>() : nullptr;
+			if (!global || LowerASCII(SafeStr(global->GetFormEditorID())) != wanted)
+				continue;
+
+			const double value = global->GetValue();
+			if (std::abs(value - std::round(value)) < 0.0001)
+				return std::format("{:.0f}", value);
+			return std::format("{:.2f}", value);
+		}
+		return {};
+	}
+
+	std::string ExpandQuestGlobals(std::string a_text, const QuestRecord& a_record)
+	{
+		std::size_t pos = 0;
+		while (pos < a_text.size()) {
+			const auto angle = a_text.find('<', pos);
+			const auto square = a_text.find('[', pos);
+			const auto open = angle == std::string::npos ? square :
+				square == std::string::npos ? angle : std::min(angle, square);
+			if (open == std::string::npos)
+				break;
+
+			const char closeChar = a_text[open] == '<' ? '>' : ']';
+			const auto close = a_text.find(closeChar, open + 1);
+			if (close == std::string::npos)
+				break;
+
+			const std::string_view token{ a_text.data() + open + 1, close - open - 1 };
+			const auto tokenLower = LowerASCII(token);
+			const auto equals = token.find('=');
+			if (!tokenLower.starts_with("global") || equals == std::string_view::npos ||
+				equals + 1 >= token.size()) {
+				pos = close + 1;
+				continue;
+			}
+
+			const auto replacement = QuestGlobalValue(a_record, token.substr(equals + 1));
+			if (replacement.empty()) {
+				pos = close + 1;
+				continue;
+			}
+			a_text.replace(open, close - open + 1, replacement);
+			pos = open + replacement.size();
+		}
+		return a_text;
+	}
+
+	std::string ExpandKnownQuestAliases(std::string a_text,
+		const std::unordered_map<std::string, std::string>& a_aliases)
+	{
+		std::size_t pos = 0;
+		while (pos < a_text.size()) {
+			const auto open = a_text.find('<', pos);
+			if (open == std::string::npos)
+				break;
+			const auto close = a_text.find('>', open + 1);
+			if (close == std::string::npos)
+				break;
+			const std::string_view token{ a_text.data() + open + 1, close - open - 1 };
+			const auto equals = token.find('=');
+			if (!LowerASCII(token).starts_with("alias") || equals == std::string_view::npos ||
+				equals + 1 >= token.size()) {
+				pos = close + 1;
+				continue;
+			}
+			const auto wanted = LowerASCII(token.substr(equals + 1));
+			std::string replacement;
+			for (const auto& [name, value] : a_aliases) {
+				if (LowerASCII(name) == wanted) {
+					replacement = value;
+					break;
+				}
+			}
+			if (replacement.empty()) {
+				pos = close + 1;
+				continue;
+			}
+			a_text.replace(open, close - open + 1, replacement);
+			pos = open + replacement.size();
+		}
+		return a_text;
+	}
+
 	// Per-quest menu state, assembled from the VM's answers. A quest is in the
 	// mission log when it is uncompleted and at least one objective is DISPLAYED -
 	// which is why FFNeonGuardPointer_Z03 never appears despite running and
@@ -2079,6 +2063,8 @@ namespace
 	{
 		bool          completed{ false };
 		bool          answeredCompleted{ false };
+		bool          running{ false };
+		bool          answeredRunning{ false };
 		bool          tracked{ false };
 		std::uint32_t displayed{ 0 };
 		std::uint32_t objectivesAsked{ 0 };
@@ -2094,6 +2080,12 @@ namespace
 		std::string   where;
 		std::uint16_t objective{ 0 };
 		bool          haveObjective{ false };
+		// Every objective the VM says is displayed. Keeping only the highest index
+		// collapsed multi-objective quests into one caption.
+		std::vector<std::uint16_t> displayedObjectives;
+		// Displayed does not mean live: Starfield can retain a completed objective
+		// in the displayed set. These are removed before rows are paired.
+		std::vector<std::uint16_t> completedObjectives;
 		// ⭐ HOW MANY TARGETS THE QUEST ACTUALLY HAS, which is NOT the same as whether
 		// one could be placed. A quest with no targets at all (Mantis, the Activities)
 		// has nothing to show and is dropped; a quest with targets we could not place
@@ -2104,6 +2096,12 @@ namespace
 		// Every target that DID place. "Into the Unknown" gets two - Vladimir names two
 		// locations - and both are worth listing, the extras nested under the first.
 		std::vector<std::uint32_t> allBodies;
+		// Body per GetCurrentStageTargets array slot. Unlike allBodies this retains
+		// order and zero placeholders, allowing displayed objectives to stay paired
+		// with their own targets after duplicate bodies are folded.
+		std::vector<std::uint32_t> orderedBodies;
+		std::vector<std::string>   orderedTargetNames;
+		std::unordered_map<std::string, std::string> aliasText;
 	};
 
 	// ⭐ THE MENU'S OWN CATEGORIES, resolved from QTYP in game rather than guessed:
@@ -2227,6 +2225,14 @@ namespace
 							if (kw != 0)
 								slot.keywords.push_back(kw);
 						}
+					} else if (a_sig == "QTGL" && a_length >= 4) {
+						for (std::size_t k = 0; k + 4 <= a_length; k += 4) {
+							std::uint32_t global = 0;
+							std::memcpy(&global, a_payload + k, 4);
+							global = ResolveFormID(global, a_masterIndices, a_selfIndex);
+							if (global != 0)
+								slot.textGlobals.push_back(global);
+						}
 					} else if (a_sig == "ALST" && a_length >= 4) {
 						std::memcpy(&slot.pendingAlias, a_payload, 4);
 						slot.pendingAliasIsLocation = false;
@@ -2236,6 +2242,9 @@ namespace
 					} else if (a_sig == "ALID" && a_length > 1) {
 						const auto* chars = reinterpret_cast<const char*>(a_payload);
 						const std::string aliasName(chars, strnlen(chars, a_length));
+						if (!aliasName.empty())
+							slot.aliases.push_back(QuestAliasRecord{
+								slot.pendingAlias, aliasName, slot.pendingAliasIsLocation });
 						// Only LOCATION aliases, and only ones whose name says planet.
 						// A quest has dozens of aliases; these are the two or three
 						// worth asking the VM about.
@@ -2953,10 +2962,9 @@ namespace
 				}
 			}
 
-			// PHASE 8. Header-only, so it costs a seek per record and nothing else.
-			// Gated on the probe: a player not chasing mission markers should not
-			// pay even this much on every launch.
-			if (bProbeQuestTargets.GetValue()) {
+			// Header-only, so it costs a seek per record and nothing else. The mission
+			// tab is the feature gate; no diagnostic switch controls shipping data.
+			if (bMissionTab.GetValue()) {
 				std::vector<std::uint32_t>                     quests;
 				std::unordered_map<std::uint32_t, QuestRecord> records;
 				ParsePluginQuests(path, masterIndices, plugin.index, strings, quests, records);
@@ -2972,6 +2980,8 @@ namespace
 						// 24040 of them) while every quest still reported aliases=0.
 						if (!record.planetAliases.empty())
 							slot.planetAliases = std::move(record.planetAliases);
+						if (!record.aliases.empty())
+							slot.aliases = std::move(record.aliases);
 						if (!record.editorID.empty())
 							slot.editorID = std::move(record.editorID);
 						if (record.hasFull) {
@@ -2989,6 +2999,8 @@ namespace
 							slot.objectives = std::move(record.objectives);
 						for (auto& [index, text] : record.objectiveText)
 							slot.objectiveText[index] = std::move(text);
+						if (!record.textGlobals.empty())
+							slot.textGlobals = std::move(record.textGlobals);
 						if (record.hasType) {
 							slot.hasType = true;
 							slot.questType = record.questType;
@@ -2999,7 +3011,7 @@ namespace
 			}
 		}
 
-		if (bProbeQuestTargets.GetValue()) {
+		if (bMissionTab.GetValue()) {
 			std::lock_guard lock{ g_questFormMutex };
 			std::size_t withObjectives = 0;
 			for (const auto& [id, record] : g_questRecords) {
@@ -3031,7 +3043,7 @@ namespace
 		// PHASE 8. Same input, same climb, kept per location - and for the same
 		// reason it is done here: a quest target's location can climb through a
 		// chain any plugin in the order contributed.
-		if (bProbeQuestTargets.GetValue())
+		if (bMissionTab.GetValue())
 			BuildLocationBodyMap(locations, a_out);
 
 		return !a_out.empty();
@@ -3133,6 +3145,10 @@ namespace
 	// where it is used.
 	std::atomic<std::size_t>   g_missionScrollFirst{ 0 };
 	std::atomic<bool>          g_missionRefreshRequested{ false };
+	// Set by late dynamic-planet callbacks. The per-frame task consumes it and
+	// rebuilds rows from the already-complete quest sweep without dispatching the
+	// entire sweep again.
+	std::atomic<bool>          g_missionReassembleRequested{ false };
 	// A quest to track, by form id; 0 means none. Written by the input thread,
 	// consumed by the per-frame task - the same shape as g_pendingCourseID, and for
 	// the same reason.
@@ -3210,6 +3226,64 @@ namespace
 	// ordinary path and no new mechanism is needed. This makes that reachable.
 	std::mutex                        g_missionBodyMutex;
 	std::unordered_set<std::uint32_t> g_missionBodies;
+	std::atomic<std::uint32_t>        g_missionRuntimeEpoch{ UINT32_MAX };
+	// Every mission sweep owns one generation. Papyrus replies are asynchronous,
+	// so a reply from a timed-out sweep (or the save before a load) must not be
+	// allowed to write into the state map belonging to the next sweep.
+	std::atomic<std::uint64_t>        g_questSweepGeneration{ 0 };
+
+	void ResetMissionRuntimeStateForCurrentWorld()
+	{
+		const auto epoch = g_unsettledEpoch.load(std::memory_order_acquire);
+		if (g_missionRuntimeEpoch.exchange(epoch, std::memory_order_acq_rel) == epoch)
+			return;
+
+		// Invalidate callbacks before clearing their destinations. Otherwise a VM
+		// answer already in flight can repopulate the freshly-cleared maps.
+		g_questSweepGeneration.fetch_add(1, std::memory_order_acq_rel);
+
+		std::size_t cached = 0;
+		{
+			std::lock_guard lock{ g_questPlanetMutex };
+			cached += g_questPlanetFromVM.size() + g_questAliasBodies.size();
+			g_questPlanetFromVM.clear();
+			g_questPlanetAttempts.clear();
+			g_questAliasBodies.clear();
+			g_questAliasAttempts.clear();
+		}
+		{
+			std::lock_guard lock{ g_questSystemMutex };
+			cached += g_questSystemFromTracking.size();
+			g_questSystemFromTracking.clear();
+		}
+		{
+			std::lock_guard lock{ g_trackSeenMutex };
+			g_trackSeenBefore.clear();
+		}
+		{
+			std::lock_guard lock{ g_missionRowMutex };
+			g_missionRows.clear();
+		}
+		{
+			std::lock_guard lock{ g_missionBodyMutex };
+			g_missionBodies.clear();
+		}
+		{
+			std::lock_guard lock{ g_menuStateMutex };
+			g_menuState.clear();
+		}
+		g_questExpected.store(0, std::memory_order_release);
+		g_questReplies.store(0, std::memory_order_release);
+		g_missionAssembleAt.store(0, std::memory_order_release);
+		g_pendingTrackQuest.store(0, std::memory_order_release);
+		g_trackWatchUntil.store(0, std::memory_order_release);
+		g_trackWatchBody.store(0, std::memory_order_release);
+		g_trackWatchQuest.store(0, std::memory_order_release);
+		g_missionHighlight.store(0, std::memory_order_release);
+		g_missionScrollFirst.store(0, std::memory_order_release);
+		REX::INFO("[mission] load epoch {} - cleared {} per-save dynamic destination cache(s)",
+			epoch, cached);
+	}
 
 	// Two selections, deliberately distinct. `locked` is the committed one: it
 	// is what the arrow points at once the panel is closed, and it only changes
@@ -3331,8 +3405,8 @@ namespace
 	// re-sending the same id, so 0 is never a value this needs to carry.
 	std::atomic<std::uint32_t> g_pendingCourseID{ 0 };
 
-	// A far travel waiting to be dispatched, by row id; 0 means none. Same shape and
-	// same threading rule as the course above - see the header over RunMissionJump.
+	// A mission travel request waiting to be dispatched, by row id; 0 means none.
+	// Same shape and threading rule as the course above.
 	std::atomic<std::uint32_t> g_pendingMissionJump{ 0 };
 	// The jump is deliberately NOT fired on the keypress. See the header above
 	// RunMissionJump: confirming a row tracks the quest, and tracking is what the
@@ -3341,42 +3415,14 @@ namespace
 	// The quest behind the requested jump - the one the bar is on, which is what the
 	// jump tracks so it cannot fly to some other, already-tracked mission.
 	std::atomic<std::uint32_t> g_missionJumpQuest{ 0 };
-	// Which id the jump has already asked the cycler for, so one request is not made
-	// every time the deferred jump comes back around.
-	std::atomic<std::uint32_t> g_missionJumpAcquireFor{ 0 };
-	// The star map's system id for the requested jump, captured at press time from the
-	// highlighted row. The by-id route verbs want a SYSTEM, and every id the panel had
-	// before this was a body - which is why the first FocusSystem test sent the
-	// objective body's id as uSystemID and proved nothing.
+	// The destination system for the requested jump, captured from the highlighted row.
 	std::atomic<std::uint32_t> g_missionJumpSystem{ 0 };
 	// ⭐ Selection and the jump are TWO TICKS, not one. See the header in RunMissionJump.
 	std::atomic<bool>          g_missionJumpSelected{ false };
 
-	// PHASE 9: sets the ship's own grav-jump command flag. Defined further down,
-	// beside the measurement that identified it.
-	void TriggerGravJump();
-
-	// PHASE 8, acquire-by-cycling. Declared here because the input path, the
-	// confirm and the feed readback all touch them; the mechanism and its safety
-	// argument are in the header above MaybeCaptureAcquireTemplate.
-	constexpr const char* kAcquireEvent = "SelectTarget";
-
-	alignas(16) std::byte      g_acquireTemplate[sizeof(RE::ButtonEvent)]{};
-	std::atomic<bool>          g_acquireTemplateReady{ false };
-	std::atomic<std::uint32_t> g_acquireWantID{ 0 };
-	// ⭐ The other way to say what we are looking for. Asking for a specific ID was
-	// wrong for missions: the id the panel knows is the OBJECTIVE's body (Triton, say),
-	// which for anything out of system is never on the feed at all - so the cycle
-	// could not offer it and burned all 18 presses looking. What the jump actually
-	// needs is "a target the HUD says carries a quest marker", whatever its id.
-	std::atomic<bool>          g_acquireWantQuestMarker{ false };
-	// Last id the engine reported as the info target, so the trace prints on change.
+	// Last ids the engine reported, so the trace prints on change.
 	std::atomic<std::uint32_t> g_lastInfoTargetSeen{ 0 };
 	std::atomic<std::uint32_t> g_lastCourseSeen{ 0 };
-	std::atomic<std::uint32_t> g_acquirePressesLeft{ 0 };
-	std::atomic<std::int64_t>  g_acquireNextPressMs{ 0 };
-
-	void MaybeCaptureAcquireTemplate(const RE::ButtonEvent* a_button, const char* a_userEvent);
 
 	// The locked body's feed presence, CONFIRMED since the last movie
 	// teardown - the id of the lock that has actually been seen in a live
@@ -4180,22 +4226,6 @@ namespace
 		return false;
 	}
 
-	// ⚠ `bHasQuestTarget` IS NOT ON THIS FEED. A whole session produced zero
-	// quest=YES: the flag lives on STAR MAP markers, not on the ship HUD's target
-	// data, so keying off it meant the cycler could never succeed and always burned
-	// its full budget before giving up.
-	//
-	// What can be asked honestly is whether anything is selected at all. That is the
-	// precondition the jump actually failed on - it was firing with nothing selected.
-	bool EngineHasAnyInfoTarget()
-	{
-		std::lock_guard lock{ g_candidateMutex };
-		for (const auto& row : g_candidates)
-			if (row.fromFeed && row.isInfoTarget)
-				return true;
-		return false;
-	}
-
 	std::uint32_t HighlightedMissionQuest()
 	{
 		std::vector<Candidate> rows;
@@ -4318,66 +4348,6 @@ namespace
 		// can ask "can the mod course this row" without touching the mutex.
 		g_highlightCourseable.store(IsCourseableType(g_candidates[local[pos]].type),
 			std::memory_order_release);
-	}
-
-	// Ask vanilla to acquire a body for real, by replaying its own target key until
-	// the engine reports that body. Split out because THREE places want it and the
-	// first cut only had one: the bodies tab's confirm, the missions tab's confirm
-	// (which returns early after tracking, so it never reached the code below), and
-	// the feed watch that locks a destination the moment tracking publishes it.
-	// The replay machinery has two customers now - the bodies tab's own recon switch
-	// and the missions tab's jump - and BOTH need the captured template, so the
-	// capture cannot be gated on just one of them.
-	bool AcquireEnabled()
-	{
-		return bAcquireByCycling.GetValue() || bMissionJumpAcquire.GetValue();
-	}
-
-	// Returns whether the cycler is now armed. The caller needs to know, because the
-	// fallback - a blind A-press - actively selects the WRONG thing when it cannot be
-	// aimed, and that is worse than doing nothing.
-	bool RequestAcquireQuestMarker(const char* a_why)
-	{
-		if (!AcquireEnabled())
-			return false;
-		if (!g_acquireTemplateReady.load(std::memory_order_acquire)) {
-			// Once per session, not once per press: this fired five times in one
-			// flight and the repetition taught nothing.
-			static std::atomic<bool> s_told{ false };
-			if (!s_told.exchange(true, std::memory_order_acq_rel))
-				REX::WARN("[acquire] cannot cycle yet - press your own target key ('{}') ONCE and "
-						  "the panel captures it as a replay template. Until then a mission jump "
-						  "can only use whatever the reticle is already pointed at.",
-					kAcquireEvent);
-			return false;
-		}
-		g_acquireWantID.store(0, std::memory_order_release);
-		g_acquireWantQuestMarker.store(true, std::memory_order_release);
-		g_acquirePressesLeft.store(uAcquireMaxPresses.GetValue(), std::memory_order_release);
-		g_acquireNextPressMs.store(0, std::memory_order_release);
-		REX::INFO("[acquire] cycling for ANY quest-marker target ({}), up to {} press(es)", a_why,
-			uAcquireMaxPresses.GetValue());
-		return true;
-	}
-
-	void RequestAcquire(std::uint32_t a_id, const char* a_why)
-	{
-		if (!AcquireEnabled() || a_id == 0)
-			return;
-		g_acquireWantQuestMarker.store(false, std::memory_order_release);
-
-		if (!g_acquireTemplateReady.load(std::memory_order_acquire)) {
-			REX::INFO("[acquire] no template yet - press your own target key ('{}') once and the "
-					  "panel can replay it from then on",
-				kAcquireEvent);
-			return;
-		}
-
-		g_acquireWantID.store(a_id, std::memory_order_release);
-		g_acquirePressesLeft.store(uAcquireMaxPresses.GetValue(), std::memory_order_release);
-		g_acquireNextPressMs.store(0, std::memory_order_release);
-		REX::INFO("[acquire] cycling the target onto {:08X} ({}), up to {} press(es)", a_id, a_why,
-			uAcquireMaxPresses.GetValue());
 	}
 
 	// Two tabs, so left and right both mean "the other one". Kept as a toggle
@@ -4514,15 +4484,12 @@ namespace
 			g_pendingMissionJump.store(a_id, std::memory_order_release);
 			g_missionJumpQuest.store(HighlightedMissionQuest(), std::memory_order_release);
 			g_missionJumpSystem.store(HighlightedMissionSystem(), std::memory_order_release);
-			const auto delay = static_cast<std::int64_t>(uMissionJumpDelayMs.GetValue());
 			g_missionJumpDueMs.store(
 				std::chrono::duration_cast<std::chrono::milliseconds>(
 					std::chrono::steady_clock::now().time_since_epoch())
-						.count() +
-					delay,
+						.count(),
 				std::memory_order_release);
-			REX::INFO("[missionjump] requested for the system {:08X}{}", a_id,
-				delay > 0 ? std::format(" - firing in {} ms", delay) : std::string{});
+			REX::INFO("[missionjump] requested for the system {:08X}", a_id);
 			return;
 		}
 
@@ -4594,10 +4561,6 @@ namespace
 				REX::INFO("[mission] locked {:08X} - it will guide once tracking publishes it to "
 						  "the feed",
 					bodyID);
-				// If the feed already carries it - the in-system case - vanilla can
-				// be made to acquire it right now. If it does not, the watch below
-				// asks again the moment tracking publishes the destination.
-				RequestAcquire(bodyID, "mission confirm");
 			}
 
 			if (questID == 0) {
@@ -4626,18 +4589,10 @@ namespace
 
 		if (g_lockedID.load(std::memory_order_acquire) == highlight) {
 			g_lockedID.store(0, std::memory_order_release);
-			g_acquireWantID.store(0, std::memory_order_release);
-			g_acquirePressesLeft.store(0, std::memory_order_release);
 			REX::INFO("[panel] cleared {:08X} - no target on the HUD", highlight);
 		} else {
 			g_lockedID.store(highlight, std::memory_order_release);
 			REX::INFO("[panel] locked {:08X}", highlight);
-
-			// ⭐ And ask vanilla to acquire it for real. The mod's lock only points
-			// the marker; the HARD lock - the one that yields the game's own
-			// prompts - is `SelectTarget`, and the only way to aim a parameterless
-			// cycle is to keep pressing until the engine reports the right body.
-			RequestAcquire(highlight, "bodies tab confirm");
 		}
 	}
 
@@ -4680,10 +4635,6 @@ namespace
 			g_dumpPlanetsRequested.store(true, std::memory_order_release);
 		if (bProbeSurveyVM.GetValue())
 			g_surveyVmProbeRequested.store(true, std::memory_order_release);
-		if (bProbeQuestTargets.GetValue())
-			g_questProbeRequested.store(true, std::memory_order_release);
-		if (bProbeGravJumpObjects.GetValue())
-			g_gravJumpProbeRequested.store(true, std::memory_order_release);
 
 		// Only hijack the scanner key while cruising; outside cruise it still
 		// opens the vanilla ship scanner.
@@ -4729,11 +4680,6 @@ namespace
 			if (down && firstFrame && bSurveyCruiseKeys.GetValue() &&
 				g_inCruise.load(std::memory_order_acquire))
 				SurveyRecord(userEvent, button->idCode, button->disabled);
-
-			// The replay template, taken from the player's own press. Captured
-			// before anything can mutate the event.
-			if (down && firstFrame)
-				MaybeCaptureAcquireTemplate(button, userEvent);
 
 			// Suppression has to see HELD frames. Throttle is a key held down,
 			// so disabling only its first frame would still let the ship
@@ -4876,36 +4822,6 @@ namespace
 	// Phase 0/3.
 	//
 	// So instead: the tap already SEES a genuine `SelectTarget` press whenever the
-	// player makes one. The first is copied byte-for-byte into a buffer the mod
-	// owns, and replayed later by splicing it in front of the queue. Every vtable,
-	// every pointer and the string are the engine's own, built by the engine.
-	//
-	// ⚠ It therefore CANNOT RUN UNTIL THE PLAYER HAS PRESSED THE KEY ONCE this
-	// session. That is a real limitation and it is deliberate - a template that has
-	// to be earned is a template that cannot be wrong.
-	//
-	// ⚠ Still experimental: a replayed event carries a stale `heldDownSecs` and a
-	// `debounceManager` pointer captured at some earlier moment. Default OFF.
-	// ---------------------------------------------------------------------------
-	// Capture the template from a real press, once per session.
-	void MaybeCaptureAcquireTemplate(const RE::ButtonEvent* a_button, const char* a_userEvent)
-	{
-		if (!AcquireEnabled() || g_acquireTemplateReady.load(std::memory_order_acquire))
-			return;
-		if (!a_userEvent || std::strcmp(a_userEvent, kAcquireEvent) != 0)
-			return;
-
-		std::memcpy(g_acquireTemplate, a_button, sizeof(RE::ButtonEvent));
-		// `next` must never be replayed as captured - it points into a queue that is
-		// long gone. It is overwritten at splice time, but zero it now so a bug
-		// there faults on null rather than wandering into freed memory.
-		reinterpret_cast<RE::ButtonEvent*>(g_acquireTemplate)->next = nullptr;
-		g_acquireTemplateReady.store(true, std::memory_order_release);
-		REX::INFO("[acquire] captured a real '{}' press as the replay template - the panel can "
-				  "now cycle the target for you",
-			kAcquireEvent);
-	}
-
 	void PerformInputProcessingHook(RE::BSInputEventReceiver* a_this, const RE::InputEvent* a_queueHead)
 	{
 		ProcessInputQueue(a_queueHead);
@@ -4913,35 +4829,6 @@ namespace
 		const auto original = g_origPerformInputProcessing.load(std::memory_order_acquire);
 		if (!original)
 			return;
-
-		// PHASE 8: replay a captured SelectTarget press, at most one per gap, in
-		// front of the real queue. Done here rather than anywhere else because this
-		// is the one place the mod is already inside the engine's own input call -
-		// the event is seen by every receiver exactly as a real press would be, and
-		// the chain is restored before this function returns.
-		if (g_acquirePressesLeft.load(std::memory_order_acquire) != 0 &&
-			g_acquireTemplateReady.load(std::memory_order_acquire)) {
-			using clock = std::chrono::steady_clock;
-			const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-				clock::now().time_since_epoch())
-			                       .count();
-			if (nowMs >= g_acquireNextPressMs.load(std::memory_order_acquire)) {
-				g_acquireNextPressMs.store(
-					nowMs + static_cast<std::int64_t>(uAcquirePressGapMs.GetValue()),
-					std::memory_order_release);
-				const auto left = g_acquirePressesLeft.fetch_sub(1, std::memory_order_acq_rel) - 1;
-
-				auto* replay = reinterpret_cast<RE::ButtonEvent*>(g_acquireTemplate);
-				replay->next = const_cast<RE::InputEvent*>(a_queueHead);
-				if (bVerboseLog.GetValue())
-					REX::INFO("[acquire] replaying '{}' ({} press(es) left, want {:08X})",
-						kAcquireEvent, left, g_acquireWantID.load(std::memory_order_acquire));
-
-				original(a_this, replay);
-				replay->next = nullptr;  // never leave a stale link on the template
-				return;
-			}
-		}
 
 		// ⚠ The press is taken ONLY for a row the mod can actually course. On any
 		// other row it is left in the queue on purpose: vanilla's route goes
@@ -5172,32 +5059,7 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
-	// PHASE 9: watch the star map confirm a grav jump, and write down what it sends.
-	//
-	// WHY THIS EXISTS. Setting `SpaceshipGravJumpInitiated` makes the ship jump, but
-	// it jumps to whatever destination is already plotted - which is why the first
-	// working build sent the player back where they came from. The plotting half is
-	// `StarMap::Util::ConfirmGravJumpPlotCallback`: the star map builds one of these,
-	// hands it to a "$TRAVEL" confirmation box, and calls it when the player answers.
-	// Reading the binary showed the object is 0x18 bytes carrying two dwords at +0x10
-	// and +0x14, and that the call passes them onward - so those two numbers ARE the
-	// destination.
-	//
-	// What the binary does NOT say is which is which. Guessing means a jump to
-	// somewhere unintended with no record of why, and this project has paid for that
-	// kind of guess before. So: hook the call, let the player confirm ONE ordinary
-	// star map jump to a system they can name, and read the answer off the log.
-	//
-	// ⚠ WHY THIS IS SAFE TO SHIP IN A DIAGNOSTIC BUILD. It logs and then calls the
-	// original, so the jump behaves exactly as it would with the mod absent. It
-	// builds nothing, allocates nothing and writes no engine memory. The only address
-	// it names is an Address Library vtable id, so it does not go stale on a patch.
-	//
-	// ⚠ It patches the CLASS vtable, so every instance is caught, not just one. That
-	// is deliberate - there is no instance to hold on to until the star map makes one.
-	// ---------------------------------------------------------------------------
-	// ---------------------------------------------------------------------------
-	// ⚠ DO NOT USE `RE::VTABLE::...` FOR THE GRAV JUMP CLASSES. (2026-08-14)
+	// The working mission-jump route uses RTTI-verified Address Library vtables.
 	//
 	// CommonLibSF's IDs_VTABLE.h is generated against a DIFFERENT game build than the
 	// versionlib-1-16-244 bin this plugin loads at runtime. Its ids resolve to
@@ -5208,11 +5070,6 @@ namespace
 	//   StarMap::Util::ConfirmGravJumpPlot..   417674 -> no locator   446165 -> ok
 	//   GravJumpInitiateCompleteHandler        424879 -> no locator   453901 -> ok
 	//   PlayerControls::GravJumpHandler        407270 -> no locator   433573 -> ok
-	//
-	// This is not academic: the plot-confirm capture below "never fired across two
-	// real map jumps", and PHASE 9 §3c/§3d wrote that route off because of it. That
-	// measurement was of THIS BUG, not of the engine - the hook was never on the
-	// function. Any conclusion drawn from a hook that did not fire is void.
 	//
 	// `ResolveVerifiedVTable` refuses to hand back an address whose RTTI name does not
 	// match, so a stale id fails loudly at install instead of silently writing into
@@ -5251,228 +5108,10 @@ namespace
 		return addr;
 	}
 
-	using ConfirmPlotCall_t = void(*)(void*, bool);
-
-	std::atomic<ConfirmPlotCall_t> g_origConfirmPlot{ nullptr };
-	std::atomic<bool>              g_confirmPlotClaimed{ false };
-
-	// Names an id if the game knows it, so the log reads "0001A53F PNDT Jemison"
-	// rather than a bare number. Both dwords get this treatment: whichever one comes
-	// back as a star system and whichever as a body is the whole answer.
-	void LogPlotWord(const char* a_label, std::uint32_t a_value)
-	{
-		if (a_value == 0) {
-			REX::INFO("[plotcap]   {} = 00000000 (zero)", a_label);
-			return;
-		}
-		const auto form = RE::TESForm::LookupByID(a_value);
-		if (!form) {
-			REX::INFO("[plotcap]   {} = {:08X} (not a form id - an index or handle)", a_label, a_value);
-			return;
-		}
-		REX::INFO("[plotcap]   {} = {:08X} formType {:02X} '{}'", a_label, a_value,
-			std::to_underlying(form->GetFormType()), SafeStr(form->GetFormEditorID()));
-	}
-
-	void ConfirmGravJumpPlotHook(void* a_this, bool a_cancelled)
-	{
-		if (a_this) {
-			// Layout straight off the construction site: vtable at +0x00, a dword at
-			// +0x08, then the pair at +0x10 and +0x14, total 0x18. +0x0C is printed
-			// too because nothing was seen writing it - if it is always garbage that
-			// confirms the object is only three fields wide.
-			const auto* words = reinterpret_cast<const std::uint32_t*>(a_this);
-			REX::INFO("[plotcap] ==== grav jump plot confirmed ==== cancelled={}", a_cancelled ? 1 : 0);
-			LogPlotWord("+0x08", words[2]);
-			LogPlotWord("+0x0C", words[3]);
-			LogPlotWord("+0x10", words[4]);
-			LogPlotWord("+0x14", words[5]);
-			REX::INFO("[plotcap] ==== the pair at +0x10/+0x14 is the destination ====");
-		}
-
-		// Then let the game do what it was going to do. Loaded before the log above
-		// would matter, but published after the vtable write in the installer, so a
-		// call that lands in the gap still reaches the engine.
-		if (const auto original = g_origConfirmPlot.load(std::memory_order_acquire))
-			original(a_this, a_cancelled);
-	}
-
-	void TryInstallPlotCapture()
-	{
-		if (!bCapturePlotConfirm.GetValue() || g_confirmPlotClaimed.load(std::memory_order_acquire))
-			return;
-
-		bool claimed = false;
-		if (!g_confirmPlotClaimed.compare_exchange_strong(claimed, true, std::memory_order_acq_rel))
-			return;
-
-		// The vtable lives in .rdata and exists from module load, so unlike the taps
-		// above this needs no singleton to be alive first.
-		const auto vtableAddr = ResolveVerifiedVTable(446165,
-			".?AVConfirmGravJumpPlotCallback@Util@StarMap@@", "plotcap");
-		if (!vtableAddr)
-			return;
-
-		// Slot 0 is the destructor, slot 1 is the call. The class has no others - the
-		// third qword already lands in unrelated .rdata.
-		constexpr std::size_t kCall = 1;
-
-		const auto slot = vtableAddr + sizeof(void*) * kCall;
-		const auto original = *reinterpret_cast<std::uintptr_t*>(slot);
-		g_origConfirmPlot.store(reinterpret_cast<ConfirmPlotCall_t>(original), std::memory_order_release);
-
-		REL::Relocation<std::uintptr_t> vtable{ vtableAddr };
-		vtable.write_vfunc(kCall, &ConfirmGravJumpPlotHook);
-
-		REX::INFO("[plotcap] watching ConfirmGravJumpPlotCallback (vtable {:016X}, original {:016X}) "
-				  "- open the star map, pick a system and confirm the jump",
-			vtableAddr, original);
-	}
-
-	// ---------------------------------------------------------------------------
-	// PHASE 9: `GravJumpInitiateCompleteHandler` - the hold-X path itself.
-	//
-	// The star map's confirm callback (above) plots a jump the way the MAP does it.
-	// That is not the verb being emulated. What hold-X-to-mission runs is this:
-	// `PlayerControls::GravJumpHandler` starts a hold (mapped in PHASE9 §2, and ruled
-	// out as the trigger - it only pushes a prompt), and when the hold COMPLETES the
-	// engine looks this handler up by name in a factory and calls it with an Actor.
-	//
-	// Its vtable is Address Library id 453901, and it is shaped exactly as the RTTI
-	// name says - `IHandlerFunctor<Actor, BSFixedString>` implemented three times over,
-	// so the vtable is three 2-entry sub-vtables back to back:
-	//
-	//   [0] dtor  [1] Call   0x141AE89F0   (this, Actor*)   <- the work
-	//   [2] .rdata boundary
-	//   [3] dtor  [4] Call   0x141AE8A90   (this, Actor*)   <- shorter; looks like cancel
-	//   [5] .rdata boundary
-	//   [6] dtor  [7] Call   0x141AE85D0   (this, ?, ?)     <- three args, the named one
-	//
-	// ⭐ AND SLOT 1 NEVER TOUCHES `this`. Read the first instructions: `mov r8, rdx`
-	// then `mov rcx, r8` - rcx, the this pointer, is overwritten before it is ever
-	// dereferenced. Everything it needs comes from the Actor:
-	//
-	//   mov  eax, [rdx+0x37C] / shr eax,4 / test al,1   a flag on the actor; bail if clear
-	//   mov  dl,1 / mov rcx,r8 / call ...               fetch an object from the actor
-	//   mov  ecx, [rax+0x28]                            a dword out of that object
-	//   ...  lea r9,[rsp+0x48]                          passed on BY POINTER
-	//
-	// That matters twice over. It means calling it needs NO constructed object - the
-	// hazard that has been blocking this whole line of work - and it means the
-	// destination is read out of the player's own state rather than handed in, which
-	// is exactly why hold-X goes to the tracked mission without the star map.
-	//
-	// ⚠ It also self-guards: a clear flag or a null object and it returns without
-	// doing anything. That is a much softer failure than most engine calls offer.
-	//
-	// This block does two separate things, on two separate switches:
-	//   - CAPTURE  hooks all three Calls and logs which one hold-X actually runs.
-	//   - TRIGGER  calls slot 1 with the player, which is the emulation itself.
-	// ---------------------------------------------------------------------------
+	// Verified engine types used by the working route-substitution path.
 	using HandlerCallActor_t = bool (*)(void*, RE::Actor*);
-	using HandlerCallWide_t  = bool (*)(void*, void*, void*);
-
-	std::atomic<HandlerCallActor_t> g_origHandlerSlot1{ nullptr };
-	std::atomic<HandlerCallActor_t> g_origHandlerSlot4{ nullptr };
-	std::atomic<HandlerCallWide_t>  g_origHandlerSlot7{ nullptr };
-	std::atomic<bool>               g_handlerCaptureClaimed{ false };
-
-	// ---------------------------------------------------------------------------
-	// THE DESTINATION, one level down.
-	//
-	// Slot 1 does not receive a destination - it fetches one:
-	//
-	//   call 0x142116840(actor, 1)   ->  an object
-	//   mov  ecx, [rax+0x28]         ->  ONE DWORD
-	//   lea  r9,  [rsp+0x48]         ->  handed on by pointer
-	//
-	// And that getter derives its object from `actor->parentCell` - a member the SDK
-	// names, at 0xB0 - by reading `[cell+0x28]`, transforming it, and looking the
-	// result up in a global manager. So the object belongs to the space the player is
-	// currently IN, which is exactly why our jump lands in the current system: nothing
-	// wrote a destination into it, and vanilla writes one before the hold completes.
-	//
-	// So `[obj+0x28]` is the whole ballgame. This dumps it either side of a jump so
-	// the vanilla value and ours can be compared directly rather than guessed at.
-	//
-	// ⚠ Read-only, and it calls the SAME function slot 1 calls one instruction later,
-	// through an Address Library id rather than a literal. The getter appears to
-	// take a reference on what it returns and we do not release it - one object per
-	// jump, on a diagnostic switch, which is a leak worth accepting to stop guessing.
-	// ---------------------------------------------------------------------------
 	using GetJumpDestObject_t = void* (*)(RE::Actor*, bool);
 
-	// ---------------------------------------------------------------------------
-	// PHASE 9 §3l: THE DESTINATION SUBSYSTEM.
-	//
-	// Slot 1 (0x141AE89F0) ends by doing, in order:
-	//     call 0x1423ff640            -> a singleton      (Address Library id 126578)
-	//     mov  rcx,[rax+0x8b0]        -> its jump subsystem
-	//     call 0x14214de90 (rcx, &out, &shipID)           (id 120359)
-	//
-	// No destination is an argument in that chain, and a call with an empty one runs a
-	// FULL ~9.6s calculation cycle and then moves nothing - measured 2026-08-14 against
-	// vanilla's 9.68s. So the destination is state inside the subsystem, and this dumps
-	// it. Point is the DIFF: vanilla hold-X (destination present) vs the panel route
-	// (absent). A field that is populated in one and zero in the other is the target.
-	// ---------------------------------------------------------------------------
-	using GetJumpSingleton_t = void* (*)();
-	// lookup(subsystem, &out, UNUSED, &shipFormID). Pure read: hashes the ship id, finds
-	// the entry in the map at subsystem+0x268 and hands back a refcounted string in
-	// `out`.
-	//
-	// ⚠ FOUR arguments, and the ship id is the FOURTH. Slot 1 loads it with
-	// `lea r9,[rsp+0x48]` and the callee reads it as `mov rbp,r9 / mov eax,[rbp]` -
-	// r9 is arg 4 in the Windows x64 ABI. Declaring this with three parameters puts
-	// the pointer in r8 instead, the callee hashes whatever r9 happened to hold, the
-	// lookup misses and returns null. That is exactly what happened on 2026-08-14:
-	// "NO DESTINATION STRING" logged on a hold-X that jumped perfectly well.
-	// The third argument is spilled to home space and never read - pass nullptr.
-	using JumpDestLookup_t = std::uint64_t (*)(void*, void*, void*, void*);
-
-	constexpr std::size_t kJumpSubsystemOffset = 0x8B0;
-
-	// The out parameter slot 1 uses: two qwords on its stack. [0] is the char data
-	// (block + 0x20), [1] is the block itself, whose refcount sits at block - 0x20.
-	struct JumpDestOut
-	{
-		const char* text{ nullptr };
-		void*       block{ nullptr };
-	};
-
-	// Releases the reference the lookup took, mirroring what slot 1 does on its way
-	// out (`lock xadd [rcx-0x20], 0xfffffffeffffffff`). Without this every diagnostic
-	// call would leak a reference on the engine's string.
-	void ReleaseJumpDestString(JumpDestOut& a_out)
-	{
-		if (!a_out.block)
-			return;
-		auto* counter = reinterpret_cast<volatile std::int64_t*>(
-			static_cast<std::uint8_t*>(a_out.block) - 0x20);
-		_InterlockedExchangeAdd64(counter, static_cast<std::int64_t>(0xFFFFFFFEFFFFFFFFull));
-		a_out = {};
-	}
-
-	// ---------------------------------------------------------------------------
-	// PHASE 9 §3m: THE DESTINATION IS A STRING, AND THIS READS IT.
-	//
-	// Slot 1's real shape, from the disassembly of 0x141AE89F0:
-	//
-	//     mov  ecx,[ship+0x28]          ; the ship's form id
-	//     call 0x1423ff640              ; singleton            (id 126578)
-	//     mov  rcx,[rax+0x8b0]          ; the jump subsystem
-	//     call 0x14214de90              ; lookup -> a STRING   (id 120359)
-	//     mov  rdx,[rsp+0x20]
-	//     test rdx,rdx / je  <skip>     ; NO STRING -> DO NOTHING
-	//     mov  rcx,rbx                  ; the ship object
-	//     call 0x14210ea50              ; jump to it           (id 119843)
-	//
-	// That `je <skip>` is our empty jump: the panel route ran a full calculation and
-	// moved nothing because this lookup returned null. So the whole destination
-	// problem reduces to one string, keyed by ship form id.
-	//
-	// The lookup is a pure read, so this calls it directly rather than hooking it.
-	// ---------------------------------------------------------------------------
 #pragma pack(push, 1)
 	struct JumpRouteEntry
 	{
@@ -5491,522 +5130,10 @@ namespace
 	static_assert(sizeof(JumpRouteEntry) == 8, "the engine's route entry is two dwords");
 	static_assert(sizeof(JumpRouteHeader) == 16, "BSTArray header is size+capacity+pointer");
 
-	// ---------------------------------------------------------------------------
-	// PHASE 9 §3r: WHAT ACTUALLY PLOTS THE ROUTE.
-	//
-	// Range was the wrong guess - Sol -> Volii is the test case and vanilla hold-X
-	// does it. The real difference the captures show is TIMING, not distance:
-	//
-	//   vanilla, at slot 1:  size 2, capacity 4, data in the ENGINE's heap - already
-	//                        populated before the handler ever ran
-	//   panel,   at slot 1:  size 0, capacity 0, data null - we fill it on the spot
-	//
-	// And the route pointer is interior to a larger object (two exe vtables sit in
-	// the 32 bytes ahead of it), so that object almost certainly holds other plotted
-	// state - validity, distance - that writing 16 bytes of header does not touch.
-	// Filling the array is not the same as the route being PLOTTED.
-	//
-	// So stop guessing at what plots it and watch. This polls the same lookup and
-	// logs only on CHANGE, so the log shows exactly which action populates the route:
-	// tracking a mission, aiming at the star, opening the star map, or the hold
-	// itself.
-	// ---------------------------------------------------------------------------
-	void WatchJumpRoute()
-	{
-		if (!bWatchJumpRoute.GetValue())
-			return;
-
-		static std::atomic<std::int64_t> s_nextMs{ 0 };
-		const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now().time_since_epoch())
-							   .count();
-		if (nowMs < s_nextMs.load(std::memory_order_acquire))
-			return;
-		s_nextMs.store(nowMs + 500, std::memory_order_release);
-
-		const auto player = RE::PlayerCharacter::GetSingleton();
-		if (!player)
-			return;
-
-		static const REL::Relocation<GetJumpDestObject_t> s_getShip{ REL::ID(119881) };
-		static const REL::Relocation<GetJumpSingleton_t>  s_getSingleton{ REL::ID(126578) };
-		static const REL::Relocation<JumpDestLookup_t>    s_lookup{ REL::ID(120359) };
-
-		void* ship      = nullptr;
-		void* singleton = nullptr;
-		try {
-			ship      = s_getShip(static_cast<RE::Actor*>(player), true);
-			singleton = s_getSingleton();
-		} catch (...) {
-			return;
-		}
-		if (!ship || !singleton)
-			return;
-
-		const auto subsystem = *reinterpret_cast<void**>(
-			static_cast<std::uint8_t*>(singleton) + kJumpSubsystemOffset);
-		if (!subsystem)
-			return;
-
-		auto shipID = *reinterpret_cast<std::uint32_t*>(static_cast<std::uint8_t*>(ship) + 0x28);
-
-		JumpDestOut out{};
-		try {
-			s_lookup(subsystem, &out, nullptr, &shipID);
-		} catch (...) {
-			return;
-		}
-
-		// Fingerprint the route so only real changes are logged.
-		std::uint64_t stamp = 0;
-		std::uint32_t size  = 0;
-		const auto*   hdr   = reinterpret_cast<const JumpRouteHeader*>(out.text);
-		if (hdr) {
-			size  = hdr->size;
-			stamp = (static_cast<std::uint64_t>(hdr->size) << 32) ^ hdr->capacity;
-			if (hdr->data && hdr->size > 0 && hdr->size <= 8)
-				for (std::uint32_t i = 0; i < hdr->size; ++i)
-					stamp = stamp * 31 + hdr->data[i].starFormID +
-							(static_cast<std::uint64_t>(hdr->data[i].planetFormID) << 16);
-		}
-
-		static std::atomic<std::uint64_t> s_last{ 0xFFFFFFFFFFFFFFFFull };
-		if (s_last.exchange(stamp, std::memory_order_acq_rel) == stamp) {
-			ReleaseJumpDestString(out);
-			return;
-		}
-
-		if (!hdr) {
-			REX::INFO("[route] CHANGED -> no route object at all");
-		} else {
-			REX::INFO("[route] CHANGED -> size {} capacity {} data {:016X}", hdr->size,
-				hdr->capacity, reinterpret_cast<std::uintptr_t>(hdr->data));
-			if (hdr->data && size > 0 && size <= 8) {
-				for (std::uint32_t i = 0; i < size; ++i) {
-					const auto* sf = RE::TESForm::LookupByID(hdr->data[i].starFormID);
-					const auto* bf = RE::TESForm::LookupByID(hdr->data[i].planetFormID);
-					REX::INFO("[route]   [{}] star '{}' body '{}'", i,
-						sf ? SafeStr(sf->GetFormEditorID()) : "?",
-						bf ? SafeStr(bf->GetFormEditorID()) : "?");
-				}
-			}
-		}
-		ReleaseJumpDestString(out);
-	}
-
-	void LogJumpDestinationString(const char* a_when, RE::Actor* a_actor)
-	{
-		if (!bCaptureJumpHandler.GetValue() || !a_actor)
-			return;
-
-		static const REL::Relocation<GetJumpDestObject_t> s_getShip{ REL::ID(119881) };
-		static const REL::Relocation<GetJumpSingleton_t>  s_getSingleton{ REL::ID(126578) };
-		static const REL::Relocation<JumpDestLookup_t>    s_lookup{ REL::ID(120359) };
-
-		void* ship      = nullptr;
-		void* singleton = nullptr;
-		try {
-			ship      = s_getShip(a_actor, true);
-			singleton = s_getSingleton();
-		} catch (...) {
-			REX::WARN("[jumpstr] {}: a getter threw", a_when);
-			return;
-		}
-		if (!ship || !singleton) {
-			REX::INFO("[jumpstr] {}: no {} - cannot look up a destination", a_when,
-				ship ? "singleton" : "ship");
-			return;
-		}
-
-		const auto subsystem = *reinterpret_cast<void**>(
-			static_cast<std::uint8_t*>(singleton) + kJumpSubsystemOffset);
-		if (!subsystem) {
-			REX::INFO("[jumpstr] {}: singleton has no subsystem at +0x8B0", a_when);
-			return;
-		}
-
-		auto shipID = *reinterpret_cast<std::uint32_t*>(static_cast<std::uint8_t*>(ship) + 0x28);
-
-		JumpDestOut out{};
-		try {
-			s_lookup(subsystem, &out, nullptr, &shipID);
-		} catch (...) {
-			REX::WARN("[jumpstr] {}: the lookup threw", a_when);
-			return;
-		}
-
-		if (!out.text) {
-			REX::INFO("[jumpstr] {} ship {:08X} -> NO DESTINATION STRING. Slot 1 takes its "
-					  "'je <skip>' branch here and jumps nowhere.",
-				a_when, shipID);
-			return;
-		}
-
-		// It is NOT a string. The 0x20 header + refcount looked exactly like
-		// BSFixedString, but a hold-X that jumped correctly returned an EMPTY one
-		// (2026-08-14) - so this is a pointer to a STRUCT whose first byte is 0, and
-		// slot 1 hands that pointer straight to the jump call as its second argument.
-		// Dump it rather than guess at it a third time.
-		const auto* bytes = reinterpret_cast<const std::uint8_t*>(out.text);
-		REX::INFO("[jumpstr] {} ship {:08X} -> payload {:016X} (block {:016X})", a_when, shipID,
-			reinterpret_cast<std::uintptr_t>(out.text),
-			reinterpret_cast<std::uintptr_t>(out.block));
-
-		for (std::size_t row = 0; row < 0x40; row += 16) {
-			std::string hex;
-			std::string ascii;
-			for (std::size_t i = 0; i < 16; ++i) {
-				const auto c = bytes[row + i];
-				hex += std::format("{:02X} ", c);
-				ascii += (c >= 32 && c < 127) ? static_cast<char>(c) : '.';
-			}
-			REX::INFO("[jumpstr]   +0x{:02X}: {} |{}|", row, hex, ascii);
-		}
-
-		// It is a BSTArray: {uint32 size, uint32 capacity, T* data}. Measured on a
-		// working hold-X (2026-08-14): size 2, capacity 4. So the destination is a
-		// LIST, and the payload above is only the header - everything that matters is
-		// one indirection away, through the pointer at +0x08.
-		const auto  size     = *reinterpret_cast<const std::uint32_t*>(bytes + 0x00);
-		const auto  capacity = *reinterpret_cast<const std::uint32_t*>(bytes + 0x04);
-		const auto* data     = *reinterpret_cast<const std::uint8_t* const*>(bytes + 0x08);
-
-		if (!data || size == 0 || size > 64 || capacity < size) {
-			REX::INFO("[jumpstr]   header does not read as a BSTArray (size {} cap {} data {}) - "
-					  "not following the pointer",
-				size, capacity, data ? "set" : "null");
-			ReleaseJumpDestString(out);
-			return;
-		}
-
-		// Element stride is unknown, so dump a flat span covering all `size` entries at
-		// the two plausible strides and let the log show which one repeats.
-		const std::size_t span = std::min<std::size_t>(std::size_t{ size } * 16 + 32, 0x80);
-		REX::INFO("[jumpstr]   ARRAY size {} capacity {} data {:016X} - dumping 0x{:X} bytes",
-			size, capacity, reinterpret_cast<std::uintptr_t>(data), span);
-
-		for (std::size_t row = 0; row < span; row += 16) {
-			std::string hex;
-			std::string ascii;
-			for (std::size_t i = 0; i < 16; ++i) {
-				const auto c = data[row + i];
-				hex += std::format("{:02X} ", c);
-				ascii += (c >= 32 && c < 127) ? static_cast<char>(c) : '.';
-			}
-			REX::INFO("[jumpstr]   data +0x{:02X}: {} |{}|", row, hex, ascii);
-		}
-
-		const auto* dwords = reinterpret_cast<const std::uint32_t*>(data);
-		for (std::size_t off = 0; off < span; off += 4) {
-			const auto v = dwords[off / 4];
-			// Form ids below 0x800 are engine junk that LookupByID still answers for,
-			// and they produced two false hits on the header. Skip them.
-			if (v < 0x800)
-				continue;
-			if (const auto form = RE::TESForm::LookupByID(v))
-				REX::INFO("[jumpstr]   data +0x{:02X} = {:08X}  formType {:02X} '{}'  <== A FORM",
-					off, v, std::to_underlying(form->GetFormType()),
-					SafeStr(form->GetFormEditorID()));
-		}
-
-		ReleaseJumpDestString(out);
-	}
-
-	void DumpJumpDestination(const char* a_when, RE::Actor* a_actor)
-	{
-		if (!bCaptureJumpHandler.GetValue() || !a_actor)
-			return;
-
-		// id 119881 == 0x142116840 in 1.16.244, resolved by reverse-lookup against the
-		// same Address Library table the rest of the mod uses.
-		static const REL::Relocation<GetJumpDestObject_t> s_getObject{ REL::ID(119881) };
-
-		void* obj = nullptr;
-		try {
-			obj = s_getObject(a_actor, true);
-		} catch (...) {
-			REX::WARN("[jumpdest] {}: the getter threw", a_when);
-			return;
-		}
-		if (!obj) {
-			REX::INFO("[jumpdest] {}: no object - the cell has no jump state", a_when);
-			return;
-		}
-
-		const auto* words = reinterpret_cast<const std::uint32_t*>(obj);
-		REX::INFO("[jumpdest] {} obj {:016X}", a_when, reinterpret_cast<std::uintptr_t>(obj));
-		// +0x28 is the one slot 1 reads; the neighbours are printed so a value that
-		// moves in step with it is visible too.
-		for (std::size_t off = 0x18; off <= 0x38; off += 4) {
-			const auto v = words[off / 4];
-			const auto form = v ? RE::TESForm::LookupByID(v) : nullptr;
-			if (form)
-				REX::INFO("[jumpdest]   +0x{:02X} = {:08X}  formType {:02X} '{}'{}", off, v,
-					std::to_underlying(form->GetFormType()), SafeStr(form->GetFormEditorID()),
-					off == 0x28 ? "   <== THE ONE SLOT 1 READS" : "");
-			else
-				REX::INFO("[jumpdest]   +0x{:02X} = {:08X}{}", off, v,
-					off == 0x28 ? "   <== THE ONE SLOT 1 READS" : "");
-		}
-	}
-
-	// Slot 1 opens with:  mov eax,[rdx+0x37c] / shr eax,4 / test al,1 / je <do nothing>
-	// If that bit is CLEAR the handler returns 1 and jumps nothing. Without reading it,
-	// "pressed RB and nothing happened" cannot be told apart from "the call was
-	// refused" - so log it, and log it on the vanilla hold-X too, because that gives
-	// the known-good value to compare a panel press against.
-	constexpr std::size_t kJumpGateField = 0x37C;
-
-	bool ReadJumpGateBit(const RE::Actor* a_actor)
-	{
-		const auto raw = *reinterpret_cast<const std::uint32_t*>(
-			reinterpret_cast<const std::uint8_t*>(a_actor) + kJumpGateField);
-		return ((raw >> 4) & 1u) != 0u;
-	}
-
-	void LogHandlerActor(const char* a_slot, RE::Actor* a_actor)
-	{
-		const auto player = RE::PlayerCharacter::GetSingleton();
-		if (!a_actor) {
-			REX::INFO("[jumphandler] {} fired with a NULL actor", a_slot);
-			return;
-		}
-		REX::INFO("[jumphandler] {} fired - actor {:08X}{}  gate[0x37C bit4]={}", a_slot,
-			a_actor->GetFormID(),
-			(player && a_actor == static_cast<RE::Actor*>(player)) ? " (THE PLAYER)" : "",
-			ReadJumpGateBit(a_actor) ? "SET (will jump)" : "CLEAR (will do nothing)");
-	}
-
-	bool HandlerSlot1Hook(void* a_this, RE::Actor* a_actor)
-	{
-		LogHandlerActor("slot 1 (initiate complete)", a_actor);
-		DumpJumpDestination("VANILLA hold-X, before the call:", a_actor);
-		LogJumpDestinationString("VANILLA hold-X:", a_actor);
-		const auto original = g_origHandlerSlot1.load(std::memory_order_acquire);
-		return original ? original(a_this, a_actor) : true;
-	}
-
-	bool HandlerSlot4Hook(void* a_this, RE::Actor* a_actor)
-	{
-		LogHandlerActor("slot 4", a_actor);
-		const auto original = g_origHandlerSlot4.load(std::memory_order_acquire);
-		return original ? original(a_this, a_actor) : true;
-	}
-
-	bool HandlerSlot7Hook(void* a_this, void* a_arg1, void* a_arg2)
-	{
-		REX::INFO("[jumphandler] slot 7 fired - arg1 {} arg2 {}",
-			a_arg1 ? "set" : "null", a_arg2 ? "set" : "null");
-		const auto original = g_origHandlerSlot7.load(std::memory_order_acquire);
-		return original ? original(a_this, a_arg1, a_arg2) : true;
-	}
-
-	// Resolved once at install so the trigger below always calls the ENGINE's function
-	// and never our own hook - which would recurse.
+	// Cached RTTI-verified vtable used to invoke slot 1 without installing a
+	// diagnostic vtable hook.
 	std::atomic<std::uintptr_t> g_handlerVTable{ 0 };
 
-	void TryInstallJumpHandlerCapture()
-	{
-		if (g_handlerCaptureClaimed.load(std::memory_order_acquire))
-			return;
-		if (!bCaptureJumpHandler.GetValue() && !bMissionJumpViaHandler.GetValue())
-			return;
-
-		bool claimed = false;
-		if (!g_handlerCaptureClaimed.compare_exchange_strong(claimed, true, std::memory_order_acq_rel))
-			return;
-
-		// 453901, not RE::VTABLE's 424879 - see the ⚠ note above ResolveVerifiedVTable.
-		// The slot layout below (three 2-entry sub-vtables, Calls at 1/4/7) was derived
-		// against THIS address and matches it: [1]=0x141AE89F0, [4]=0x141AE8A90.
-		const auto vtableAddr = ResolveVerifiedVTable(453901,
-			".?AVGravJumpInitiateCompleteHandler@@", "jumphandler");
-		if (!vtableAddr)
-			return;
-		g_handlerVTable.store(vtableAddr, std::memory_order_release);
-
-		// Publish every original BEFORE redirecting anything, so a call landing
-		// mid-install still reaches the engine.
-		const auto slot1 = *reinterpret_cast<std::uintptr_t*>(vtableAddr + sizeof(void*) * 1);
-		const auto slot4 = *reinterpret_cast<std::uintptr_t*>(vtableAddr + sizeof(void*) * 4);
-		const auto slot7 = *reinterpret_cast<std::uintptr_t*>(vtableAddr + sizeof(void*) * 7);
-		g_origHandlerSlot1.store(reinterpret_cast<HandlerCallActor_t>(slot1), std::memory_order_release);
-		g_origHandlerSlot4.store(reinterpret_cast<HandlerCallActor_t>(slot4), std::memory_order_release);
-		g_origHandlerSlot7.store(reinterpret_cast<HandlerCallWide_t>(slot7), std::memory_order_release);
-
-		REX::INFO("[jumphandler] vtable {:016X}  slot1 {:016X}  slot4 {:016X}  slot7 {:016X}",
-			vtableAddr, slot1, slot4, slot7);
-
-		// The trigger only needs the originals read above; the hooks are the
-		// diagnostic half and stay on their own switch.
-		if (bCaptureJumpHandler.GetValue()) {
-			REL::Relocation<std::uintptr_t> vtable{ vtableAddr };
-			vtable.write_vfunc(1, &HandlerSlot1Hook);
-			vtable.write_vfunc(4, &HandlerSlot4Hook);
-			vtable.write_vfunc(7, &HandlerSlot7Hook);
-			REX::INFO("[jumphandler] watching all three Calls - do a hold-X mission jump and the "
-					  "log says which slot the engine runs");
-		}
-	}
-
-	// ---------------------------------------------------------------------------
-	// PHASE 9 §3h: `PlayerControls::GravJumpHandler` - the hold-X INPUT handler.
-	//
-	// This is the class that actually runs while you hold X. Everything this phase
-	// chased through Scaleform was downstream of it. Read-only: both hooks log and
-	// chain, so a jump behaves identically with this on.
-	//
-	// Slots, from the vtable at id 433573 (0x144C41CE8). Slots 2-7 and 12-13 are all
-	// the same shared PlayerInputHandler stub at 0x1402B56D0, so only these matter:
-	//
-	//   [ 8] 0x1412BBAF0  (this, ButtonEvent*, ...)  <- the press/hold. THE ONE.
-	//   [10] 0x1412BD650  (this)                     <- reset/cancel tail
-	//   [11] 0x1402B75F0  `xor al,al; ret` - a constant false, nothing to learn
-	//
-	// Slot 8 is a ButtonEvent consumer, and the field offsets below are read straight
-	// off its disassembly rather than off a CommonLibSF struct (which, per the ⚠ note
-	// above, is generated against a different build and cannot be trusted here):
-	//
-	//   vucomiss xmm0, dword ptr [rdi+0x48]   -> event->value
-	//   vcomiss  xmm0, dword ptr [rdi+0x4c]   -> event->heldDownSecs
-	//   cmp      byte ptr [rsi+0x50], 0       -> handler flag, "prompt is showing"
-	//
-	// and slot 10 works the same two handler bytes:
-	//   cmp byte ptr [rcx+0x4a], 0 / cmp byte ptr [rbx+0x49], 0
-	// ---------------------------------------------------------------------------
-	using GJProcessButton_t = std::uint64_t (*)(void*, void*, void*);
-	using GJReset_t         = std::uint64_t (*)(void*);
-
-	std::atomic<GJProcessButton_t> g_origGJProcessButton{ nullptr };
-	std::atomic<GJReset_t>         g_origGJReset{ nullptr };
-	std::atomic<bool>              g_gjInputClaimed{ false };
-
-	constexpr std::size_t kGJButtonValue   = 0x48;  // float, on the EVENT
-	constexpr std::size_t kGJButtonHeld    = 0x4C;  // float, on the EVENT
-	constexpr std::size_t kGJHandlerFlagA  = 0x49;  // byte,  on the HANDLER
-	constexpr std::size_t kGJHandlerFlagB  = 0x4A;  // byte,  on the HANDLER
-	constexpr std::size_t kGJHandlerPrompt = 0x50;  // byte,  on the HANDLER
-
-	float ByteFieldF(const void* a_base, std::size_t a_off)
-	{
-		return *reinterpret_cast<const float*>(static_cast<const std::uint8_t*>(a_base) + a_off);
-	}
-
-	std::uint8_t ByteFieldB(const void* a_base, std::size_t a_off)
-	{
-		return *(static_cast<const std::uint8_t*>(a_base) + a_off);
-	}
-
-	// A hold fires this every frame. Dumping all of it would bury the interesting
-	// transitions, so print on CHANGE plus a slow heartbeat while the hold is live.
-	void LogGravJumpButton(void* a_this, void* a_event)
-	{
-		static std::atomic<std::uint32_t> s_lastHeldTenths{ 0xFFFFFFFF };
-		static std::atomic<std::uint32_t> s_lastState{ 0xFFFFFFFF };
-
-		const float value = ByteFieldF(a_event, kGJButtonValue);
-		const float held  = ByteFieldF(a_event, kGJButtonHeld);
-
-		const std::uint8_t flagA  = ByteFieldB(a_this, kGJHandlerFlagA);
-		const std::uint8_t flagB  = ByteFieldB(a_this, kGJHandlerFlagB);
-		const std::uint8_t prompt = ByteFieldB(a_this, kGJHandlerPrompt);
-
-		const std::uint32_t state = (std::uint32_t{ flagA } << 16) | (std::uint32_t{ flagB } << 8) | prompt;
-		const auto tenths = static_cast<std::uint32_t>(held * 10.0f);
-
-		const bool stateChanged = s_lastState.exchange(state, std::memory_order_acq_rel) != state;
-		const bool tick = s_lastHeldTenths.exchange(tenths, std::memory_order_acq_rel) != tenths;
-		if (!stateChanged && !tick)
-			return;
-
-		REX::INFO("[gjinput] ProcessButton  value={:.3f} held={:.2f}s  handler[0x49]={} [0x4A]={} "
-				  "[0x50]={}{}",
-			value, held, flagA, flagB, prompt, stateChanged ? "   <== STATE CHANGE" : "");
-	}
-
-	// One raw dump each of the handler and the event, so the offsets above can be
-	// checked against reality rather than trusted. First call only.
-	void DumpGravJumpInputOnce(void* a_this, void* a_event)
-	{
-		static std::atomic<bool> s_done{ false };
-		if (s_done.exchange(true, std::memory_order_acq_rel))
-			return;
-
-		const auto dump = [](const char* a_what, const void* a_base, std::size_t a_bytes) {
-			const auto* p = static_cast<const std::uint8_t*>(a_base);
-			for (std::size_t row = 0; row < a_bytes; row += 16) {
-				std::string line;
-				for (std::size_t i = 0; i < 16 && row + i < a_bytes; ++i)
-					line += std::format("{:02X} ", p[row + i]);
-				REX::INFO("[gjinput] {} +0x{:02X}: {}", a_what, row, line);
-			}
-		};
-
-		REX::INFO("[gjinput] --- first ProcessButton: raw dumps, to check the offsets ---");
-		dump("handler", a_this, 0x60);
-		if (a_event)
-			dump("event  ", a_event, 0x60);
-	}
-
-	std::uint64_t GravJumpProcessButtonHook(void* a_this, void* a_event, void* a_arg3)
-	{
-		if (a_this && a_event) {
-			DumpGravJumpInputOnce(a_this, a_event);
-			LogGravJumpButton(a_this, a_event);
-		}
-
-		const auto original = g_origGJProcessButton.load(std::memory_order_acquire);
-		return original ? original(a_this, a_event, a_arg3) : 0;
-	}
-
-	std::uint64_t GravJumpResetHook(void* a_this)
-	{
-		if (a_this)
-			REX::INFO("[gjinput] slot 10 (reset/cancel tail)  handler[0x49]={} [0x4A]={} [0x50]={}",
-				ByteFieldB(a_this, kGJHandlerFlagA), ByteFieldB(a_this, kGJHandlerFlagB),
-				ByteFieldB(a_this, kGJHandlerPrompt));
-
-		const auto original = g_origGJReset.load(std::memory_order_acquire);
-		return original ? original(a_this) : 0;
-	}
-
-	void TryInstallGravJumpInputCapture()
-	{
-		if (!bCaptureGravJumpInput.GetValue() || g_gjInputClaimed.load(std::memory_order_acquire))
-			return;
-
-		bool claimed = false;
-		if (!g_gjInputClaimed.compare_exchange_strong(claimed, true, std::memory_order_acq_rel))
-			return;
-
-		const auto vtableAddr = ResolveVerifiedVTable(433573,
-			".?AVGravJumpHandler@PlayerControls@@", "gjinput");
-		if (!vtableAddr)
-			return;
-
-		constexpr std::size_t kProcessButton = 8;
-		constexpr std::size_t kReset         = 10;
-
-		// Publish both originals BEFORE redirecting either, so a call landing
-		// mid-install still reaches the engine.
-		const auto origButton = *reinterpret_cast<std::uintptr_t*>(
-			vtableAddr + sizeof(void*) * kProcessButton);
-		const auto origReset = *reinterpret_cast<std::uintptr_t*>(
-			vtableAddr + sizeof(void*) * kReset);
-		g_origGJProcessButton.store(reinterpret_cast<GJProcessButton_t>(origButton),
-			std::memory_order_release);
-		g_origGJReset.store(reinterpret_cast<GJReset_t>(origReset), std::memory_order_release);
-
-		REL::Relocation<std::uintptr_t> vtable{ vtableAddr };
-		vtable.write_vfunc(kProcessButton, &GravJumpProcessButtonHook);
-		vtable.write_vfunc(kReset, &GravJumpResetHook);
-
-		REX::INFO("[gjinput] watching PlayerControls::GravJumpHandler  slot8 {:016X}  slot10 {:016X}"
-				  " - hold X on a mission and the log follows the hold",
-			origButton, origReset);
-	}
-
-	// ---------------------------------------------------------------------------
 	// PHASE 9 §3o: THE SPOOF. Jump to an arbitrary body, with no reticle involved.
 	//
 	// Everything above established the shape (§3m):
@@ -6015,9 +5142,9 @@ namespace
 	//   destination last - and hands it to DoJump(ship, header) at id 119843.
 	//
 	// So rather than persuade the engine to SELECT the right thing, hand it the
-	// route directly. The array is ours, on our stack, and DoJump reads it during
-	// the call - which is why this builds a one-entry route and does not try to
-	// reproduce the engine's refcounted allocation. Nothing of ours is stored.
+	// route directly. The entries live in stable plugin storage and the engine's
+	// original array header is restored immediately after DoJump returns. Nothing
+	// of ours is left attached to the engine object.
 	//
 	// ⚠ MOVES THE SHIP. Behind bMissionJumpSpoof.
 	// ---------------------------------------------------------------------------
@@ -6032,9 +5159,8 @@ namespace
 	};
 	SpoofRouteStorage g_spoofRoute{};
 
-	// Armed until this timestamp, not a plain flag. The animated route dispatches a
-	// UI event and the engine reaches slot 1 on its own schedule some frames later,
-	// so a flag cleared right after the call would be gone before the lookup runs.
+	// A bounded arm rather than an unbounded flag: the synchronous handler clears it
+	// after returning, and the timestamp also makes a stale arm self-expire.
 	std::atomic<std::int64_t> g_spoofArmedUntilMs{ 0 };
 
 	bool SpoofArmed()
@@ -6324,33 +5450,6 @@ namespace
 			std::chrono::steady_clock::now().time_since_epoch())
 							   .count();
 
-		// ⭐ THE ANIMATION. Slot 1 jumps but arrives with no travel animation; the old
-		// A-press route had one. The difference is WHERE we enter: the animation hangs
-		// off the HUD action `ShipHud_JumpToQuestMarker`, and calling slot 1 directly
-		// skips everything that action stages on the way.
-		//
-		// The route substitution lives INSIDE slot 1, and the HUD action reaches slot 1
-		// too - so dispatching the event with our route armed should give the animation
-		// AND our destination, without the reticle mattering. Armed on a deadline
-		// because the engine gets there some frames later, not inside this call.
-		if (bMissionJumpAnimated.GetValue()) {
-			const auto                     ui = RE::UI::GetSingleton();
-			static const RE::BSFixedString s_hudMenu{ kShipHudMenu };
-			const auto                     hud = ui ? ui->GetMenu(s_hudMenu) : nullptr;
-			if (hud && hud->uiMovie && hud->uiMovie->asMovieRoot) {
-				g_spoofArmedUntilMs.store(nowMs + 3000, std::memory_order_release);
-				if (DispatchHudEvent(hud->uiMovie->asMovieRoot.get(), "ShipHud_JumpToQuestMarker",
-						nullptr)) {
-					REX::INFO("[spoof] dispatched ShipHud_JumpToQuestMarker with our route armed "
-							  "for 3s - this is the path that carries the animation");
-					return true;
-				}
-				g_spoofArmedUntilMs.store(0, std::memory_order_release);
-				REX::WARN("[spoof] the HUD action would not dispatch - falling back to slot 1, "
-						  "which jumps but does not animate");
-			}
-		}
-
 		g_spoofArmedUntilMs.store(nowMs + 3000, std::memory_order_release);
 		const bool ran = TriggerGravJumpViaHandler();
 		g_spoofArmedUntilMs.store(0, std::memory_order_release);
@@ -6377,7 +5476,39 @@ namespace
 	// the answer, measured instead of guessed.
 	// ---------------------------------------------------------------------------
 	std::atomic<std::uintptr_t> g_origDoJump{ 0 };
-	std::atomic<bool>           g_doJumpCaptureClaimed{ false };
+	std::atomic<bool>           g_doJumpRestoreClaimed{ false };
+	std::atomic<bool>           g_doJumpHookInstalled{ false };
+
+	struct SavedRouteHeader
+	{
+		JumpRouteHeader* route{ nullptr };
+		JumpRouteHeader  original{};
+	};
+	thread_local SavedRouteHeader g_savedRouteHeader{};
+
+	bool IsExpectedRelativeCall(std::uintptr_t a_callSite, std::uintptr_t a_expectedTarget,
+		const char* a_label)
+	{
+		if (!a_callSite || !a_expectedTarget)
+			return false;
+
+		const auto* bytes = reinterpret_cast<const std::uint8_t*>(a_callSite);
+		if (bytes[0] != 0xE8) {
+			REX::WARN("[{}] refusing patch at {:016X}: expected CALL (E8), found {:02X}",
+				a_label, a_callSite, bytes[0]);
+			return false;
+		}
+
+		std::int32_t displacement = 0;
+		std::memcpy(&displacement, bytes + 1, sizeof(displacement));
+		const auto actualTarget = a_callSite + 5 + static_cast<std::intptr_t>(displacement);
+		if (actualTarget != a_expectedTarget) {
+			REX::WARN("[{}] refusing patch at {:016X}: call targets {:016X}, expected {:016X}",
+				a_label, a_callSite, actualTarget, a_expectedTarget);
+			return false;
+		}
+		return true;
+	}
 
 	// ---------------------------------------------------------------------------
 	// PHASE 9 §3q: THE SPOOF, DONE THROUGH THE ENGINE INSTEAD OF AROUND IT.
@@ -6397,10 +5528,6 @@ namespace
 	// with its own ship pointer, in its own state - and nothing of ours is passed
 	// except the two form ids that say where to go.
 	//
-	// `out` is two qwords: [0] the route pointer, [1] the refcounted block. Setting
-	// [1] to null is deliberate - slot 1's cleanup does `test rcx,rcx / je` before
-	// touching the refcount, so a null block skips the release entirely and our
-	// static storage is never handed to the engine's allocator.
 	// ---------------------------------------------------------------------------
 	std::uint64_t LookupSpoofStub(void* a_subsys, void* a_out, void* a_unused, void* a_shipID)
 	{
@@ -6425,6 +5552,16 @@ namespace
 		// change only the destination ids. That is the smallest possible edit and the
 		// only one that cannot be wrong about the object's shape.
 		if (auto* engineRoute = static_cast<JumpRouteHeader*>(out[0])) {
+			if (!g_doJumpHookInstalled.load(std::memory_order_acquire)) {
+				REX::WARN("[spoof] route substitution refused: the scoped restore hook is unavailable");
+				g_spoofArmedUntilMs.store(0, std::memory_order_release);
+				return result;
+			}
+			if (g_savedRouteHeader.route) {
+				REX::WARN("[spoof] route substitution refused: this thread already owns a saved header");
+				g_spoofArmedUntilMs.store(0, std::memory_order_release);
+				return result;
+			}
 			REX::INFO("[spoof] engine route {:016X}: size {} capacity {} data {:016X}",
 				reinterpret_cast<std::uintptr_t>(engineRoute), engineRoute->size,
 				engineRoute->capacity, reinterpret_cast<std::uintptr_t>(engineRoute->data));
@@ -6445,9 +5582,10 @@ namespace
 			// `out` is left exactly as the engine set it, so its own cleanup and
 			// refcounting run untouched.
 			//
-			// ⚠ The entries array is static and never freed, so if the engine retains
-			// the pointer it stays valid. If it ever tried to FREE it that would be a
-			// crash - nothing observed does, but it is the risk this takes.
+			// Save all three header fields before substitution. DoJumpRestoreStub puts
+			// them back before slot 1 can clean up, grow, or reuse the route, so the
+			// engine never treats plugin storage as its owned allocation.
+			g_savedRouteHeader = { engineRoute, *engineRoute };
 			engineRoute->data     = g_spoofRoute.entries;
 			engineRoute->size     = 2;
 			engineRoute->capacity = 2;
@@ -6458,16 +5596,21 @@ namespace
 			return result;
 		}
 
-		// No engine route at all: fall back to handing over ours. `out[1]` stays null
-		// so slot 1's cleanup skips the refcount release on storage it does not own.
-		REX::INFO("[spoof] engine returned NO route - handing slot 1 ours instead");
-		out[0] = &g_spoofRoute.header;
-		out[1] = nullptr;
+		// A fabricated route is not an engine-owned object and must never enter its
+		// cleanup path. Fail closed when the lookup did not supply a live route.
+		REX::WARN("[spoof] engine returned no route - substitution refused");
+		g_spoofArmedUntilMs.store(0, std::memory_order_release);
 		return result;
 	}
 
 	void TryInstallLookupHook()
 	{
+		if (!bMissionJump.GetValue() || !bMissionJumpSpoof.GetValue())
+			return;
+		// The lookup patch is safe only as a pair with the later DoJump wrapper,
+		// which restores the borrowed engine header before slot 1 continues.
+		if (!g_doJumpHookInstalled.load(std::memory_order_acquire))
+			return;
 		if (g_lookupHookClaimed.load(std::memory_order_acquire))
 			return;
 		bool claimed = false;
@@ -6480,58 +5623,42 @@ namespace
 			REX::WARN("[spoof] slot 1 or the lookup did not resolve - the spoof cannot arm");
 			return;
 		}
-		g_origLookup.store(lookup, std::memory_order_release);
-
 		// +0x45 is `call 0x14214de90` inside slot 1 (slot 1 starts at 0x141AE89F0,
 		// the lookup call is at 0x141AE8A35).
+		const auto callSite = slot1 + 0x45;
+		if (!IsExpectedRelativeCall(callSite, lookup, "spoof"))
+			return;
+		g_origLookup.store(lookup, std::memory_order_release);
 		REL::GetTrampoline().write_call<5>(slot1 + 0x45, &LookupSpoofStub);
 		REX::INFO("[spoof] lookup hook installed at slot1 +0x45 - the route is ours only while a "
 				  "panel jump is armed, so vanilla hold-X is untouched");
 	}
 
-	std::uint64_t DoJumpCaptureStub(void* a_ship, void* a_route)
+	std::uint64_t DoJumpRestoreStub(void* a_ship, void* a_route)
 	{
-		REX::INFO("[dojump] ENGINE called DoJump(ship {:016X}, route {:016X})",
-			reinterpret_cast<std::uintptr_t>(a_ship), reinterpret_cast<std::uintptr_t>(a_route));
-
-		if (a_route) {
-			const auto* h = reinterpret_cast<const JumpRouteHeader*>(a_route);
-			REX::INFO("[dojump]   header size {} capacity {} data {:016X}", h->size, h->capacity,
-				reinterpret_cast<std::uintptr_t>(h->data));
-			if (h->data && h->size > 0 && h->size <= 8) {
-				for (std::uint32_t i = 0; i < h->size; ++i) {
-					const auto  star = h->data[i].starFormID;
-					const auto  body = h->data[i].planetFormID;
-					const auto* sf   = RE::TESForm::LookupByID(star);
-					const auto* bf   = RE::TESForm::LookupByID(body);
-					REX::INFO("[dojump]   [{}] star {:08X} '{}'  body {:08X} '{}'", i, star,
-						sf ? SafeStr(sf->GetFormEditorID()) : "?", body,
-						bf ? SafeStr(bf->GetFormEditorID()) : "?");
-				}
-			}
-			// The 0x20 bytes in front of the header: the engine's block carries a
-			// refcount there, and whether it is live tells us if our static buffer is
-			// even a legal shape to hand over.
-			const auto* raw = reinterpret_cast<const std::uint8_t*>(a_route);
-			std::string lead;
-			for (std::size_t i = 0; i < 32; ++i)
-				lead += std::format("{:02X} ", raw[i - 32]);
-			REX::INFO("[dojump]   32 bytes BEFORE the header: {}", lead);
-		}
-
 		const auto original = g_origDoJump.load(std::memory_order_acquire);
-		if (!original)
-			return 0;
-		return reinterpret_cast<std::uint64_t (*)(void*, void*)>(original)(a_ship, a_route);
+		const auto result = original ?
+			reinterpret_cast<std::uint64_t (*)(void*, void*)>(original)(a_ship, a_route) : 0;
+
+		// The lookup hook temporarily borrows this header for the duration of the
+		// engine's DoJump call. Restore all three fields before slot 1 continues to
+		// cleanup or reuse its object, so engine code never owns our static entries.
+		if (g_savedRouteHeader.route) {
+			*g_savedRouteHeader.route = g_savedRouteHeader.original;
+			REX::INFO("[spoof] restored the engine route header after DoJump");
+			g_savedRouteHeader = {};
+		}
+		return result;
 	}
 
-	void TryInstallDoJumpCapture()
+	void TryInstallDoJumpRestore()
 	{
-		if (!bCaptureJumpHandler.GetValue() || g_doJumpCaptureClaimed.load(std::memory_order_acquire))
+		if (!bMissionJump.GetValue() || !bMissionJumpSpoof.GetValue() ||
+			g_doJumpRestoreClaimed.load(std::memory_order_acquire))
 			return;
 
 		bool claimed = false;
-		if (!g_doJumpCaptureClaimed.compare_exchange_strong(claimed, true, std::memory_order_acq_rel))
+		if (!g_doJumpRestoreClaimed.compare_exchange_strong(claimed, true, std::memory_order_acq_rel))
 			return;
 
 		const auto slot1 = REL::ID(104005).address();
@@ -6540,21 +5667,22 @@ namespace
 			REX::WARN("[dojump] slot 1 (104005) or DoJump (119843) did not resolve");
 			return;
 		}
-		g_origDoJump.store(target, std::memory_order_release);
-
 		// +0x58 is the `call 0x14210ea50` inside slot 1, read off the 1.16.244
 		// disassembly (slot 1 starts at 0x141AE89F0, the call is at 0x141AE8A48).
+		const auto callSite = slot1 + 0x58;
+		if (!IsExpectedRelativeCall(callSite, target, "dojump"))
+			return;
+		g_origDoJump.store(target, std::memory_order_release);
 		auto& trampoline = REL::GetTrampoline();
-		trampoline.write_call<5>(slot1 + 0x58, &DoJumpCaptureStub);
+		trampoline.write_call<5>(slot1 + 0x58, &DoJumpRestoreStub);
+		g_doJumpHookInstalled.store(true, std::memory_order_release);
 
-		REX::INFO("[dojump] watching the engine's own DoJump call site (slot1 {:016X} +0x58) - "
-				  "do a vanilla hold-X and the log says exactly what it passes",
+		REX::INFO("[spoof] scoped route-restore hook installed at slot1 {:016X} +0x58",
 			slot1);
 	}
 
-	// ⚠ THIS MOVES THE SHIP. Behind bMissionJumpViaHandler.
-	//
-	// Calls the engine's own hold-complete handler with the player. No object is
+	// Calls the engine's own hold-complete handler with the player after the scoped
+	// route substitution has been armed. No object is
 	// constructed: slot 1 does not read `this`, so a stack address is a sufficient
 	// placeholder and nothing of ours is ever dereferenced. The only address named is
 	// an Address Library vtable id, so this does not go stale on a game patch.
@@ -6566,27 +5694,26 @@ namespace
 			return false;
 		}
 
-		const auto call = g_origHandlerSlot1.load(std::memory_order_acquire);
-		if (!call) {
-			REX::WARN("[jumphandler] slot 1 not resolved yet - falling back to the actor value");
+		auto vtableAddr = g_handlerVTable.load(std::memory_order_acquire);
+		if (!vtableAddr) {
+			vtableAddr = ResolveVerifiedVTable(453901,
+				".?AVGravJumpInitiateCompleteHandler@@", "jumphandler");
+			if (vtableAddr)
+				g_handlerVTable.store(vtableAddr, std::memory_order_release);
+		}
+		if (!vtableAddr) {
+			REX::WARN("[jumphandler] verified slot 1 unavailable - falling back to the actor value");
 			return false;
 		}
+		const auto call = reinterpret_cast<HandlerCallActor_t>(
+			*reinterpret_cast<std::uintptr_t*>(vtableAddr + sizeof(void*)));
 
 		// Never dereferenced by the callee; see the header above. Passing our own
 		// stack keeps it a valid readable address regardless.
 		std::uintptr_t placeholder = 0;
-		DumpJumpDestination("PANEL jump, before the call:", static_cast<RE::Actor*>(player));
-		LogJumpDestinationString("PANEL jump:", static_cast<RE::Actor*>(player));
-		const bool gate = ReadJumpGateBit(static_cast<RE::Actor*>(player));
-		REX::INFO("[jumphandler] calling the engine's initiate-complete handler with the player - "
-				  "gate[0x37C bit4]={}",
-			gate ? "SET, the call should jump" :
-				   "CLEAR - the handler will return success and do NOTHING. A quiet result here "
-				   "means REFUSED, not 'wrong destination'");
+		REX::INFO("[jumphandler] calling the verified initiate-complete handler");
 		const bool result = call(&placeholder, static_cast<RE::Actor*>(player));
-		REX::INFO("[jumphandler] handler returned {} - if the flag on the actor was clear or the "
-				  "ship object was null it did nothing, and the watcher stays quiet",
-			result);
+		REX::INFO("[jumphandler] handler returned {}", result);
 		return true;
 	}
 
@@ -6625,105 +5752,7 @@ namespace
 	// <function id>.address() + <offset>, never as a literal, so a game patch moves it
 	// with everything else.
 	// ---------------------------------------------------------------------------
-	using PlotSetter_t = std::uint64_t (*)(void*, void*, std::uint32_t, void*, std::uint32_t*);
 
-	std::atomic<bool> g_plotCaptureClaimed{ false };
-
-	// One stub per call site so the log says WHICH caller plotted.
-	std::uintptr_t g_plotOriginal{ 0 };
-
-	std::uint64_t PlotSetterLog(const char* a_site, void* a_ctx, void* a_arg2, std::uint32_t a_mode,
-		void* a_tag, std::uint32_t* a_pair)
-	{
-		if (a_pair) {
-			const auto first = a_pair[0];
-			const auto second = a_pair[1];
-			REX::INFO("[plotset] {} mode={} pair = {{ {:08X}, {:08X} }}", a_site, a_mode, first, second);
-			for (const auto v : { first, second }) {
-				if (const auto form = v ? RE::TESForm::LookupByID(v) : nullptr)
-					REX::INFO("[plotset]     {:08X} formType {:02X} '{}'", v,
-						std::to_underlying(form->GetFormType()), SafeStr(form->GetFormEditorID()));
-			}
-		} else {
-			REX::INFO("[plotset] {} mode={} with a NULL pair", a_site, a_mode);
-		}
-		const auto original = reinterpret_cast<PlotSetter_t>(g_plotOriginal);
-		return original(a_ctx, a_arg2, a_mode, a_tag, a_pair);
-	}
-
-	std::uint64_t PlotFromNeighbour(void* a, void* b, std::uint32_t c, void* d, std::uint32_t* e)
-	{
-		return PlotSetterLog("caller A (internal neighbour)", a, b, c, d, e);
-	}
-	std::uint64_t PlotFromConfirmCallback(void* a, void* b, std::uint32_t c, void* d, std::uint32_t* e)
-	{
-		return PlotSetterLog("caller B (confirm callback)", a, b, c, d, e);
-	}
-	std::uint64_t PlotFromPointerCalled(void* a, void* b, std::uint32_t c, void* d, std::uint32_t* e)
-	{
-		return PlotSetterLog("caller C (pointer-called fn)", a, b, c, d, e);
-	}
-
-	void TryInstallPlotSetterCapture()
-	{
-		if (!bCapturePlotSetter.GetValue() || g_plotCaptureClaimed.load(std::memory_order_acquire))
-			return;
-
-		bool claimed = false;
-		if (!g_plotCaptureClaimed.compare_exchange_strong(claimed, true, std::memory_order_acq_rel))
-			return;
-
-		// Function starts, by Address Library id, then the byte offset of the call
-		// instruction inside each - both read off the 1.16.244 disassembly.
-		//   caller A  fn 0x140C7D8C0  call at 0x140C7DA73  (+0x1B3)
-		//   caller B  fn 0x1416D3D45  call at 0x1416D3D74  (+0x02F)
-		//   caller C  fn 0x142010210  call at 0x1420102D1  (+0x0C1)
-		const auto plotAddr = REL::ID(67119).address();
-		if (!plotAddr) {
-			REX::WARN("[plotset] the plot setter id did not resolve");
-			return;
-		}
-		g_plotOriginal = plotAddr;
-
-		auto& trampoline = REL::GetTrampoline();
-		struct Site
-		{
-			std::uint32_t id;
-			std::uint32_t offset;
-			void*         stub;
-			const char*   name;
-		};
-		// ⚠ Caller B is deliberately absent. It sits inside the confirm callback's own
-		// Call, which the Address Library has no id for - and that callback has already
-		// been proven never to fire on a real jump, so patching it by arithmetic off
-		// the vtable would be risk spent on a path we know is dead.
-		const Site sites[]{
-			{ 67044, 0x1B3, reinterpret_cast<void*>(&PlotFromNeighbour), "caller A" },
-			{ 1016811, 0x0C1, reinterpret_cast<void*>(&PlotFromPointerCalled), "caller C" },
-		};
-
-		for (const auto& site : sites) {
-			const auto fn = REL::ID(site.id).address();
-			if (!fn) {
-				REX::WARN("[plotset] {} id {} did not resolve", site.name, site.id);
-				continue;
-			}
-			const auto callSite = fn + site.offset;
-			// Sanity: the byte there must be E8 (call rel32) or the offset is stale
-			// and patching would corrupt an instruction.
-			if (*reinterpret_cast<const std::uint8_t*>(callSite) != 0xE8) {
-				REX::WARN("[plotset] {} at {:016X} is not a call rel32 (byte {:02X}) - NOT patched",
-					site.name, callSite, *reinterpret_cast<const std::uint8_t*>(callSite));
-				continue;
-			}
-			trampoline.write_call<5>(callSite, site.stub);
-			REX::INFO("[plotset] watching {} at {:016X}", site.name, callSite);
-		}
-
-		REX::INFO("[plotset] plot setter is {:016X} - do a jump that actually goes somewhere and "
-				  "the pair it plots is the destination",
-			plotAddr);
-	}
 
 	// Called every frame until it succeeds once. The claim is a single-winner
 	// exchange: two threads patching the same vtable entry would leave the hook
@@ -7684,17 +6713,100 @@ namespace
 	//
 	// ⚠ Asynchronous, like every VM call here - the answer lands a moment later and is
 	// written down for the row to pick up on a subsequent rebuild.
-	void AskLocationParents(std::uint32_t a_questID, std::uint32_t a_locationID);
+	void AskLocationParents(std::uint32_t a_questID, std::uint32_t a_locationID,
+		std::uint32_t a_targetIndex, std::uint64_t a_generation);
 
-	class LocationPlanetCallback : public RE::BSScript::IStackCallbackFunctor
+	// Dynamic quest references can know their planet even when their runtime LCTN
+	// is an unparented stub. Ask the reference itself before falling back to the
+	// location chain.
+	class ReferencePlanetCallback : public RE::BSScript::IStackCallbackFunctor
 	{
 	public:
-		LocationPlanetCallback(std::uint32_t a_questID, std::uint32_t a_locationID) :
-			_questID(a_questID), _locationID(a_locationID)
+		ReferencePlanetCallback(std::uint32_t a_questID, std::uint32_t a_targetIndex,
+			std::uint64_t a_generation) :
+			_questID(a_questID), _targetIndex(a_targetIndex), _generation(a_generation),
+			_epoch(g_unsettledEpoch.load(std::memory_order_acquire))
 		{}
 
 		void operator()(RE::BSScript::Variable a_result) override
 		{
+			if (_epoch != g_unsettledEpoch.load(std::memory_order_acquire) ||
+				_generation != g_questSweepGeneration.load(std::memory_order_acquire))
+				return;
+			auto obj = RE::BSScript::get<RE::BSScript::Object>(a_result);
+			if (!obj)
+				return;
+			const auto game = RE::GameVM::GetSingleton();
+			const auto vm = game ? game->GetVM() : nullptr;
+			if (!vm)
+				return;
+			auto& handles = vm->GetObjectHandlePolicy();
+			const auto* planet = static_cast<const RE::TESForm*>(handles.GetObjectForHandle(
+				RE::BSScript::GetVMTypeID<RE::BGSPlanet::PlanetData>(), obj->GetHandle()));
+			if (!planet)
+				return;
+
+			const auto planetID = planet->GetFormID();
+			std::uint32_t system = 0;
+			std::string name;
+			{
+				std::lock_guard lock{ g_bodyTableMutex };
+				if (const auto body = g_bodyTable.find(planetID); body != g_bodyTable.end()) {
+					system = body->second.galaxy.systemID;
+					name = body->second.name;
+				}
+			}
+			if (name.empty())
+				return;
+			{
+				std::lock_guard lock{ g_menuStateMutex };
+				auto& state = g_menuState[_questID];
+				if (_targetIndex < state.orderedBodies.size())
+					state.orderedBodies[_targetIndex] = planetID;
+				if (std::find(state.allBodies.begin(), state.allBodies.end(), planetID) ==
+					state.allBodies.end())
+					state.allBodies.push_back(planetID);
+				if (state.bodyID == 0) {
+					state.bodyID = planetID;
+					state.systemID = system;
+					state.where = std::format("{} (system {}, via ObjectReference.GetCurrentPlanet)",
+						name, system);
+				}
+			}
+			g_missionReassembleRequested.store(true, std::memory_order_release);
+			REX::INFO("[quest] ⭐ target [{}] of quest {:08X} -> planet {:08X} '{}' (system {}) "
+				"via ObjectReference.GetCurrentPlanet", _targetIndex, _questID, planetID, name,
+				system);
+		}
+
+		void CallQueued() override {}
+		void CallCanceled() override {}
+		void StartMultiDispatch() override {}
+		void EndMultiDispatch() override {}
+		bool CanSave() override { return false; }
+
+	private:
+		std::uint32_t _questID{ 0 };
+		std::uint32_t _targetIndex{ 0 };
+		std::uint64_t _generation{ 0 };
+		std::uint32_t _epoch{ 0 };
+	};
+
+	class LocationPlanetCallback : public RE::BSScript::IStackCallbackFunctor
+	{
+	public:
+		LocationPlanetCallback(std::uint32_t a_questID, std::uint32_t a_locationID,
+			std::uint32_t a_targetIndex, std::uint64_t a_generation) :
+			_questID(a_questID), _locationID(a_locationID), _targetIndex(a_targetIndex),
+			_generation(a_generation),
+			_epoch(g_unsettledEpoch.load(std::memory_order_acquire))
+		{}
+
+		void operator()(RE::BSScript::Variable a_result) override
+		{
+			if (_epoch != g_unsettledEpoch.load(std::memory_order_acquire) ||
+				_generation != g_questSweepGeneration.load(std::memory_order_acquire))
+				return;
 			// A Papyrus form comes back as a script Object; the form itself is
 			// recovered from its handle, the same way quest targets are read above.
 			auto obj = RE::BSScript::get<RE::BSScript::Object>(a_result);
@@ -7708,7 +6820,7 @@ namespace
 				REX::INFO("[quest] location {:08X} - GetCurrentPlanet returned nothing, asking for "
 						  "its parent locations",
 					_locationID);
-				AskLocationParents(_questID, _locationID);
+				AskLocationParents(_questID, _locationID, _targetIndex, _generation);
 				return;
 			}
 
@@ -7753,6 +6865,11 @@ namespace
 			{
 				std::lock_guard lock{ g_menuStateMutex };
 				auto&           state = g_menuState[_questID];
+				if (_targetIndex < state.orderedBodies.size())
+					state.orderedBodies[_targetIndex] = planetID;
+				if (std::find(state.allBodies.begin(), state.allBodies.end(), planetID) ==
+					state.allBodies.end())
+					state.allBodies.push_back(planetID);
 				if (state.bodyID == 0) {
 					state.bodyID = planetID;
 					state.systemID = system;
@@ -7760,6 +6877,7 @@ namespace
 						system);
 				}
 			}
+			g_missionReassembleRequested.store(true, std::memory_order_release);
 			REX::INFO("[quest] ⭐ location {:08X} -> planet {:08X} '{}' (system {}) - quest {:08X} "
 					  "is now placeable",
 				_locationID, planetID, name, system, _questID);
@@ -7776,6 +6894,9 @@ namespace
 	private:
 		std::uint32_t _questID{ 0 };
 		std::uint32_t _locationID{ 0 };
+		std::uint32_t _targetIndex{ 0 };
+		std::uint64_t _generation{ 0 };
+		std::uint32_t _epoch{ 0 };
 	};
 
 	// The parent-chain answer: an array of Locations, innermost first. The first one
@@ -7783,12 +6904,18 @@ namespace
 	class LocationParentsCallback : public RE::BSScript::IStackCallbackFunctor
 	{
 	public:
-		LocationParentsCallback(std::uint32_t a_questID, std::uint32_t a_locationID) :
-			_questID(a_questID), _locationID(a_locationID)
+		LocationParentsCallback(std::uint32_t a_questID, std::uint32_t a_locationID,
+			std::uint32_t a_targetIndex, std::uint64_t a_generation) :
+			_questID(a_questID), _locationID(a_locationID), _targetIndex(a_targetIndex),
+			_generation(a_generation),
+			_epoch(g_unsettledEpoch.load(std::memory_order_acquire))
 		{}
 
 		void operator()(RE::BSScript::Variable a_result) override
 		{
+			if (_epoch != g_unsettledEpoch.load(std::memory_order_acquire) ||
+				_generation != g_questSweepGeneration.load(std::memory_order_acquire))
+				return;
 			auto array = RE::BSScript::get<RE::BSScript::Array>(a_result);
 			if (!array || array->size() == 0) {
 				REX::INFO("[quest] location {:08X} - no parent locations either", _locationID);
@@ -7836,6 +6963,11 @@ namespace
 				{
 					std::lock_guard lock{ g_menuStateMutex };
 					auto&           state = g_menuState[_questID];
+					if (_targetIndex < state.orderedBodies.size())
+						state.orderedBodies[_targetIndex] = bodyID;
+					if (std::find(state.allBodies.begin(), state.allBodies.end(), bodyID) ==
+						state.allBodies.end())
+						state.allBodies.push_back(bodyID);
 					if (state.bodyID == 0) {
 						state.bodyID = bodyID;
 						state.systemID = system;
@@ -7843,6 +6975,7 @@ namespace
 							name, system, parent->GetFormID());
 					}
 				}
+				g_missionReassembleRequested.store(true, std::memory_order_release);
 				REX::INFO("[quest] ⭐ location {:08X} placed through parent {:08X} -> {} "
 						  "(system {}) - quest {:08X}",
 					_locationID, parent->GetFormID(), name, system, _questID);
@@ -7860,6 +6993,9 @@ namespace
 	private:
 		std::uint32_t _questID{ 0 };
 		std::uint32_t _locationID{ 0 };
+		std::uint32_t _targetIndex{ 0 };
+		std::uint64_t _generation{ 0 };
+		std::uint32_t _epoch{ 0 };
 	};
 
 	// ---------------------------------------------------------------------------
@@ -7878,11 +7014,14 @@ namespace
 	{
 	public:
 		AliasLocationCallback(std::uint32_t a_questID, std::string a_aliasName) :
-			_questID(a_questID), _aliasName(std::move(a_aliasName))
+			_questID(a_questID), _aliasName(std::move(a_aliasName)),
+			_epoch(g_unsettledEpoch.load(std::memory_order_acquire))
 		{}
 
 		void operator()(RE::BSScript::Variable a_result) override
 		{
+			if (_epoch != g_unsettledEpoch.load(std::memory_order_acquire))
+				return;
 			auto obj = RE::BSScript::get<RE::BSScript::Object>(a_result);
 			if (!obj)
 				return;
@@ -7937,6 +7076,7 @@ namespace
 	private:
 		std::uint32_t _questID{ 0 };
 		std::string   _aliasName;
+		std::uint32_t _epoch{ 0 };
 	};
 
 	// GetAlias hands back an Alias; the location comes from a second call on it.
@@ -7944,11 +7084,14 @@ namespace
 	{
 	public:
 		QuestAliasCallback(std::uint32_t a_questID, std::string a_aliasName) :
-			_questID(a_questID), _aliasName(std::move(a_aliasName))
+			_questID(a_questID), _aliasName(std::move(a_aliasName)),
+			_epoch(g_unsettledEpoch.load(std::memory_order_acquire))
 		{}
 
 		void operator()(RE::BSScript::Variable a_result) override
 		{
+			if (_epoch != g_unsettledEpoch.load(std::memory_order_acquire))
+				return;
 			auto alias = RE::BSScript::get<RE::BSScript::Object>(a_result);
 			if (!alias)
 				return;
@@ -7971,7 +7114,139 @@ namespace
 	private:
 		std::uint32_t _questID{ 0 };
 		std::string   _aliasName;
+		std::uint32_t _epoch{ 0 };
 	};
+
+	void StoreQuestAliasText(std::uint32_t a_questID, std::string_view a_alias,
+		std::string a_text, std::uint64_t a_generation, std::uint32_t a_epoch)
+	{
+		if (a_text.empty() || a_generation != g_questSweepGeneration.load(std::memory_order_acquire) ||
+			a_epoch != g_unsettledEpoch.load(std::memory_order_acquire))
+			return;
+		{
+			std::lock_guard lock{ g_menuStateMutex };
+			g_menuState[a_questID].aliasText[std::string{ a_alias }] = a_text;
+		}
+		REX::INFO("[quest] ⭐ text alias '{}' of quest {:08X} -> '{}'", a_alias, a_questID, a_text);
+	}
+
+	class AliasTextValueCallback : public RE::BSScript::IStackCallbackFunctor
+	{
+	public:
+		AliasTextValueCallback(std::uint32_t a_questID, std::string a_aliasName,
+			bool a_location, std::uint64_t a_generation, std::uint32_t a_epoch) :
+			_questID(a_questID), _aliasName(std::move(a_aliasName)), _location(a_location),
+			_generation(a_generation), _epoch(a_epoch)
+		{}
+
+		void operator()(RE::BSScript::Variable a_result) override
+		{
+			if (_generation != g_questSweepGeneration.load(std::memory_order_acquire) ||
+				_epoch != g_unsettledEpoch.load(std::memory_order_acquire))
+				return;
+			auto obj = RE::BSScript::get<RE::BSScript::Object>(a_result);
+			if (!obj)
+				return;
+			const auto game = RE::GameVM::GetSingleton();
+			const auto vm = game ? game->GetVM() : nullptr;
+			if (!vm)
+				return;
+			auto& handles = vm->GetObjectHandlePolicy();
+
+			std::string text;
+			if (_location) {
+				const auto* loc = static_cast<const RE::BGSLocation*>(handles.GetObjectForHandle(
+					RE::BSScript::GetVMTypeID<RE::BGSLocation>(), obj->GetHandle()));
+				if (loc)
+					text = SafeStr(loc->GetFullName());
+			} else {
+				auto* refr = static_cast<RE::TESObjectREFR*>(handles.GetObjectForHandle(
+					RE::BSScript::GetVMTypeID<RE::TESObjectREFR>(), obj->GetHandle()));
+				if (refr)
+					text = SafeStr(refr->GetDisplayFullName());
+			}
+			StoreQuestAliasText(_questID, _aliasName, std::move(text), _generation, _epoch);
+		}
+
+		void CallQueued() override {}
+		void CallCanceled() override {}
+		void StartMultiDispatch() override {}
+		void EndMultiDispatch() override {}
+
+	private:
+		std::uint32_t _questID{ 0 };
+		std::string   _aliasName;
+		bool          _location{ false };
+		std::uint64_t _generation{ 0 };
+		std::uint32_t _epoch{ 0 };
+	};
+
+	class QuestTextAliasCallback : public RE::BSScript::IStackCallbackFunctor
+	{
+	public:
+		QuestTextAliasCallback(std::uint32_t a_questID, std::string a_aliasName,
+			bool a_location, std::uint64_t a_generation, std::uint32_t a_epoch) :
+			_questID(a_questID), _aliasName(std::move(a_aliasName)), _location(a_location),
+			_generation(a_generation), _epoch(a_epoch)
+		{}
+
+		void operator()(RE::BSScript::Variable a_result) override
+		{
+			if (_generation != g_questSweepGeneration.load(std::memory_order_acquire) ||
+				_epoch != g_unsettledEpoch.load(std::memory_order_acquire))
+				return;
+			auto alias = RE::BSScript::get<RE::BSScript::Object>(a_result);
+			if (!alias)
+				return;
+			const auto game = RE::GameVM::GetSingleton();
+			const auto vm = game ? game->GetVM() : nullptr;
+			if (!vm)
+				return;
+			const auto args = [](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; };
+			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+				new AliasTextValueCallback(_questID, _aliasName, _location, _generation, _epoch)
+			};
+			vm->DispatchMethodCall(alias,
+				RE::BSFixedString(_location ? "GetLocation" : "GetReference"), args, callback, 0);
+		}
+
+		void CallQueued() override {}
+		void CallCanceled() override {}
+		void StartMultiDispatch() override {}
+		void EndMultiDispatch() override {}
+
+	private:
+		std::uint32_t _questID{ 0 };
+		std::string   _aliasName;
+		bool          _location{ false };
+		std::uint64_t _generation{ 0 };
+		std::uint32_t _epoch{ 0 };
+	};
+
+	void AskQuestTextAliases(std::uint32_t a_questID,
+		const std::vector<QuestAliasRecord>& a_aliases,
+		const RE::BSTSmartPointer<RE::BSScript::Object>& a_quest,
+		std::uint64_t a_generation, std::uint32_t a_epoch)
+	{
+		if (!a_quest)
+			return;
+		const auto game = RE::GameVM::GetSingleton();
+		const auto vm = game ? game->GetVM() : nullptr;
+		if (!vm)
+			return;
+
+		for (const auto& alias : a_aliases) {
+			const auto args = [index = alias.index](RE::BSScrapArray<RE::BSScript::Variable>& a_args) {
+				a_args.resize(1);
+				a_args[0] = static_cast<std::int32_t>(index);
+				return true;
+			};
+			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+				new QuestTextAliasCallback(a_questID, alias.name, alias.location, a_generation, a_epoch)
+			};
+			vm->DispatchMethodCall(a_quest, RE::BSFixedString("GetAlias"), args, callback, 0);
+		}
+	}
 
 	void AskQuestPlanetAliases(std::uint32_t a_questID,
 		const std::vector<std::pair<std::uint32_t, std::string>>& a_aliases)
@@ -8020,7 +7295,8 @@ namespace
 		}
 	}
 
-	void AskLocationParents(std::uint32_t a_questID, std::uint32_t a_locationID)
+	void AskLocationParents(std::uint32_t a_questID, std::uint32_t a_locationID,
+		std::uint32_t a_targetIndex, std::uint64_t a_generation)
 	{
 		const auto* form = RE::TESForm::LookupByID(a_locationID);
 		if (!form || form->GetFormType() != RE::FormType::kLCTN)
@@ -8049,22 +7325,20 @@ namespace
 
 		const auto args = [](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; };
 		const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-			new LocationParentsCallback(a_questID, a_locationID)
+			new LocationParentsCallback(a_questID, a_locationID, a_targetIndex, a_generation)
 		};
 		vm->DispatchMethodCall(object, RE::BSFixedString("GetParentLocations"), args, callback, 0);
 	}
 
 	// Ask once per location per session - the planet does not move once chosen.
-	void AskLocationForPlanet(std::uint32_t a_questID, const RE::BGSLocation* a_location)
+	void AskLocationForPlanet(std::uint32_t a_questID, const RE::BGSLocation* a_location,
+		std::uint32_t a_targetIndex, std::uint64_t a_generation)
 	{
 		if (!a_location)
 			return;
 		const auto locationID = a_location->GetFormID();
 		{
 			std::lock_guard lock{ g_questPlanetMutex };
-			// Already answered - nothing to do.
-			if (g_questPlanetFromVM.contains(a_questID))
-				return;
 			// Otherwise allow a handful of tries across sweeps. 4 is enough to span a
 			// load: the sweep runs at startup, on panel open and on tab switch.
 			constexpr std::uint32_t kMaxAttempts = 4;
@@ -8097,7 +7371,7 @@ namespace
 
 		const auto args = [](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; };
 		const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-			new LocationPlanetCallback(a_questID, locationID)
+			new LocationPlanetCallback(a_questID, locationID, a_targetIndex, a_generation)
 		};
 		vm->DispatchMethodCall(object, RE::BSFixedString("GetCurrentPlanet"), args, callback, 0);
 	}
@@ -8335,7 +7609,7 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
-	// PHASE 8 probe: the mission-location set, read from quest data.
+	// Mission-location state, read through the game's published Papyrus API.
 	//
 	// The chain is `Quest.GetCurrentStageTargets()` -> `ObjectReference[]` -> a
 	// form id per target. Nothing here is UI: it does not care whether a menu is
@@ -8350,12 +7624,9 @@ namespace
 	// architecture exists to refuse. Papyrus reaches the same data through a
 	// published native, using the dispatch machinery PHASE 6 already proved.
 	//
-	// ⚠ IT ITERATES AN ENGINE COLLECTION, which the header at the top of this file
-	// forbids on the strength of ShipHullRegen's crashes. It is done exactly once
-	// per probe, under the `BSReadWriteLock` the SDK publishes for that array, and
-	// the lock is held for a POINTER COPY and nothing else - every dispatch happens
-	// after it is released. If this graduates from a probe, that copy is the line
-	// to re-examine first.
+	// The quest ids come from the load-order parser. Each id is resolved individually
+	// with LookupByID; this never walks TESDataHandler::formArrays, whose layout is
+	// not reliable for this game build.
 	// ---------------------------------------------------------------------------
 	std::atomic<std::uint32_t> g_questDispatched{ 0 };
 	std::atomic<std::uint32_t> g_questAnswered{ 0 };
@@ -8364,8 +7635,9 @@ namespace
 	class QuestTargetCallback : public RE::BSScript::IStackCallbackFunctor
 	{
 	public:
-		QuestTargetCallback(std::uint32_t a_formID, std::string a_name) :
-			_formID(a_formID), _name(std::move(a_name))
+		QuestTargetCallback(std::uint32_t a_formID, std::string a_name,
+			std::uint64_t a_generation, std::uint32_t a_epoch) :
+			_formID(a_formID), _name(std::move(a_name)), _generation(a_generation), _epoch(a_epoch)
 		{}
 
 		void CallQueued() override {}
@@ -8376,6 +7648,9 @@ namespace
 
 		void operator()(RE::BSScript::Variable a_result) override
 		{
+			if (_generation != g_questSweepGeneration.load(std::memory_order_acquire) ||
+				_epoch != g_unsettledEpoch.load(std::memory_order_acquire))
+				return;
 			g_questAnswered.fetch_add(1, std::memory_order_relaxed);
 			g_questReplies.fetch_add(1, std::memory_order_relaxed);
 
@@ -8399,6 +7674,8 @@ namespace
 				state.targetCount = array ? static_cast<std::uint32_t>(array->size()) : 0u;
 				state.answeredTargets = true;
 				state.allBodies.clear();
+				state.orderedBodies.assign(array ? array->size() : 0u, 0);
+				state.orderedTargetNames.assign(array ? array->size() : 0u, {});
 			}
 
 			if (!array || array->size() == 0)
@@ -8458,6 +7735,12 @@ namespace
 						obj->GetHandle());
 					continue;
 				}
+				{
+					std::lock_guard lock{ g_menuStateMutex };
+					auto& state = g_menuState[_formID];
+					if (i < state.orderedTargetNames.size())
+						state.orderedTargetNames[i] = SafeStr(refr->GetDisplayFullName());
+				}
 
 				// ⭐ THE JOIN. A quest target is a reference; the panel deals in
 				// bodies. GetCurrentLocation is address-library backed and its id
@@ -8470,8 +7753,18 @@ namespace
 
 				// Runtime location: no table can place it, so ask the game. The answer
 				// arrives asynchronously and is used on a later rebuild.
+				if (bodyID == 0) {
+					const auto noArgs = [](RE::BSScrapArray<RE::BSScript::Variable>&) {
+						return true;
+					};
+					const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> planetCallback{
+						new ReferencePlanetCallback(_formID, i, _generation)
+					};
+					vm->DispatchMethodCall(obj, RE::BSFixedString("GetCurrentPlanet"), noArgs,
+						planetCallback, 0);
+				}
 				if (bodyID == 0 && location)
-					AskLocationForPlanet(_formID, location);
+					AskLocationForPlanet(_formID, location, i, _generation);
 
 				std::string   where = "unplaced";
 				std::uint32_t systemID = 0;
@@ -8514,6 +7807,8 @@ namespace
 				if (bodyID != 0) {
 					std::lock_guard lock{ g_menuStateMutex };
 					auto&           state = g_menuState[_formID];
+					if (i < state.orderedBodies.size())
+						state.orderedBodies[i] = bodyID;
 					if (std::find(state.allBodies.begin(), state.allBodies.end(), bodyID) ==
 						state.allBodies.end())
 						state.allBodies.push_back(bodyID);
@@ -8535,6 +7830,8 @@ namespace
 	private:
 		std::uint32_t _formID{ 0 };
 		std::string   _name;
+		std::uint64_t _generation{ 0 };
+		std::uint32_t _epoch{ 0 };
 	};
 
 	// One bool answer from the VM, filed against its quest. Two questions share it
@@ -8543,15 +7840,20 @@ namespace
 	enum class QuestQuery : std::uint8_t
 	{
 		kCompleted,
+		kRunning,
 		kActive,
 		kObjectiveDisplayed,
+		kObjectiveCompleted,
 	};
 
 	class QuestBoolCallback : public RE::BSScript::IStackCallbackFunctor
 	{
 	public:
-		QuestBoolCallback(std::uint32_t a_formID, QuestQuery a_query, std::uint16_t a_objective = 0) :
-			_formID(a_formID), _query(a_query), _objective(a_objective)
+		QuestBoolCallback(std::uint32_t a_formID, QuestQuery a_query,
+			std::uint64_t a_generation, std::uint32_t a_epoch,
+			std::uint16_t a_objective = 0, bool a_countReply = true) :
+			_formID(a_formID), _query(a_query), _objective(a_objective),
+			_generation(a_generation), _epoch(a_epoch), _countReply(a_countReply)
 		{}
 
 		void CallQueued() override {}
@@ -8562,7 +7864,11 @@ namespace
 
 		void operator()(RE::BSScript::Variable a_result) override
 		{
-			g_questReplies.fetch_add(1, std::memory_order_relaxed);
+			if (_generation != g_questSweepGeneration.load(std::memory_order_acquire) ||
+				_epoch != g_unsettledEpoch.load(std::memory_order_acquire))
+				return;
+			if (_countReply)
+				g_questReplies.fetch_add(1, std::memory_order_relaxed);
 			if (!a_result.is<bool>())
 				return;
 			const bool value = RE::BSScript::get<bool>(a_result);
@@ -8574,6 +7880,10 @@ namespace
 				state.completed = value;
 				state.answeredCompleted = true;
 				break;
+			case QuestQuery::kRunning:
+				state.running = value;
+				state.answeredRunning = true;
+				break;
 			case QuestQuery::kActive:
 				// "currently tracked by the player", per the script's own doc -
 				// which is exactly the override for hiding misc quests.
@@ -8583,6 +7893,10 @@ namespace
 				++state.objectivesAnswered;
 				if (value) {
 					++state.displayed;
+					if (std::find(state.displayedObjectives.begin(),
+							state.displayedObjectives.end(), _objective) ==
+						state.displayedObjectives.end())
+						state.displayedObjectives.push_back(_objective);
 					// ⭐ The NEWEST displayed objective is the one the row prints.
 					//
 					// Objective indices run in progression order, so of the ones still
@@ -8602,6 +7916,13 @@ namespace
 					}
 				}
 				break;
+			case QuestQuery::kObjectiveCompleted:
+				++state.objectivesAnswered;
+				if (value && std::find(state.completedObjectives.begin(),
+						state.completedObjectives.end(), _objective) ==
+					state.completedObjectives.end())
+					state.completedObjectives.push_back(_objective);
+				break;
 			}
 		}
 
@@ -8609,12 +7930,13 @@ namespace
 		std::uint32_t _formID{ 0 };
 		QuestQuery    _query{ QuestQuery::kCompleted };
 		std::uint16_t _objective{ 0 };
+		std::uint64_t _generation{ 0 };
+		std::uint32_t _epoch{ 0 };
+		bool          _countReply{ true };
 	};
 
-	// Reports the assembled mission set from the PREVIOUS run's answers - the VM
-	// replies asynchronously, so the set is only complete a moment after it was
-	// asked for. Printed newest-first in the log by being called at the top of the
-	// next run.
+	// Assemble the mission set after all accepted VM calls have replied, or after
+	// the six-second backstop if a call never returns.
 	void ReportMissionSet()
 	{
 		// One assembled mission: what the tab needs, gathered before anything is
@@ -8626,6 +7948,9 @@ namespace
 			std::string   bodyName;  // the destination body - the right column
 			// Extra destinations beyond the first, listed nested under it.
 			std::vector<std::uint32_t> extraBodies;
+			std::vector<std::string>   extraObjectives;
+			std::vector<std::string>   extraTargetNames;
+			std::string                targetName;
 			// Whether the quest has any targets at all - see QuestMenuState.
 			bool          hasTargets{ false };
 			std::uint32_t targetCount{ 0 };
@@ -8644,6 +7969,7 @@ namespace
 		std::unordered_set<std::uint32_t> types;
 		std::uint32_t                   inMenu = 0;
 		std::uint32_t                   completed = 0;
+		std::uint32_t                   notRunning = 0;
 		std::uint32_t                   noDisplay = 0;
 		std::uint32_t                   activities = 0;
 		std::uint32_t                   shown = 0;
@@ -8659,7 +7985,8 @@ namespace
 			// not merely shorten the list, it CHANGES it, which is what made the
 			// tab show completed quests one time and only activities the next.
 			// Skipped rather than guessed at; the count is reported below.
-			if (!state.answeredCompleted || state.objectivesAnswered < state.objectivesAsked) {
+			if (!state.answeredCompleted || !state.answeredRunning ||
+				state.objectivesAnswered < state.objectivesAsked) {
 				++pending;
 				continue;
 			}
@@ -8667,7 +7994,17 @@ namespace
 				++completed;
 				continue;
 			}
-			if (state.displayed == 0) {
+			if (!state.running) {
+				++notRunning;
+				continue;
+			}
+			std::vector<std::uint16_t> liveObjectives = state.displayedObjectives;
+			std::erase_if(liveObjectives, [&](const auto objective) {
+				return std::find(state.completedObjectives.begin(),
+					state.completedObjectives.end(), objective) !=
+					state.completedObjectives.end();
+			});
+			if (liveObjectives.empty()) {
 				++noDisplay;
 				continue;
 			}
@@ -8704,28 +8041,6 @@ namespace
 
 			lines.push_back(std::format("[mission] {:<12} {:<52} {:<9} {}", category, name,
 				state.tracked ? "TRACKED" : "", state.where.empty() ? "no target" : state.where));
-
-			// ⭐ THE FACTION CENSUS. One line per shown mission that carries keywords,
-			// resolved to editor ids so the answer is readable rather than hex.
-			//
-			// This is the read that decides whether faction icons are possible at all.
-			// If a faction keyword shows up here it can drive a vanilla icon component
-			// the same way uPoiCategory already drives DynamicPoiIcon. If nothing
-			// faction-shaped appears, then faction lives somewhere else and no icon
-			// work should start - which is the whole lesson of PHASE 9.
-			if (bCensusQuestKeywords.GetValue() && record != g_questRecords.end() &&
-				!record->second.keywords.empty()) {
-				std::string names;
-				for (const auto kw : record->second.keywords) {
-					if (!names.empty())
-						names += ", ";
-					if (const auto* form = RE::TESForm::LookupByID(kw))
-						names += SafeStr(form->GetFormEditorID());
-					else
-						names += std::format("{:08X}", kw);
-				}
-				lines.push_back(std::format("[mission]   keywords: {}", names));
-			}
 
 			// The panel wants the body's own NAME, not the log's descriptive
 			// phrase. An objective the parse could not place still gets a row, so
@@ -8770,11 +8085,53 @@ namespace
 			row.hasTargets = state.targetCount > 0;
 			row.targetCount = state.targetCount;
 			row.answeredTargets = state.answeredTargets;
-			for (const auto extra : state.allBodies)
-				if (extra != state.bodyID)
-					row.extraBodies.push_back(extra);
 			row.bodyID = state.bodyID;
 			row.questID = formID;
+
+			// The VM exposes displayed objectives and current targets separately, but
+			// both preserve quest-record order. Fold repeated target bodies (Dream
+			// Home has two refs on Nesoi), then pair each displayed objective with its
+			// distinct ordered destination.
+			std::vector<std::uint16_t> displayedObjectives = std::move(liveObjectives);
+			std::sort(displayedObjectives.begin(), displayedObjectives.end());
+			std::vector<std::uint32_t> orderedBodies;
+			std::vector<std::string> orderedTargetNames;
+			for (std::size_t targetIndex = 0; targetIndex < state.orderedBodies.size();
+				++targetIndex) {
+				const auto body = state.orderedBodies[targetIndex];
+				if (body != 0 && std::find(orderedBodies.begin(), orderedBodies.end(), body) ==
+					orderedBodies.end()) {
+					orderedBodies.push_back(body);
+					orderedTargetNames.push_back(targetIndex < state.orderedTargetNames.size() ?
+						state.orderedTargetNames[targetIndex] : std::string{});
+				}
+			}
+			if (!orderedTargetNames.empty())
+				row.targetName = orderedTargetNames.front();
+			const bool pairObjectives =
+				displayedObjectives.size() > 1 && orderedBodies.size() > 1;
+			if (pairObjectives) {
+				row.bodyID = orderedBodies.front();
+				row.systemID = 0;
+				const auto count = std::min(displayedObjectives.size(), orderedBodies.size());
+				for (std::size_t i = 1; i < count; ++i) {
+					row.extraBodies.push_back(orderedBodies[i]);
+					std::string objectiveText;
+					if (record != g_questRecords.end()) {
+						if (const auto text = record->second.objectiveText.find(displayedObjectives[i]);
+							text != record->second.objectiveText.end())
+							objectiveText = ExpandKnownQuestAliases(
+								ExpandQuestGlobals(text->second, record->second), state.aliasText);
+					}
+					row.extraObjectives.push_back(std::move(objectiveText));
+					row.extraTargetNames.push_back(i < orderedTargetNames.size() ?
+						orderedTargetNames[i] : std::string{});
+				}
+			} else {
+				for (const auto extra : state.allBodies)
+					if (extra != state.bodyID)
+						row.extraBodies.push_back(extra);
+			}
 
 			// The sub-entry prints the OBJECTIVE, which is what a mission list is
 			// actually for - "Talk to Sarah at the Lodge" says more than "Jemison".
@@ -8782,15 +8139,36 @@ namespace
 			// the autopilot needs.
 			// The body name is what the right column shows, so it has to be taken
 			// BEFORE `place` is overwritten with the objective text below.
-			if (state.bodyID != 0) {
+			if (row.bodyID != 0) {
 				std::lock_guard bodyLock{ g_bodyTableMutex };
-				if (const auto body = g_bodyTable.find(state.bodyID); body != g_bodyTable.end())
+				if (const auto body = g_bodyTable.find(row.bodyID); body != g_bodyTable.end()) {
 					row.bodyName = body->second.name;
+					row.systemID = body->second.galaxy.systemID;
+				}
 			}
-			if (state.haveObjective && record != g_questRecords.end()) {
-				if (const auto text = record->second.objectiveText.find(state.objective);
-					text != record->second.objectiveText.end())
-					row.place = text->second;
+			const auto primaryObjective = !displayedObjectives.empty() ?
+				displayedObjectives.front() : state.objective;
+			std::string rawPrimaryText;
+			if ((!displayedObjectives.empty() || state.haveObjective) &&
+				record != g_questRecords.end()) {
+				if (const auto text = record->second.objectiveText.find(primaryObjective);
+					text != record->second.objectiveText.end()) {
+					rawPrimaryText = text->second;
+					row.place = ExpandKnownQuestAliases(
+						ExpandQuestGlobals(text->second, record->second), state.aliasText);
+				}
+			}
+			if (!rawPrimaryText.empty() && LowerASCII(rawPrimaryText).find("global=") !=
+				std::string::npos) {
+				if (row.place != rawPrimaryText)
+					lines.push_back(std::format(
+						"[mission]   objective {} global text: '{}' -> '{}'", primaryObjective,
+						rawPrimaryText, row.place));
+				else
+					lines.push_back(std::format(
+						"[mission]   objective {} global text UNRESOLVED ({} QTGL): '{}'",
+						primaryObjective, record != g_questRecords.end() ?
+							record->second.textGlobals.size() : 0u, rawPrimaryText));
 			}
 			// Falling back to the place is better than falling back to nothing: a
 			// quest whose objective text did not resolve still says where to go.
@@ -8811,40 +8189,8 @@ namespace
 			// game itself would send you.
 			// ⭐⭐ BEST ANSWER: the quest's own planet aliases - the stored choice,
 			// stable across loads and available without tracking.
-			{
-				std::vector<std::uint32_t> aliasBodies;
-				{
-					std::lock_guard lock{ g_questPlanetMutex };
-					if (const auto found = g_questAliasBodies.find(formID);
-						found != g_questAliasBodies.end())
-						aliasBodies = found->second;
-				}
-				for (const auto body : aliasBodies) {
-					std::uint32_t system = 0;
-					std::string   name;
-					{
-						std::lock_guard bodyLock{ g_bodyTableMutex };
-						if (const auto found = g_bodyTable.find(body); found != g_bodyTable.end()) {
-							system = found->second.galaxy.systemID;
-							name = found->second.name;
-						}
-					}
-					if (name.empty())
-						continue;
-					if (row.bodyID == 0) {
-						row.bodyID = body;
-						row.systemID = system;
-						row.bodyName = name;
-					} else if (body != row.bodyID &&
-							   std::find(row.extraBodies.begin(), row.extraBodies.end(), body) ==
-								   row.extraBodies.end()) {
-						row.extraBodies.push_back(body);
-					}
-				}
-			}
-
-			// ⭐ FIRST CHOICE: the planet Location.GetCurrentPlanet named. It is the
-			// actual objective body, not just its system.
+			// First take the live planet resolved from the CURRENT stage target's
+			// location. This is stage-specific; quest aliases are not.
 			if (row.bodyID == 0) {
 				std::uint32_t fromVM = 0;
 				{
@@ -8863,11 +8209,41 @@ namespace
 				}
 			}
 
+			// A single stored planet alias is an unambiguous fallback. Multiple aliases
+			// are commonly future-stage slots (Into the Unknown has Location01/02),
+			// so neither selecting one nor printing all of them is truthful here.
+			if (row.bodyID == 0) {
+				std::vector<std::uint32_t> aliasBodies;
+				{
+					std::lock_guard lock{ g_questPlanetMutex };
+					if (const auto found = g_questAliasBodies.find(formID);
+						found != g_questAliasBodies.end())
+						aliasBodies = found->second;
+				}
+				if (aliasBodies.size() == 1) {
+					const auto body = aliasBodies.front();
+					std::uint32_t system = 0;
+					std::string   bodyName;
+					{
+						std::lock_guard bodyLock{ g_bodyTableMutex };
+						if (const auto found = g_bodyTable.find(body); found != g_bodyTable.end()) {
+							system = found->second.galaxy.systemID;
+							bodyName = found->second.name;
+						}
+					}
+					if (!bodyName.empty()) {
+						row.bodyID = body;
+						row.systemID = system;
+						row.bodyName = bodyName;
+					}
+				}
+			}
+
 			// Fallback: the system the game published when the quest was tracked.
 			// Every system tracking published. The first becomes the row's own
 			// destination; the rest nest beneath it, which is how a two-destination
 			// quest like "Into the Unknown" ends up showing both.
-			{
+			if (row.bodyID == 0) {
 				std::vector<std::uint32_t> systems;
 				{
 					std::lock_guard qLock{ g_questSystemMutex };
@@ -8895,10 +8271,6 @@ namespace
 						row.bodyID = pick;
 						row.systemID = system;
 						row.bodyName = pickName;
-					} else if (pick != row.bodyID &&
-							   std::find(row.extraBodies.begin(), row.extraBodies.end(), pick) ==
-								   row.extraBodies.end()) {
-						row.extraBodies.push_back(pick);
 					}
 				}
 			}
@@ -8963,15 +8335,6 @@ namespace
 				// resolve is a live mission, and hiding it made active missions look
 				// like they had vanished. The count comes from the target array itself
 				// rather than from whether a lookup succeeded.
-				// ⚠ TRACE THE DECISION. Three attempts at this filter have failed for
-				// three different reasons, each invisible from the outside. Print what
-				// the rule actually saw so the next wrong answer names itself.
-				if (bCensusQuestKeywords.GetValue())
-					REX::INFO("[mission] filter '{}': answered={} count={} hasTargets={} "
-							  "bodyID={:08X} aliases={}",
-						entry.mission, entry.answeredTargets, entry.targetCount, entry.hasTargets,
-						entry.bodyID, entry.planetAliasCount);
-
 				if (!entry.hasTargets) {
 					++dropped;
 					continue;
@@ -8984,6 +8347,7 @@ namespace
 				rowOut.systemID = entry.systemID;
 				rowOut.type = kTargetTypePlanet;  // what the by-id course route wants
 				rowOut.name = entry.tracked ? ("* " + entry.place) : entry.place;
+				rowOut.aliasTargetText = entry.targetName;
 				rowOut.questID = entry.questID;
 				rowOut.fromFeed = false;
 
@@ -8996,11 +8360,12 @@ namespace
 				rowOut.rightText = entry.bodyName.empty() ? std::string{ "-" } : entry.bodyName;
 				panelRows.push_back(std::move(rowOut));
 
-				// ⭐ NESTED EXTRA DESTINATIONS. "Into the Unknown" sends you to two
-				// places - Vladimir names both - and either is a real thing to fly to.
-				// They ride under the first as indented rows, reusing the moon indent,
-				// and each is independently selectable so RB flies to the one you pick.
-				for (const auto extra : entry.extraBodies) {
+				// ⭐ NESTED EXTRA DESTINATIONS. A current objective can resolve to more
+				// than one body, and each is independently selectable. Repeat the
+				// objective on the indented row; the right column already names the
+				// planet, so an "also: planet" caption only duplicates that column.
+				for (std::size_t extraIndex = 0; extraIndex < entry.extraBodies.size(); ++extraIndex) {
+					const auto extra = entry.extraBodies[extraIndex];
 					std::string   extraName;
 					std::uint32_t extraSystem = 0;
 					{
@@ -9022,7 +8387,11 @@ namespace
 					sub.questID = entry.questID;
 					sub.fromFeed = false;
 					sub.isMoon = true;  // the indent, so it reads as belonging above
-					sub.name = "also: " + extraName;
+					sub.name = extraIndex < entry.extraObjectives.size() &&
+						!entry.extraObjectives[extraIndex].empty() ?
+						entry.extraObjectives[extraIndex] : entry.place;
+					sub.aliasTargetText = extraIndex < entry.extraTargetNames.size() ?
+						entry.extraTargetNames[extraIndex] : entry.targetName;
 					sub.rightText = extraName;
 					panelRows.push_back(std::move(sub));
 				}
@@ -9094,8 +8463,9 @@ namespace
 		}
 
 		REX::INFO("[mission] ==== {} to show: {} in the mission log, less {} untracked activities "
-				  "({} completed, {} running with nothing displayed, {} still unanswered) ====",
-			shown, inMenu, activities, completed, noDisplay, pending);
+				  "({} completed, {} not running, {} running with nothing displayed, {} still "
+				  "unanswered) ====",
+			shown, inMenu, activities, completed, notRunning, noDisplay, pending);
 		if (pending != 0)
 			REX::WARN("[mission] {} quest(s) had not finished answering and were LEFT OUT rather "
 					  "than guessed at - the list is short, not wrong",
@@ -9160,7 +8530,9 @@ namespace
 			return true;
 		};
 		const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-			new QuestBoolCallback(questID, QuestQuery::kActive)
+			new QuestBoolCallback(questID, QuestQuery::kActive,
+				g_questSweepGeneration.load(std::memory_order_acquire),
+				g_unsettledEpoch.load(std::memory_order_acquire), 0, false)
 		};
 		if (vm->DispatchMethodCall(object, RE::BSFixedString("SetActive"), args, callback, 0)) {
 			REX::INFO("[mission] SetActive dispatched for {:08X}", questID);
@@ -9212,85 +8584,6 @@ namespace
 	// route is action dispatch; if the interesting one is an AVIF, an actor value
 	// is settable from Papyrus with machinery this mod already has.
 	// ---------------------------------------------------------------------------
-	void ProbeGravJumpObjects()
-	{
-		constexpr const char* kDefaultObjects[]{
-			"GravJumpInitiateAction_DO",
-			"GravJumpExecuteAction_DO",
-			"GravJumpFinishAction_DO",
-			"GravJumpCancelAction_DO",
-			"SpaceshipGravJumpInitiatedActorValue_DO",
-			"SpaceshipGravJumpCalculationActorValue_DO",
-			"SpaceshipGravJumpFuelActorValue_DO",
-			"SpaceshipGravJumpPowerActorValue_DO",
-			"GravJumpDistancePerFuelActorValueDO",
-			"GravJumpThrustActorValueDO",
-			"SpaceshipGravJumpCameraPath_DO",
-			"PlanetGravJumpArrivalMarker_DO",
-		};
-
-		REX::INFO("[gravjump] ==== resolving the grav-jump default objects ====");
-		for (const auto* editorID : kDefaultObjects) {
-			const auto form = RE::TESForm::LookupByEditorID(RE::BSFixedString{ editorID });
-			if (!form) {
-				REX::INFO("[gravjump] {:<44} does not resolve", editorID);
-				continue;
-			}
-
-			const auto formType = std::to_underlying(form->GetFormType());
-			// A DFOB is a wrapper: the thing that matters is what it BINDS to.
-			if (form->GetFormType() == RE::FormType::kDFOB) {
-				const auto* dobj = static_cast<const RE::BGSDefaultObject*>(form);
-				const auto* bound = dobj->object;
-				if (!bound) {
-					REX::INFO("[gravjump] {:<44} DFOB {:08X} -> binds NOTHING", editorID,
-						form->GetFormID());
-					continue;
-				}
-				REX::INFO("[gravjump] {:<44} DFOB {:08X} -> {:08X} formType {:02X} '{}'", editorID,
-					form->GetFormID(), bound->GetFormID(),
-					std::to_underlying(bound->GetFormType()), SafeStr(bound->GetFormEditorID()));
-			} else {
-				REX::INFO("[gravjump] {:<44} {:08X} formType {:02X} (not a DFOB)", editorID,
-					form->GetFormID(), formType);
-			}
-		}
-		// ⭐ And read them off the player's ship. `TESObjectREFR` inherits
-		// `ActorValueOwner` (declared, at offset 0x70), so `GetActorValue` is a
-		// published virtual on a published layout - no offset of ours.
-		//
-		// ⚠ MEASURE BEFORE WRITING. `SpaceshipGravJumpInitiated` might be the
-		// engine's own readback of a jump in progress rather than a switch that
-		// starts one, and those two look identical until you watch one move. Do a
-		// real grav jump with this on and the values say which it is: a number that
-		// changes when the player jumps is state, and state is not a trigger.
-		const auto player = RE::PlayerCharacter::GetSingleton();
-		const auto ship = player ? player->GetSpaceship() : nullptr;
-		if (!ship) {
-			REX::INFO("[gravjump] no ship to read actor values from");
-		} else {
-			constexpr const char* kValues[]{
-				"SpaceshipGravJumpInitiated",
-				"SpaceshipGravJumpCalculation",
-				"SpaceshipGravJumpFuel",
-				"SpaceshipGravJumpCurrentPower",
-				"SpaceshipGravJumpDistancePerFuel",
-				"SpaceshipGravJumpThrust",
-			};
-			for (const auto* name : kValues) {
-				const auto form = RE::TESForm::LookupByEditorID(RE::BSFixedString{ name });
-				const auto* info = form ? form->As<RE::ActorValueInfo>() : nullptr;
-				if (!info) {
-					REX::INFO("[gravjump] AV {:<34} does not resolve to an ActorValueInfo", name);
-					continue;
-				}
-				REX::INFO("[gravjump] AV {:<34} = {:.3f}  (base {:.3f})", name,
-					ship->GetActorValue(*info), ship->GetBaseActorValue(*info));
-			}
-		}
-
-		REX::INFO("[gravjump] ==== end (07=AACT action, 6D=AVIF actor value, 79=DFOB) ====");
-	}
 
 	// ---------------------------------------------------------------------------
 	// PHASE 9: watch the grav-jump actor values CONTINUOUSLY.
@@ -9301,81 +8594,19 @@ namespace
 	// even reach the mod during the cutscene. A check that cannot observe the event
 	// it was built for is this project's recurring mistake; this is the fix.
 	//
-	// Samples on the per-frame task at a fixed interval and logs ONLY on change, so
-	// a quiet session costs one line at startup and the jump writes its own
-	// timeline: which value moves first, what it moves to, and in what order.
-	// ---------------------------------------------------------------------------
-	constexpr const char* kGravJumpValues[]{
-		"SpaceshipGravJumpInitiated",
-		"SpaceshipGravJumpCalculation",
-		"SpaceshipGravJumpFuel",
-		"SpaceshipGravJumpCurrentPower",
-		"SpaceshipGravJumpDistancePerFuel",
-		"SpaceshipGravJumpThrust",
-	};
-	constexpr std::size_t kGravJumpValueCount = std::size(kGravJumpValues);
-
-	const RE::ActorValueInfo* g_gravJumpAV[kGravJumpValueCount]{};
-	float                     g_gravJumpLast[kGravJumpValueCount]{};
-	bool                      g_gravJumpSeeded = false;
-	std::atomic<std::int64_t> g_gravJumpNextSampleMs{ 0 };
-
-	void WatchGravJumpValues()
+	void SweepQuestTargets()
 	{
-		using clock = std::chrono::steady_clock;
-		const auto nowMs =
-			std::chrono::duration_cast<std::chrono::milliseconds>(clock::now().time_since_epoch())
-				.count();
-		if (nowMs < g_gravJumpNextSampleMs.load(std::memory_order_acquire))
-			return;
-		// 100 ms: fast enough to catch a transition, slow enough that a quiet
-		// session does no measurable work.
-		g_gravJumpNextSampleMs.store(nowMs + 100, std::memory_order_release);
-
-		const auto player = RE::PlayerCharacter::GetSingleton();
-		const auto ship = player ? player->GetSpaceship() : nullptr;
-		if (!ship)
-			return;
-
-		for (std::size_t i = 0; i < kGravJumpValueCount; ++i) {
-			if (!g_gravJumpAV[i]) {
-				const auto form = RE::TESForm::LookupByEditorID(RE::BSFixedString{ kGravJumpValues[i] });
-				g_gravJumpAV[i] = form ? form->As<RE::ActorValueInfo>() : nullptr;
-				if (!g_gravJumpAV[i])
-					continue;
-			}
-
-			const float value = ship->GetActorValue(*g_gravJumpAV[i]);
-			if (!g_gravJumpSeeded) {
-				g_gravJumpLast[i] = value;
-				continue;
-			}
-			// Floats, so compare with a tolerance rather than for equality - a
-			// value that jitters in the last bit would otherwise log forever.
-			if (std::fabs(value - g_gravJumpLast[i]) > 0.0005f) {
-				REX::INFO("[gravjump] {} : {:.3f} -> {:.3f}", kGravJumpValues[i], g_gravJumpLast[i],
-					value);
-				g_gravJumpLast[i] = value;
-			}
-		}
-
-		if (!g_gravJumpSeeded) {
-			g_gravJumpSeeded = true;
-			REX::INFO("[gravjump] watching {} actor values on the ship - only CHANGES print from "
-					  "here. Do a grav jump and the log writes its own timeline.",
-				kGravJumpValueCount);
-		}
-	}
-
-	void ProbeQuestTargets()
-	{
-		const auto handler = RE::TESDataHandler::GetSingleton();
 		const auto game = RE::GameVM::GetSingleton();
 		const auto vm = game ? game->GetVM() : nullptr;
-		if (!handler || !vm) {
-			REX::WARN("[quest] no {} - cannot probe", handler ? "script VM" : "TESDataHandler");
+		if (!vm) {
+			REX::WARN("[quest] no script VM - cannot sweep");
 			return;
 		}
+
+		ResetMissionRuntimeStateForCurrentWorld();
+		const auto generation =
+			g_questSweepGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+		const auto epoch = g_unsettledEpoch.load(std::memory_order_acquire);
 
 		// ⚠ NOT assembled here. The first cut reported the PREVIOUS run's answers at
 		// the top of the next run, which meant the tab always showed the state
@@ -9400,37 +8631,6 @@ namespace
 
 		const auto started = std::chrono::steady_clock::now();
 
-		// ⚠ THE CONTROL, and it exists because the first run of this probe reported
-		// "0 QUST forms" - an answer with two explanations that must not be allowed
-		// to look like one. Either the data handler genuinely does not keep quests
-		// in this array, or `formArrays` is not being read correctly at all (wrong
-		// member offset for this game build, wrong indexing, wrong singleton). A
-		// census of EVERY form type separates them in one run: if PNDT comes back
-		// near the 1765 the mod's own ESM parse counts, the read works and QUST is
-		// really absent; if everything is zero, the read is what is broken.
-		{
-			std::uint32_t nonEmpty = 0;
-			std::uint32_t shown = 0;
-			for (std::uint32_t t = 0; t < std::to_underlying(RE::FormType::kTotal); ++t) {
-				auto&         slot = handler->formArrays[t];
-				std::uint32_t count = 0;
-				{
-					RE::BSAutoLock<RE::BSReadWriteLock, RE::BSAutoLockReadLockPolicy> lock{ slot.lock };
-					count = static_cast<std::uint32_t>(slot.formArray.size());
-				}
-				if (count == 0)
-					continue;
-				++nonEmpty;
-				if (shown < 40) {
-					++shown;
-					REX::INFO("[quest] formArrays[{:#04X}] = {} form(s)", t, count);
-				}
-			}
-			REX::INFO("[quest] {} of {} form arrays are non-empty (QUST is {:#04X}, PNDT is {:#04X})",
-				nonEmpty, std::to_underlying(RE::FormType::kTotal),
-				std::to_underlying(RE::FormType::kQUST), std::to_underlying(RE::FormType::kPNDT));
-		}
-
 		// The quest set comes from the LOAD ORDER PARSE, not from the engine - see
 		// the header above ParsePluginQuests for the measurement that forced that.
 		// LookupByID turns each parsed id into the live form; an id that no longer
@@ -9448,26 +8648,7 @@ namespace
 
 		const auto snapshotMs =
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-		// Did the ESM parse find any planet-bearing location aliases at all? Every
-		// quest reported aliases=0, which is either a parse that never reaches ALLS/ALID
-		// or a filter that matches nothing. One line separates those.
-		{
-			std::size_t withAliases = 0;
-			std::size_t totalAliases = 0;
-			{
-				std::lock_guard lock{ g_questFormMutex };
-				for (const auto& [id, rec] : g_questRecords) {
-					if (!rec.planetAliases.empty()) {
-						++withAliases;
-						totalAliases += rec.planetAliases.size();
-					}
-				}
-			}
-			REX::INFO("[quest] planet aliases parsed: {} quest(s), {} alias(es) total",
-				withAliases, totalAliases);
-		}
-
-		REX::INFO("[quest] ==== probe: {} QUST forms snapshotted in {:.1f} ms ====", quests.size(),
+		REX::INFO("[quest] ==== sweep: {} QUST forms snapshotted in {:.1f} ms ====", quests.size(),
 			snapshotMs);
 
 		// ⚠ Snapshot BEFORE the reset, and report at the END of the run. The first
@@ -9479,7 +8660,6 @@ namespace
 		g_questDispatched.store(0, std::memory_order_release);
 
 		auto&               handles = vm->GetObjectHandlePolicy();
-		const auto          limit = static_cast<std::size_t>(uQuestProbeMax.GetValue());
 		static const RE::BSFixedString s_questScript{ "Quest" };
 		const auto          args = [](RE::BSScrapArray<RE::BSScript::Variable>&) { return true; };
 
@@ -9487,10 +8667,12 @@ namespace
 		std::uint32_t unbound = 0;
 		std::uint32_t refused = 0;
 		std::uint32_t completedAsked = 0;
+		std::uint32_t runningAsked = 0;
 		std::uint32_t objectivesAsked = 0;
+		std::uint32_t objectiveCompletedAsked = 0;
 		std::uint32_t noObjectives = 0;
 
-		for (std::size_t i = 0; i < quests.size() && i < limit; ++i) {
+		for (std::size_t i = 0; i < quests.size(); ++i) {
 			const auto* form = quests[i];
 			if (!form)
 				continue;
@@ -9556,8 +8738,35 @@ namespace
 				AskQuestPlanetAliases(formID, planetAliases);
 			}
 
+			// Quest text replacement aliases are independent of stage targets. Query only
+			// names that actually occur in this quest's title/objectives; this captures
+			// radiant values such as ResourceName and QuestGiver without dispatching all
+			// ~24k aliases in the load order.
+			{
+				std::vector<QuestAliasRecord> textAliases;
+				{
+					std::lock_guard lock{ g_questFormMutex };
+					if (const auto record = g_questRecords.find(formID);
+						record != g_questRecords.end()) {
+						std::string text = record->second.name;
+						for (const auto& [index, objectiveText] : record->second.objectiveText) {
+							(void)index;
+							text += objectiveText;
+						}
+						const auto lowerText = LowerASCII(text);
+						for (const auto& alias : record->second.aliases) {
+							const auto needle = std::format("<alias={}>", LowerASCII(alias.name));
+							if (lowerText.find(needle) != std::string::npos)
+								textAliases.push_back(alias);
+						}
+					}
+				}
+				AskQuestTextAliases(formID, textAliases, object, generation, epoch);
+			}
+
 			const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-				new QuestTargetCallback(formID, std::string{ SafeStr(form->GetFormEditorID()) })
+				new QuestTargetCallback(formID, std::string{ SafeStr(form->GetFormEditorID()) },
+					generation, epoch)
 			};
 			if (vm->DispatchMethodCall(object, RE::BSFixedString("GetCurrentStageTargets"), args,
 					callback, 0)) {
@@ -9571,7 +8780,7 @@ namespace
 			// already fetched above to decide whether to ask at all.
 			{
 				const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> done{
-					new QuestBoolCallback(formID, QuestQuery::kCompleted)
+					new QuestBoolCallback(formID, QuestQuery::kCompleted, generation, epoch)
 				};
 				if (vm->DispatchMethodCall(object, RE::BSFixedString("IsCompleted"), args, done, 0)) {
 					++completedAsked;
@@ -9579,8 +8788,17 @@ namespace
 				}
 			}
 			{
+				const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> running{
+					new QuestBoolCallback(formID, QuestQuery::kRunning, generation, epoch)
+				};
+				if (vm->DispatchMethodCall(object, RE::BSFixedString("IsRunning"), args, running, 0)) {
+					++runningAsked;
+					g_questExpected.fetch_add(1, std::memory_order_relaxed);
+				}
+			}
+			{
 				const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> active{
-					new QuestBoolCallback(formID, QuestQuery::kActive)
+					new QuestBoolCallback(formID, QuestQuery::kActive, generation, epoch)
 				};
 				if (vm->DispatchMethodCall(object, RE::BSFixedString("IsActive"), args, active, 0))
 					g_questExpected.fetch_add(1, std::memory_order_relaxed);
@@ -9591,7 +8809,8 @@ namespace
 			// the timer-based assembly could not make.
 			{
 				std::lock_guard lock{ g_menuStateMutex };
-				g_menuState[formID].objectivesAsked = static_cast<std::uint32_t>(objectives.size());
+				g_menuState[formID].objectivesAsked =
+					static_cast<std::uint32_t>(objectives.size() * 2);
 			}
 
 			for (const auto index : objectives) {
@@ -9604,7 +8823,8 @@ namespace
 					return true;
 				};
 				const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> shown{
-					new QuestBoolCallback(formID, QuestQuery::kObjectiveDisplayed, index)
+					new QuestBoolCallback(formID, QuestQuery::kObjectiveDisplayed, generation, epoch,
+						index)
 				};
 				if (vm->DispatchMethodCall(object, RE::BSFixedString("IsObjectiveDisplayed"), objArgs,
 						shown, 0)) {
@@ -9613,6 +8833,20 @@ namespace
 				} else {
 					// A dispatch that was never accepted will never answer, so the
 					// quest's asked-count must come down or it waits forever.
+					std::lock_guard lock{ g_menuStateMutex };
+					if (auto& state = g_menuState[formID]; state.objectivesAsked > 0)
+						--state.objectivesAsked;
+				}
+
+				const RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> objectiveDone{
+					new QuestBoolCallback(formID, QuestQuery::kObjectiveCompleted, generation, epoch,
+						index)
+				};
+				if (vm->DispatchMethodCall(object, RE::BSFixedString("IsObjectiveCompleted"), objArgs,
+						objectiveDone, 0)) {
+					++objectiveCompletedAsked;
+					g_questExpected.fetch_add(1, std::memory_order_relaxed);
+				} else {
 					std::lock_guard lock{ g_menuStateMutex };
 					if (auto& state = g_menuState[formID]; state.objectivesAsked > 0)
 						--state.objectivesAsked;
@@ -9628,8 +8862,9 @@ namespace
 			refused, g_questExpected.load(std::memory_order_acquire), queuedMs);
 		REX::INFO("[quest] previous run answered {} with {} carrying targets", prevAnswered,
 			prevTargets);
-		REX::INFO("[quest] menu parity: asked IsCompleted x{}, IsObjectiveDisplayed x{}",
-			completedAsked, objectivesAsked);
+		REX::INFO("[quest] menu parity: asked IsCompleted x{}, IsRunning x{}, "
+				  "IsObjectiveDisplayed x{}, IsObjectiveCompleted x{}",
+			completedAsked, runningAsked, objectivesAsked, objectiveCompletedAsked);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -9991,7 +9226,7 @@ namespace
 			// lock, which is the whole point of the test.
 			bool missionTarget = false;
 			{
-				std::lock_guard lock{ g_missionBodyMutex };
+				std::lock_guard missionLock{ g_missionBodyMutex };
 				missionTarget = g_missionBodies.contains(formID);
 			}
 			if (entry->second.galaxy.parentPlanetID != 0 && !missionTarget &&
@@ -10169,53 +9404,6 @@ namespace
 					}
 				}
 
-				// The quest-marker mode: any selected target the HUD says carries a quest
-				// marker will do, because that is exactly what QuestJumpButton keys off.
-				if (g_acquireWantQuestMarker.load(std::memory_order_acquire)) {
-					for (const auto& row : g_candidates) {
-						if (!row.isInfoTarget)
-							continue;
-						if (row.hasQuestTarget) {
-							g_acquireWantQuestMarker.store(false, std::memory_order_release);
-							g_acquirePressesLeft.store(0, std::memory_order_release);
-							REX::INFO("[acquire] '{}' ({:08X}) is selected AND carries a quest "
-									  "marker - that is what the jump needs",
-								row.name, row.id);
-						}
-						break;
-					}
-					if (g_acquirePressesLeft.load(std::memory_order_acquire) == 0 &&
-						g_acquireWantQuestMarker.exchange(false, std::memory_order_acq_rel))
-						REX::WARN("[acquire] gave up - nothing the cycle offered carries a quest "
-								  "marker, so the mission's target is not selectable from here");
-				}
-
-				// PHASE 8: has the cycling landed? The engine's own `isInfoTarget`
-				// is the only honest answer, and it arrives here with every rebuild.
-				if (const auto want = g_acquireWantID.load(std::memory_order_acquire); want != 0) {
-					for (const auto& row : g_candidates) {
-						if (!row.isInfoTarget)
-							continue;
-						if (row.id == want) {
-							g_acquireWantID.store(0, std::memory_order_release);
-							g_acquirePressesLeft.store(0, std::memory_order_release);
-							REX::INFO("[acquire] '{}' is now the info target ({:08X}) - stopped "
-									  "cycling, the hard lock is on it",
-								row.name, row.id);
-						} else if (bVerboseLog.GetValue()) {
-							REX::INFO("[acquire] cycled onto '{}' ({:08X}), not the one asked for",
-								row.name, row.id);
-						}
-						break;
-					}
-					// Ran out of presses without ever landing on it.
-					if (g_acquirePressesLeft.load(std::memory_order_acquire) == 0 &&
-						g_acquireWantID.exchange(0, std::memory_order_acq_rel) != 0)
-						REX::WARN("[acquire] gave up on {:08X} - the cycle never offered it, so it "
-								  "is not in the engine's target set from here",
-							want);
-				}
-
 				// PHASE 8: what did tracking put on the feed? Runs only inside the
 				// watch window a track opens, and reports each new id once.
 				if (const auto until = g_trackWatchUntil.load(std::memory_order_acquire); until != 0) {
@@ -10306,7 +9494,6 @@ namespace
 								REX::INFO("[mission] the objective's own body '{}' ({:08X}) is on "
 										  "the feed - locked onto it directly",
 									row.name, row.id);
-								RequestAcquire(row.id, "objective body reached the feed");
 								lockedIt = true;
 								break;
 							}
@@ -10328,10 +9515,6 @@ namespace
 							REX::INFO("[mission] tracking published the system '{}' ({:08X}) at "
 									  "{:.3g} m - locked onto it, the HUD marker points there now",
 								bestName, bestStar, bestDistance);
-							// ⭐ The one that matters: a star the cycle can reach is
-							// a HARD lock on the mission's destination system, which
-							// is what the game's own prompts hang off.
-							RequestAcquire(bestStar, "tracking published the destination system");
 							lockedIt = true;
 						}
 						// Nothing to lock onto yet. Report anything the feed has
@@ -10736,137 +9919,6 @@ namespace
 	StarmapProbeHandler g_starmapProbeHandler;
 
 	// ---------------------------------------------------------------------------
-	// PHASE 8: the star map's marker feed, subscribed FROM THE MAP'S OWN MOVIE.
-	//
-	// ⭐ MEASURED 2026-08-12 (census 4b), and it is what makes this file necessary:
-	// a subscription to 'StarMapMenuMarkersData' made from the SHIP HUD movie
-	// registers happily and then NEVER FIRES - not once, with GalaxyStarMapMenu
-	// open for 18 seconds and SpaceshipHudMenu alive throughout. That is
-	// PHASE5-STARMAP-DATA.md section 1's mechanism exactly: the engine writes into
-	// the object registered in the PUBLISHER'S movie and flushes there. So the fix
-	// is not a better feed name or a longer wait - it is to subscribe from the
-	// movie the publisher is actually feeding.
-	//
-	// ⚠ This does NOT contradict PHASE 5 section 7 ("none publish to the ship HUD
-	// movie"), which is true and stays true. It answers a question that section was
-	// not asking: subscribe somewhere else.
-	//
-	// ⚠ The menu is 'GalaxyStarMapMenu'. kProbeMenus guesses 'StarMapMenu', which
-	// has never appeared in a [menu] line in any session - it is simply wrong.
-	//
-	// ⚠ Everything here runs on the SFSE per-frame task, i.e. a BSJobs worker, and
-	// reaches into a movie's VM. That is the shape of the v1.1.2 takeoff crash, so
-	// it carries the same two guards the ship HUD path does: a settle hold before
-	// the first probe, and a live-root re-check before every VM call.
-	// ---------------------------------------------------------------------------
-	constexpr const char* kGalaxyMapMenu = "GalaxyStarMapMenu";
-	constexpr const char* kMapMarkersFeed = "StarMapMenuMarkersData";
-
-	// The harvest: body id -> marker name, for every marker the map reports as
-	// carrying a quest target. Written from the map movie's UI thread and read by
-	// the panel's, so it takes a mutex - it changes a few times per map session and
-	// never per frame.
-	std::mutex                                     g_missionMutex;
-	std::unordered_map<std::uint32_t, std::string> g_missionMarkers;
-
-	// One-shot per subscription: dump every marker in full, so the payload's real
-	// shape and id scheme are read rather than assumed. Armed when a subscription
-	// succeeds; the feed republishes continuously while the map is open, and an
-	// unbounded dump would bury the log.
-	std::atomic<bool> g_mapDumpArmed{ false };
-	std::atomic<bool> g_mapShapeReported{ false };
-
-	class MarkerCollector : public RE::Scaleform::GFx::Value::ArrayVisitor
-	{
-	public:
-		std::unordered_map<std::uint32_t, std::string> quest;
-		std::uint32_t                                  total{ 0 };
-		bool                                           dumpAll{ false };
-
-		void Visit(std::uint32_t a_index, const RE::Scaleform::GFx::Value& a_value) override
-		{
-			RE::Scaleform::GFx::Value entry = a_value;
-			RE::Scaleform::GFx::Value member;
-			++total;
-
-			if (dumpAll && ScaleformBudgetOk()) {
-				REX::INFO("[mission] --- marker {} ---", a_index);
-				LevelCollector visitor{ "[mission] m", nullptr };
-				entry.VisitMembers(&visitor);
-			}
-
-			if (!entry.GetMember("bHasQuestTarget", &member) || !member.IsBoolean() ||
-				!member.GetBoolean())
-				return;
-
-			std::uint32_t id = 0;
-			if (entry.GetMember("uBodyID", &member))
-				id = static_cast<std::uint32_t>(AsNumber(member));
-
-			std::string name;
-			if (entry.GetMember("sMarkerText", &member) && member.IsString() && member.GetString())
-				name = member.GetString();
-
-			quest.emplace(id, std::move(name));
-		}
-	};
-
-	class MapMarkersHandler : public RE::Scaleform::GFx::FunctionHandler
-	{
-	public:
-		void Call(const Params& a_params) override
-		{
-			if (a_params.argCount < 1 || !a_params.args)
-				return;
-
-			RE::Scaleform::GFx::Value event = a_params.args[0];
-			RE::Scaleform::GFx::Value data;
-			if (!event.IsObject() || !event.GetMember("data", &data))
-				data = event;
-
-			RE::Scaleform::GFx::Value markers;
-			if (!data.GetMember("aMarkersData", &markers) || !markers.IsArray()) {
-				// ⚠ Report the shape rather than depend on the name. 'aMarkersData'
-				// comes from a decompiled SWF and has never been seen at runtime;
-				// PHASE 7's far-travel probe is the standing lesson about code
-				// gated on an unverified field failing silently.
-				if (!g_mapShapeReported.exchange(true, std::memory_order_acq_rel)) {
-					REX::WARN("[mission] payload carries no 'aMarkersData' array - "
-							  "dumping what it does have, so the real name can be read off:");
-					g_scaleformLines.store(0, std::memory_order_relaxed);
-					LevelCollector visitor{ "[mission] payload", nullptr };
-					data.VisitMembers(&visitor);
-				}
-				return;
-			}
-
-			MarkerCollector collector;
-			collector.dumpAll = g_mapDumpArmed.exchange(false, std::memory_order_acq_rel);
-			if (collector.dumpAll) {
-				g_scaleformLines.store(0, std::memory_order_relaxed);
-				REX::INFO("[mission] ==== first publish: every marker in full ====");
-			}
-			markers.VisitElements(&collector);
-			if (collector.dumpAll)
-				REX::INFO("[mission] ==== end ({} markers) ====", collector.total);
-
-			// Log on CHANGE only. The feed republishes as the player pans and
-			// zooms, so a line per publish would be a line per frame.
-			std::lock_guard lock{ g_missionMutex };
-			if (collector.quest == g_missionMarkers)
-				return;
-			g_missionMarkers = std::move(collector.quest);
-
-			REX::INFO("[mission] {} of {} markers carry a quest target:",
-				g_missionMarkers.size(), collector.total);
-			for (const auto& [id, name] : g_missionMarkers)
-				REX::INFO("[mission]   {:08X}  '{}'", id, name);
-		}
-	};
-
-	MapMarkersHandler g_mapMarkersHandler;
-
-	// ---------------------------------------------------------------------------
 	// SPEAKING to the engine.
 	//
 	// Everything else this plugin does is a read or a Scaleform-side draw. This is
@@ -11055,30 +10107,11 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
-	// PHASE 8: the out-of-system verb.
-	//
-	// ⛔ WHAT CANNOT BE DONE, so nobody spends another session on it: the vanilla
-	// "active lock" - point at a body, press A, get the *RB Autopilot* / *X Mission*
-	// prompt - is the engine's own hover/info target. PHASE 1 settled that the SWF
-	// can only READ `iInfoTargetIndex`, that every reference to it is a read, and
-	// that "the engine owns target selection outright, and exposes no way to request
-	// a specific object". The panel cannot produce that prompt.
-	//
-	// ⭐ WHAT CAN: the ACTIONS behind the two prompts are both by-id verbs.
-	//   * in-system body  -> `Reticle_OnCruiseLockCourse {uBodyID}`, which this mod
-	//     has shipped since v1.2.0. That is the *RB Autopilot* half, already done.
-	//   * out-of-system   -> `ShipHud_FarTravel {uValue}`, which PHASE 7 proved
-	//     accepts an arbitrary row id with nothing targeted. That is the *X Mission*
-	//     half, and a grav jump is what the prompt would have done anyway.
-	//
-	// ⚠ PHASE 7 DELETED its far-travel probe on the verdict that skipping the flight
-	// "kind of kills the whole point of cruise mode". That judgement was about a
-	// STATION a few hundred kilometres away. This is a system 28 light-years off,
-	// which no amount of cruising reaches - the jump is not a shortcut around the
-	// flying, it is the only way there. Different case, same verb.
-	//
-	// ⚠ IT MOVES THE SHIP, which almost nothing else in this mod does. Off by
-	// default, and behind its own switch.
+	// Mission travel. Same-system destinations use the panel's established course
+	// path. Remote destinations use the guarded route substitution, which supplies
+	// an explicit star/body pair and restores the engine's route header immediately
+	// after DoJump. The UI quest-marker action remains a safe fallback; failed
+	// destinationless experiments are deliberately not part of the shipping path.
 	// ---------------------------------------------------------------------------
 	void RunMissionJump()
 	{
@@ -11147,22 +10180,6 @@ namespace
 
 		// ⭐⭐ PUT THE ENGINE'S TARGET ON THE DESTINATION FIRST.
 		//
-		// The jump event is vanilla's QuestJumpButton - it acts on the SELECTED target
-		// and does nothing at all when the selection is not a quest marker. Until now
-		// the panel just sent the A-press and hoped the ship happened to be pointed the
-		// right way, which works by proximity and fails the moment another body is
-		// nearer. That is the "it autopiloted to a rock instead" report.
-		//
-		// So: ask PHASE 8's cycler to walk vanilla's own target selection onto the
-		// destination, and only jump once the ENGINE says it landed. `isInfoTarget`
-		// comes off the feed, so this verifies rather than assumes - the one thing
-		// every failed attempt in this phase was missing.
-		//
-		// ⚠ The jump is DEFERRED, not dropped, while cycling. It comes back around on
-		// the next tick and re-checks. The cycler is bounded by uAcquireMaxPresses and
-		// clears its own want-id when it lands OR gives up, so this cannot spin: either
-		// way the next pass falls through and the jump goes out with whatever is
-		// selected, which is exactly the old behaviour.
 		// ⭐⭐ FIRST: POINT THE ENGINE AT IT BY ID.
 		//
 		// This is the mod's own COURSE LOCK verb, and its header has said since
@@ -11241,13 +10258,8 @@ namespace
 
 
 
-		// ⭐ THE REAL VERB, since 2026-08-13. `ShipHud_FarTravel` was both the wrong
-		// action (fast travel, which skips the flying) and a dead one (dispatched
-		// cleanly with a star id and did nothing). The grav jump is an actor value
-		// on the ship - see the header above TriggerGravJump - so that is what a
-		// jump request now does. The far-travel path below is left only behind
-		// bMissionFarTravel, and off.
-		if (!bMissionFarTravel.GetValue()) {
+		// The verified route-substitution path is tried first. The HUD mission action
+		// and actor-value initiation remain guarded fallbacks if it cannot arm.
 			// ⭐⭐⭐ PHASE 9 §3o: THE SPOOF, and the first route that does not depend
 			// on where the reticle happens to be pointing. Everything below aims the
 			// engine at a selection and hopes it picks the right thing; this hands it
@@ -11307,41 +10319,6 @@ namespace
 					// reticle is already hovering, which is exactly how vanilla behaves
 					// (hover with the ship, press A, it becomes the info target).
 					//
-					// ⭐⭐ THE BY-ID ROUTE ATTEMPT, before the aim-dependent A-press.
-					// Payload carries every id we actually hold; unknown members are
-					// ignored by the engine, and guessing a VALUE is what we refuse to
-					// do - not sending a field we own.
-					if (bMissionJumpFocusSystem.GetValue() || bMissionJumpExecuteRoute.GetValue()) {
-						const auto locked = g_lockedID.load(std::memory_order_acquire);
-						if (bMissionJumpFocusSystem.GetValue()) {
-							V focus;
-							hudRoot->CreateObject(&focus);
-							if (focus.IsObject()) {
-								// ⭐ THE REAL SYSTEM ID now, off the mission's own target body
-								// (GalaxyData::systemID - the number the mission log prints
-								// as "system 64720"), not the body id standing in for one.
-								const auto sys = g_missionJumpSystem.load(std::memory_order_acquire);
-								focus.SetMember("uBodyID", V{ static_cast<double>(id) });
-								if (sys != 0)
-									focus.SetMember("uSystemID", V{ static_cast<double>(sys) });
-								if (DispatchHudEvent(hudRoot, "StarMapMenu_FocusSystem", &focus))
-									REX::INFO("[missionjump] sent StarMapMenu_FocusSystem uBodyID={:08X} "
-											  "uSystemID={} - a BY-ID verb; watch whether the info "
-											  "target or course changes without any aiming",
-										id, sys);
-								else
-									REX::WARN("[missionjump] StarMapMenu_FocusSystem would not dispatch");
-							}
-						}
-						if (bMissionJumpExecuteRoute.GetValue()) {
-							if (DispatchHudEvent(hudRoot, "StarMapMenu_ExecuteRoute", nullptr))
-								REX::INFO("[missionjump] sent StarMapMenu_ExecuteRoute - the map's own "
-										  "JUMP button verb");
-							else
-								REX::WARN("[missionjump] StarMapMenu_ExecuteRoute would not dispatch");
-						}
-					}
-
 					// ⚠ SENT UNCONDITIONALLY, and a gate here was a regression.
 					//
 					// A build in between tried to skip this whenever the mod's own feed
@@ -11360,12 +10337,7 @@ namespace
 					// selected, which is vanilla's own rule, not something the mod
 					// imposes. Aiming at the wrong thing selects the wrong thing.
 					//
-					// Fixing THAT means overriding the engine's selection rather than
-					// asking for it, which is bAcquireByCycling's job and is not wired
-					// up. Until it is, the honest behaviour is vanilla's.
-					// ⚠ The A-press goes out FIRST now, so there is no longer a
-					// "cycler could not arm" answer to wait for - the press is the
-					// primary route and cycling only cleans up after it.
+					// The A-press therefore remains a guarded fallback only.
 					if (bMissionJumpTargetFirst.GetValue() &&
 						!g_missionJumpSelected.load(std::memory_order_acquire)) {
 						V targetParams;
@@ -11402,31 +10374,6 @@ namespace
 						return;
 					}
 
-					// ⚠⚠ CYCLING IS A FALLBACK, AND IT USED TO RUN FIRST.
-					//
-					// 20:44:02, crosshair dead on the star: the info target read
-					// NOTHING, so the mod started cycling and re-armed the jump every
-					// 120 ms for three and a half seconds before the A-press ever went
-					// out - by which point the cycling had moved the selection off the
-					// star. Pointing at something does not select it; THE A-PRESS DOES.
-					// Running the fallback for "you are not aimed at it" ahead of the
-					// press blocked the case where the player was aimed at it.
-					//
-					// So: press, let the feed answer, and only cycle if the press
-					// produced nothing.
-					if (!EngineHasAnyInfoTarget() && bMissionJumpAcquire.GetValue()) {
-						if (!g_acquireWantQuestMarker.load(std::memory_order_acquire) &&
-							g_missionJumpAcquireFor.exchange(id, std::memory_order_acq_rel) != id)
-							RequestAcquireQuestMarker("mission jump - the A-press selected nothing");
-
-						if (g_acquireWantQuestMarker.load(std::memory_order_acquire)) {
-							g_pendingMissionJump.store(id, std::memory_order_release);
-							g_missionJumpDueMs.store(nowMs + 120, std::memory_order_release);
-							return;
-						}
-					}
-					g_missionJumpAcquireFor.store(0, std::memory_order_release);
-
 					if (DispatchHudEvent(hudRoot, "ShipHud_JumpToQuestMarker", nullptr)) {
 						g_missionJumpSelected.store(false, std::memory_order_release);
 						REX::INFO("[missionjump] dispatched ShipHud_JumpToQuestMarker - if the "
@@ -11441,134 +10388,8 @@ namespace
 				}
 			}
 
-			// Route 2: the engine's own hold-complete handler. Confirmed to be exactly
-			// what hold-X runs, and reliable - but it carries no destination, so on its
-			// own it jumps nowhere. Kept because it is the executor half and it works.
-			if (bMissionJumpViaHandler.GetValue() && TriggerGravJumpViaHandler())
-				return;
-			TriggerGravJump();
-			return;
-		}
-
-		const auto                     ui = RE::UI::GetSingleton();
-		static const RE::BSFixedString s_hud{ kShipHudMenu };
-		const auto                     menu = ui ? ui->GetMenu(s_hud) : nullptr;
-		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot) {
-			REX::WARN("[missionjump] no ship HUD movie to dispatch through");
-			return;
-		}
-		auto* root = menu->uiMovie->asMovieRoot.get();
-
-		V params;
-		root->CreateObject(&params);
-		if (!params.IsObject()) {
-			REX::WARN("[missionjump] could not build the event params");
-			return;
-		}
-		// `uValue`, not `uBodyID`: a different event with a different parameter
-		// name, and PHASE 1's table is the authority for which is which.
-		params.SetMember("uValue", V{ static_cast<double>(id) });
-
-		// ⚠ NO FEED REPORTS A FAR TRAVEL, so unlike the course there is no readback
-		// to audit against - this line plus what the ship does is the whole
-		// measurement. PHASE 7 recorded the same limitation.
-		REX::INFO("[missionjump] {} uValue={:08X}",
-			DispatchHudEvent(root, "ShipHud_FarTravel", &params) ? "sent" : "REFUSED", id);
-	}
-
-	// ---------------------------------------------------------------------------
-	// PHASE 9: THE GRAV JUMP, and it is an actor value.
-	//
-	// ⭐⭐ MEASURED 2026-08-13 by watching the ship's own values at 100 ms while the
-	// player jumped. The timeline is unambiguous:
-	//
-	//   CurrentPower  0.000 -> 0.111   power allocated to the drive
-	//   Initiated     0.000 -> 1.000   <-- the hold begins
-	//   Calculation   0.000 ---> 0.992 the engine ramps the charge, ~9.6 s
-	//   Initiated     1.000 -> 0.000   the jump fires, both reset
-	//
-	// `SpaceshipGravJumpInitiated` is therefore a COMMAND FLAG, not a readback: the
-	// engine ramps `Calculation` *because* it is 1, and clears it on execution. So
-	// setting it is asking for a jump, which is what the whole of PHASE 8 was
-	// looking for and never found in the UI layer.
-	//
-	// ⭐ AND IT NEEDS NO ADDRESS ARCHAEOLOGY. `ActorValueOwner::SetActorValue` is a
-	// published virtual, `TESObjectREFR` inherits it at a declared offset, and the
-	// value itself is reached with `LookupByEditorID` - a live id (47403). Nothing
-	// here is a hand-carried offset, which is why this can live in the DLL when the
-	// binary findings in PHASE9 cannot.
-	//
-	// ⚠ PREREQUISITES THE PLAYER STILL OWNS: a plotted destination (tracking a
-	// mission sets one - PHASE 8 §3a) and power in the grav drive. This sets the
-	// flag; it does not conjure fuel, power or a destination, and the engine is
-	// free to refuse. `Calculation` failing to ramp afterwards is exactly what a
-	// refusal looks like, and the watcher prints it.
-	// ---------------------------------------------------------------------------
-	void TriggerGravJump()
-	{
-		const auto player = RE::PlayerCharacter::GetSingleton();
-		const auto ship = player ? player->GetSpaceship() : nullptr;
-		if (!ship) {
-			REX::WARN("[gravjump] no ship to jump");
-			return;
-		}
-
-		static const RE::BSFixedString s_initiated{ "SpaceshipGravJumpInitiated" };
-		const auto  form = RE::TESForm::LookupByEditorID(s_initiated);
-		const auto* info = form ? form->As<RE::ActorValueInfo>() : nullptr;
-		if (!info) {
-			REX::WARN("[gravjump] '{}' does not resolve to an ActorValueInfo", s_initiated.c_str());
-			return;
-		}
-
-		const float before = ship->GetActorValue(*info);
-		if (before >= 0.5f) {
-			REX::INFO("[gravjump] already initiated ({:.3f}) - not asking twice", before);
-			return;
-		}
-
-		// ⚠ THIS WAS A WRONG THEORY, AND THE MEASUREMENT SAYS SO. Default OFF.
-		//
-		// The guess was that `SpaceshipGravJumpCurrentPower` sitting at 0.111 - one pip
-		// of nine - was why our jump charged slowly, and that vanilla's initiate action
-		// assigns full power as a side effect. Two things in the 17:42 log kill it:
-		//
-		//   17:42:58.644  we asked  CurrentPower 0.000 -> 1.000
-		//   17:43:15.613  engine    CurrentPower 1.000 -> 0.111     (put straight back)
-		//
-		//   17:44:29.256  vanilla hold-X, Initiated 0 -> 1, power sitting at 0.111
-		//   17:44:38.928  Initiated 1 -> 0                          9.67 s at ONE PIP
-		//
-		// So vanilla does not run at full power either, and the write does not power
-		// anything: the AV is a READBACK of the ship's pip allocation, not a control.
-		// Writing it desyncs the number until the engine recomputes, and the drive is
-		// still unpowered underneath - which is why the player had to assign power by
-		// hand for our jump to finish at all.
-		//
-		// Kept behind a default-off switch rather than deleted, because "we tried this
-		// and it is a readback" is worth more written down than removed.
-		if (bMissionJumpPower.GetValue()) {
-			static const RE::BSFixedString s_power{ "SpaceshipGravJumpCurrentPower" };
-			const auto  pform = RE::TESForm::LookupByEditorID(s_power);
-			const auto* pinfo = pform ? pform->As<RE::ActorValueInfo>() : nullptr;
-			if (!pinfo) {
-				REX::WARN("[gravjump] '{}' does not resolve - jumping without assigning power",
-					s_power.c_str());
-			} else {
-				const float powerBefore = ship->GetActorValue(*pinfo);
-				if (powerBefore < 0.999f) {
-					ship->SetActorValue(*pinfo, 1.0f);
-					REX::INFO("[gravjump] GravJumpCurrentPower {:.3f} -> asked for 1.000 "
-							  "(0.111 = one pip; full power is what makes the charge quick)",
-						powerBefore);
-				}
-			}
-		}
-
-		ship->SetActorValue(*info, 1.0f);
-		REX::INFO("[gravjump] SpaceshipGravJumpInitiated set to 1 (was {:.3f}) - if the engine "
-				  "accepts, Calculation now ramps to 1 and the ship jumps",
-			before);
+		g_missionJumpSelected.store(false, std::memory_order_release);
+		REX::WARN("[missionjump] no destination-bearing jump route was accepted; request cancelled");
 	}
 
 	class HighFeedHandler : public RE::Scaleform::GFx::FunctionHandler
@@ -12225,137 +11046,6 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
-	// PHASE 8: install the marker subscription into GalaxyStarMapMenu's movie.
-	//
-	// Deliberately a near-copy of TryInstallSubscriber's shape rather than a shared
-	// helper: the two differ in every gate that matters (no flight state, no
-	// generation counter, and a movie that comes and goes with a menu the player
-	// opens), and the one thing this project has learned about that function is
-	// that its guards are load-bearing. A shared abstraction would have to be
-	// parameterised on all of them.
-	//
-	// The map movie has no generation counter - OnMenuMovieCreated bumps that for
-	// the ship HUD alone - so identity here is the ROOT POINTER, which is what the
-	// settle gate compares anyway.
-	// ---------------------------------------------------------------------------
-	std::atomic<bool>          g_mapSubscribeInFlight{ false };
-	std::atomic<const void*>   g_mapSubscribedRoot{ nullptr };
-	std::atomic<const void*>   g_mapSettleRoot{ nullptr };
-	std::atomic<std::int64_t>  g_mapSettleSinceMs{ 0 };
-	std::atomic<std::uint32_t> g_mapAttempts{ 0 };
-
-	// Same 1500 ms hold the ship HUD gets. The map is a menu the player opens
-	// rather than a movie the engine rebuilds under a cutscene, so the hazard is
-	// milder - but "milder" is not a thing this project has ever been right about
-	// in advance, and the cost is that the map must be open a second and a half
-	// before the first probe, which any actual use of a star map exceeds.
-	bool MapMovieSettled(const void* a_root)
-	{
-		using clock = std::chrono::steady_clock;
-		const auto nowMs =
-			std::chrono::duration_cast<std::chrono::milliseconds>(clock::now().time_since_epoch()).count();
-
-		if (g_mapSettleRoot.exchange(a_root, std::memory_order_acq_rel) != a_root) {
-			g_mapSettleSinceMs.store(nowMs, std::memory_order_release);
-			// A fresh movie gets a fresh probe budget, or a session that opens the
-			// map repeatedly would exhaust one movie's allowance on another's.
-			g_mapAttempts.store(0, std::memory_order_release);
-			REX::INFO("[mission] {} movie (root {:016X}) - holding {} ms before probing it",
-				kGalaxyMapMenu, reinterpret_cast<std::uintptr_t>(a_root), kMovieSettleMs);
-			return false;
-		}
-		return (nowMs - g_mapSettleSinceMs.load(std::memory_order_acquire)) >= kMovieSettleMs;
-	}
-
-	bool StillSameMapMovie(const void* a_root)
-	{
-		const auto ui = RE::UI::GetSingleton();
-		if (!ui)
-			return false;
-		static const RE::BSFixedString s_map{ kGalaxyMapMenu };
-		if (!ui->IsMenuOpen(s_map))
-			return false;
-
-		const auto menu = ui->GetMenu(s_map);
-		return menu && menu->uiMovie && menu->uiMovie->asMovieRoot &&
-			   static_cast<const void*>(menu->uiMovie->asMovieRoot.get()) == a_root;
-	}
-
-	void TryInstallMapSubscriber()
-	{
-		if (!bProbeMapMarkers.GetValue())
-			return;
-
-		const auto ui = RE::UI::GetSingleton();
-		if (!ui)
-			return;
-		static const RE::BSFixedString s_map{ kGalaxyMapMenu };
-		if (!ui->IsMenuOpen(s_map))
-			return;
-
-		const auto menu = ui->GetMenu(s_map);
-		if (!menu || !menu->uiMovie || !menu->uiMovie->asMovieRoot)
-			return;
-		auto*       root = menu->uiMovie->asMovieRoot.get();
-		const auto* rootID = static_cast<const void*>(root);
-
-		// Already subscribed to THIS movie. A reopened map builds a new one, whose
-		// different root falls through and subscribes again - which is correct,
-		// because the old subscription died with the old movie.
-		if (g_mapSubscribedRoot.load(std::memory_order_acquire) == rootID)
-			return;
-
-		const SingleWinner winner{ g_mapSubscribeInFlight };
-		if (!winner.Won())
-			return;
-		if (g_mapSubscribedRoot.load(std::memory_order_acquire) == rootID)
-			return;
-
-		// Before the attempt counter, as on the ship HUD path: a movie we are
-		// still waiting on must not cost a probe.
-		if (!MapMovieSettled(rootID))
-			return;
-
-		const auto attempt = g_mapAttempts.fetch_add(1, std::memory_order_relaxed);
-		if (attempt > 60) {
-			if (attempt == 61)
-				REX::WARN("[mission] BSUIDataManager not reachable in {} after 60 probes",
-					kGalaxyMapMenu);
-			return;
-		}
-		const bool verbose = (attempt == 0);
-
-		for (const auto* path : kDataManagerPaths) {
-			if (!StillSameMapMovie(rootID))
-				return;
-
-			RE::Scaleform::GFx::Value manager;
-			const bool                resolved = root->GetVariable(&manager, path);
-			if (verbose)
-				REX::INFO("[mission] probe '{}': GetVariable={} value={}", path, resolved,
-					resolved ? DescribeValue(manager) : "-");
-
-			if (!resolved || !(manager.IsObject() || manager.IsDisplayObject()) ||
-				!manager.HasMember("Subscribe"))
-				continue;
-
-			if (!StillSameMapMovie(rootID))
-				return;
-
-			RE::Scaleform::GFx::Value args[2];
-			root->CreateString(&args[0], kMapMarkersFeed);
-			root->CreateFunction(&args[1], &g_mapMarkersHandler);
-			if (manager.Invoke("Subscribe", nullptr, args, 2)) {
-				g_mapSubscribedRoot.store(rootID, std::memory_order_release);
-				g_mapDumpArmed.store(true, std::memory_order_release);
-				REX::INFO("[mission] SUBSCRIBED to '{}' from {} via {}.Subscribe",
-					kMapMarkersFeed, kGalaxyMapMenu, path);
-				return;
-			}
-			REX::WARN("[mission] '{}.Subscribe' rejected the call", path);
-		}
-	}
-
 	void TryInstallInterposer()
 	{
 		// Give up permanently after a real failure. v0.0.6 retried every frame
@@ -12468,8 +11158,11 @@ namespace
 			// Once per unsettled EPISODE, not once per frame of it: anything
 			// holding per-save state watches this counter to know it must throw
 			// what it has away.
-			if (!s_wasUnsettled.exchange(true, std::memory_order_acq_rel))
+			if (!s_wasUnsettled.exchange(true, std::memory_order_acq_rel)) {
 				g_unsettledEpoch.fetch_add(1, std::memory_order_acq_rel);
+				ResetMissionRuntimeStateForCurrentWorld();
+				g_missionRefreshRequested.store(true, std::memory_order_release);
+			}
 			return false;
 		}
 		s_wasUnsettled.store(false, std::memory_order_release);
@@ -12506,6 +11199,8 @@ namespace
 		const bool                was = g_inCruise.exchange(cruising, std::memory_order_acq_rel);
 		if (was != cruising) {
 			REX::INFO("[arrow] cruise {}", cruising ? "entered - panel active" : "left - panel idle");
+			if (cruising && bMissionTab.GetValue())
+				g_missionRefreshRequested.store(true, std::memory_order_release);
 			if (!cruising) {
 				// The lock survives leaving cruise - the arrow is hidden outside
 				// cruise anyway, so keeping it means a brief drop out to
@@ -15138,14 +13833,12 @@ namespace
 	// tick - distances crawl, and ten TextField writes per frame is a cost with
 	// nothing to show for it. The highlight moves immediately, because that is
 	// the part the player is waiting on.
-	// Resolve ANY "$token" through the game's own localisation: set it on the
-	// scratch TextField with GlobalFunc.SetText - the call vanilla itself uses
-	// for its "$ENGINES"-style labels - and read the translated text back.
-	// Returns empty when the token does not translate (the readback still
-	// starts with '$') or the machinery is unavailable. Callers cache.
-	std::string TranslateToken(const char* a_token)
+	// Resolve display text through the game's own SetText path. Besides `$TOKEN`
+	// localisation this is the runtime path that expands quest `<Alias=...>`
+	// placeholders, which cannot be resolved while parsing the ESM.
+	std::string ResolveRuntimeText(const char* a_text)
 	{
-		if (!a_token || !*a_token)
+		if (!a_text || !*a_text)
 			return {};
 		if (g_translatorFailed.load(std::memory_order_acquire))
 			return {};
@@ -15187,7 +13880,7 @@ namespace
 
 		V args[2];
 		args[0] = g_translatorField;
-		root->CreateString(&args[1], a_token);
+		root->CreateString(&args[1], a_text);
 		if (!globalFunc.Invoke("SetText", nullptr, args, 2))
 			return {};
 
@@ -15195,9 +13888,63 @@ namespace
 		std::string word;
 		if (g_translatorField.GetMember("text", &text) && text.IsString() && text.GetString())
 			word = text.GetString();
-		if (!word.empty() && word.front() == '$')
-			word.clear();  // came back untranslated - not a display string
 		return word;
+	}
+
+	std::string TranslateToken(const char* a_token)
+	{
+		auto word = ResolveRuntimeText(a_token);
+		if (!word.empty() && word.front() == '$')
+			word.clear();
+		return word;
+	}
+
+	std::string MissionSystemName(std::uint32_t a_systemID)
+	{
+		if (a_systemID == 0)
+			return {};
+		std::lock_guard lock{ g_bodyTableMutex };
+		for (const auto& [id, body] : g_bodyTable) {
+			(void)id;
+			if (body.galaxy.systemID == a_systemID && body.authored &&
+				body.galaxy.parentPlanetID == 0)
+				return body.name;
+		}
+		return {};
+	}
+
+	std::string ReplaceUnresolvedQuestAliases(std::string a_text,
+		std::string_view a_destination, std::string_view a_target,
+		std::uint32_t a_systemID)
+	{
+		const bool haveDestination = !a_destination.empty() && a_destination != "-";
+		const auto systemName = MissionSystemName(a_systemID);
+		std::size_t pos = 0;
+		while ((pos = a_text.find("<Alias=", pos)) != std::string::npos) {
+			const auto end = a_text.find('>', pos + 7);
+			if (end == std::string::npos)
+				break;
+			const std::string_view alias{ a_text.data() + pos + 7, end - (pos + 7) };
+			std::string aliasLower{ alias };
+			std::ranges::transform(aliasLower, aliasLower.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			std::string replacement;
+			if (aliasLower.find("system") != std::string::npos)
+				replacement = !systemName.empty() ? systemName : "destination system";
+			else if (aliasLower.find("planet") != std::string::npos)
+				replacement = haveDestination ? std::string{ a_destination } : "destination";
+			else if (aliasLower.find("location") != std::string::npos)
+				replacement = !a_target.empty() ? std::string{ a_target } :
+					haveDestination ? std::string{ a_destination } : "destination";
+			else if (aliasLower.find("ref") != std::string::npos ||
+					 aliasLower.find("actor") != std::string::npos)
+				replacement = !a_target.empty() ? std::string{ a_target } : "target";
+			else
+				replacement = "objective";
+			a_text.replace(pos, end - pos + 1, replacement);
+			pos += replacement.size();
+		}
+		return a_text;
 	}
 
 	// The undiscovered-marker wrapper: category -> token -> word, cached per
@@ -15509,17 +14256,9 @@ namespace
 						first = highlightPos - rowCount + 1;
 				}
 
-				// ⚠ Rows alternate caption, location. An odd `first` puts a
-				// location at the top with its own mission cut off above it, so the
-				// window always starts on a caption.
-				if ((first % 2) != 0)
-					--first;
-
 				// Never leave blank rows below a list that could fill them.
 				if (rowCount > 0 && scrollTotal > rowCount && first + rowCount > scrollTotal) {
 					first = scrollTotal - rowCount;
-					if ((first % 2) != 0)
-						--first;
 				}
 				if (scrollTotal <= rowCount)
 					first = 0;
@@ -15542,12 +14281,9 @@ namespace
 		// The scrollbar tracks the window over the local list, and only
 		// exists on screen while there is somewhere to scroll to.
 		if (g_panelScrollThumb.IsObject() || g_panelScrollThumb.IsDisplayObject()) {
-			// Measured in MISSIONS on the missions tab, not rows: a two-row pair is
-			// one item, so a thumb sized against the row count would read as half
-			// the list being off screen when it is all there.
-			const std::size_t barTotal = missionsTab ? (scrollTotal + 1) / 2 : scrollTotal;
-			const std::size_t barFirst = missionsTab ? scrollFirst / 2 : scrollFirst;
-			const std::size_t barRows = missionsTab ? rowCount / 2 : rowCount;
+			const std::size_t barTotal = scrollTotal;
+			const std::size_t barFirst = scrollFirst;
+			const std::size_t barRows = rowCount;
 			const bool        overflow = barTotal > barRows && barRows > 0;
 			g_panelScrollTrack.SetMember("visible", V{ overflow });
 			g_panelScrollThumb.SetMember("visible", V{ overflow });
@@ -15932,6 +14668,9 @@ namespace
 					const bool  poiLike = row.type == kTargetTypeStation ||
 					                     row.type == kTargetTypePOI;
 					std::string display = row.name;
+					if (row.questID != 0 && display.find("<Alias=") != std::string::npos)
+						display = ReplaceUnresolvedQuestAliases(display, row.rightText,
+							row.aliasTargetText, row.systemID);
 					if (poiLike) {
 						const std::uint32_t state =
 							row.haveLocState ? row.locMarkerState :
@@ -16032,6 +14771,28 @@ namespace
 					distField.SetMember("text", V{ dist.c_str() });
 					if (g_panelDistFormat.IsObject())
 						distField.Invoke("setTextFormat", nullptr, &g_panelDistFormat, 1);
+					const double distWidth = kPanelDistWidth + extraDist;
+					if (distWidth > 0.0 && dist.size() > 3) {
+						RE::Scaleform::GFx::Value twVal;
+						if (distField.GetMember("textWidth", &twVal)) {
+							const double tw = AsNumber(twVal);
+							const double target = distWidth - 6.0;
+							if (tw > target) {
+								std::size_t cut = static_cast<std::size_t>(
+									static_cast<double>(dist.size()) *
+									std::max(0.1, (target - 12.0) / tw));
+								if (cut >= dist.size())
+									cut = dist.size() - 1;
+								while (cut > 0 &&
+									   (static_cast<unsigned char>(dist[cut]) & 0xC0) == 0x80)
+									--cut;
+								const auto trimmed = dist.substr(0, cut) + "\xE2\x80\xA6";
+								distField.SetMember("text", V{ trimmed.c_str() });
+								if (g_panelDistFormat.IsObject())
+									distField.Invoke("setTextFormat", nullptr, &g_panelDistFormat, 1);
+							}
+						}
+					}
 				}
 				// Redrawn only when this row's class actually changes, which is
 				// rare - scrolling a list, not every frame.
@@ -16428,13 +15189,8 @@ namespace
 	{
 		TryInstallInputTap();
 		TryInstallCameraTap();
-		TryInstallPlotCapture();
-		TryInstallJumpHandlerCapture();
-		TryInstallGravJumpInputCapture();
-		TryInstallDoJumpCapture();
+		TryInstallDoJumpRestore();
 		TryInstallLookupHook();
-		WatchJumpRoute();
-		TryInstallPlotSetterCapture();
 
 
 		// Only the subscription bootstrap happens here, and only once the world
@@ -16445,12 +15201,6 @@ namespace
 		// access on Scaleform objects, which are not thread-safe.
 		if (WorldSettled())
 			TryInstallSubscriber();
-
-		// PHASE 8. Separate from the call above and gated on its own setting: this
-		// one installs into a DIFFERENT menu, is off by default, and must never be
-		// able to interfere with the two subscriptions the mod actually depends on.
-		if (WorldSettled())
-			TryInstallMapSubscriber();
 
 		// Single-winner exchange: the dump is expensive and must not run twice
 		// concurrently if this task lands on two threads in the same frame.
@@ -16470,28 +15220,10 @@ namespace
 		if (g_surveyVmProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
 			ProbeSurveyVM();
 
-		// PHASE 8. Same place and the same single-winner protection as the survey
-		// probe, and for the same reason: this reaches into the Papyrus VM, which
-		// must never happen from inside a feed callback's Scaleform locks.
-		if (g_questProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
-			ProbeQuestTargets();
-
-		// PHASE 9. Form lookups only - no VM, no Scaleform - but kept on this task
-		// beside the others so it never runs from a feed callback.
-		if (g_gravJumpProbeRequested.exchange(false, std::memory_order_acq_rel) && WorldSettled())
-			ProbeGravJumpObjects();
-
-		// The continuous half: form reads only, no VM and no Scaleform, so it is
-		// safe on this task and costs a handful of virtual calls ten times a second.
-		if (bProbeGravJumpObjects.GetValue() && WorldSettled())
-			WatchGravJumpValues();
-
-		// PHASE 8: the missions tab asking for fresh state. Same place as the probe
-		// and for the same reason - this reaches into the Papyrus VM, which must
-		// never happen from a feed callback's Scaleform locks or from the input
-		// thread. The sweep is the probe: one pass, and the answers land in
-		// g_missionRows a moment later, which is why the tab fills in rather than
-		// appearing complete.
+		// The missions tab asking for fresh state. This runs on the per-frame task
+		// because it reaches into the Papyrus VM and must never run from a feed
+		// callback's Scaleform locks or from the input thread. Replies assemble the
+		// row set asynchronously.
 		// ⚠⚠ A SWEEP IN FLIGHT MUST NOT BE RESTARTED, and this is what was wrecking
 		// the list. Every panel open and every tab switch asked for a refresh, and
 		// each one CLEARED g_menuState - so replies from the previous sweep landed
@@ -16512,7 +15244,7 @@ namespace
 			if (!inFlight && since >= kMissionSweepMinMs) {
 				g_missionRefreshRequested.store(false, std::memory_order_release);
 				g_lastMissionSweepMs.store(nowMs, std::memory_order_release);
-				ProbeQuestTargets();
+				SweepQuestTargets();
 			}
 		}
 
@@ -16537,6 +15269,7 @@ namespace
 			const bool complete = expected != 0 && replies >= expected;
 			if (complete || nowMs >= at) {
 				g_missionAssembleAt.store(0, std::memory_order_release);
+				g_missionReassembleRequested.store(false, std::memory_order_release);
 				if (!complete)
 					REX::WARN("[mission] assembling on the deadline with {}/{} answers - the VM did "
 							  "not finish",
@@ -16544,6 +15277,13 @@ namespace
 				ReportMissionSet();
 			}
 		}
+
+		// A dynamic target may resolve its planet after the normal assembly. Rebuild
+		// from the completed staging map on this safe task; do not launch another
+		// several-thousand-call quest sweep merely to publish one late body.
+		if (g_missionAssembleAt.load(std::memory_order_acquire) == 0 &&
+			g_missionReassembleRequested.exchange(false, std::memory_order_acq_rel))
+			ReportMissionSet();
 
 
 		// The survey sweep (Phase 6). Same place as the probe and for the same
@@ -16707,108 +15447,20 @@ namespace
 			REX::INFO("[course] autopilot control OFF - the panel points, and the key is the "
 					  "game's own in every state");
 
-		// ---------------------------------------------------------------------------
-		// ⭐ THE GUARD on the mission jump.
-		//
-		// This works, and it took PHASE 8 and PHASE 9 to get here. The whole feature is
-		// two UI events in order:
-		//
-		//     ShipHud_Target { bValue: true }      the A-press; selects what the
-		//                                          reticle is hovering
-		//     ShipHud_JumpToQuestMarker            the "X Mission" action
-		//
-		// Everything else that can perform a jump - the hold-complete handler, the
-		// actor value, far travel - is a FALLBACK, and every one of them jumps without
-		// a destination. So a build that silently falls back looks like a working jump
-		// that goes nowhere, which is exactly the failure that cost five test flights.
-		//
-		// This prints the live route at startup so that regression is visible before
-		// takeoff rather than after. If this line does not say "route: ShipHud_Target
-		// -> ShipHud_JumpToQuestMarker", the feature is broken no matter what the
-		// panel looks like.
-		// ---------------------------------------------------------------------------
+		// Print the live route at startup so an unsafe or incomplete configuration is
+		// visible before takeoff.
 		if (!bMissionJump.GetValue())
 			REX::INFO("[missionjump] OFF - the missions tab will not jump");
-		else if (bMissionFarTravel.GetValue())
-			REX::WARN("[missionjump] ⚠ route: FAR TRAVEL - that is fast travel, the wrong verb, and "
-					  "it is known not to work. Set bMissionFarTravel=false.");
-		else if (!bMissionJumpQuestMarker.GetValue())
-			REX::WARN("[missionjump] ⚠ route: FALLBACK ONLY (bMissionJumpQuestMarker is off) - a jump "
-					  "will fire and it will go NOWHERE, because the fallbacks carry no destination");
-		else if (!bMissionJumpTargetFirst.GetValue())
-			REX::WARN("[missionjump] ⚠ route: ShipHud_JumpToQuestMarker with no selection first - "
-					  "measured 2026-08-13, the engine ignores it. Set bMissionJumpTargetFirst=true.");
+		else if (!bMissionJumpSpoof.GetValue())
+			REX::WARN("[missionjump] direct destination route OFF - only the aim-dependent "
+					  "ShipHud_JumpToQuestMarker fallback remains");
 		else
-			REX::INFO("[missionjump] route: ShipHud_Target -> ShipHud_JumpToQuestMarker (the working "
-					  "one - fallbacks behind it carry no destination)");
-
-		// ---------------------------------------------------------------------------
-		// ⚠ PROBABLY THE WRONG FAMILY, and left only because it costs nothing when off.
-		//
-		// fTargetLockTargetAngle and friends sit in .rdata among fCombatTargetSelector*
-		// and the aim-assist settings, which points at COMBAT lock rather than cruise
-		// marker selection. Nothing was ever measured to say the cruise A-press reads
-		// them, and an ini edit produced no observable change. So this whole block is
-		// now gated on the override being asked for: silent by default, no enumeration,
-		// no lines in the log.
-		//
-		// The target-select cone, found by ENUMERATION rather than by guessing its key.
-		//
-		// The first version asked for "fTargetLockTargetAngle:Spaceship" and got
-		// nothing, which proves only that the key is not spelled that way here - the
-		// lookup is an exact string compare. Rather than guess a second spelling, walk
-		// the collections and print every key that mentions TargetLock. Whatever it is
-		// actually called, it will be in that list.
-		//
-		// Both INI collections are searched: Starfield splits them, and which one owns
-		// a [Spaceship] value is not a thing to assume either.
-		if (fTargetLockAngleOverride.GetValue() > 0.0f) {
-			bool found = false;
-			const auto sweep = [&](const char* a_which, auto* a_collection) {
-				if (!a_collection)
-					return;
-				std::uint32_t total = 0;
-				for (auto* setting : a_collection->settings) {
-					if (!setting)
-						continue;
-					++total;
-					const std::string_view key = setting->GetKey();
-					if (key.find("TargetLock") == std::string_view::npos &&
-						key.find("TargetAngle") == std::string_view::npos)
-						continue;
-					found = true;
-					REX::INFO("[angle] {}: '{}' = {:.3f}", a_which, key,
-						setting->GetValue<float>(-1.0f));
-				}
-				REX::INFO("[angle] {} holds {} setting(s)", a_which, total);
-			};
-			sweep("INI", RE::INISettingCollection::GetSingleton());
-			sweep("INIPref", RE::INIPrefSettingCollection::GetSingleton());
-			if (!found)
-				REX::WARN("[angle] no TargetLock/TargetAngle key in either INI collection - the "
-						  "cone is not an ini setting the game exposes here");
-
-			// The override still applies, but only against a key that was actually
-			// seen: writing a name nothing answers to is how the last probe failed.
-			const float want = fTargetLockAngleOverride.GetValue();
-			if (want > 0.0f) {
-				const char* kKeys[]{ "fTargetLockTargetAngle:Spaceship", "fTargetLockTargetAngle" };
-				bool set = false;
-				if (const auto ini = RE::INISettingCollection::GetSingleton())
-					for (const auto* k : kKeys)
-						if (!set && ini->SetSetting<float>(k, want)) {
-							REX::INFO("[angle] set '{}' to {:.1f}", k, want);
-							set = true;
-						}
-				if (!set)
-					REX::WARN("[angle] could not set the cone to {:.1f} under any known key", want);
-			}
-		}
-
-		if (uMissionJumpDelayMs.GetValue() != 0)
-			REX::WARN("[missionjump] ⚠ uMissionJumpDelayMs is {} - that delay existed for a theory "
-					  "that was disproved, and 0 is correct",
-				uMissionJumpDelayMs.GetValue());
+			REX::INFO("[missionjump] route: scoped star/body substitution -> verified grav-jump "
+					  "handler; engine route restored after DoJump");
+		if (bMissionJump.GetValue() && bMissionJumpSpoof.GetValue() &&
+			(!bMissionJumpQuestMarker.GetValue() || !bMissionJumpTargetFirst.GetValue()))
+			REX::WARN("[missionjump] one or more safe UI fallbacks are disabled; direct routing "
+					  "remains enabled");
 
 		if (bSurveyCruiseKeys.GetValue())
 			REX::INFO("[survey] cruise key survey ON - enter cruise, then press every key you can spare. "

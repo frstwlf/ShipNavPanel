@@ -1,10 +1,8 @@
 ﻿-- enable commonlib-shared's REX::INI settings support (pulls simpleini)
 set_config("commonlib_ini", true)
 
--- pull in CommonLibSF (and its commonlib-shared submodule) from the sibling
--- SDK clone (this project lives in F:\Claude\<name>; it was M:\Starfield\Mods\<name>
--- when the path below read "../../commonlibsf")
-includes("../commonlibsf")
+-- Shared SDK checkout two levels above the mod, matching the upstream layout.
+includes("../../commonlibsf")
 
 -- ESM records are zlib-compressed, and the plugin reads the planet/moon
 -- hierarchy straight out of the master file
@@ -15,7 +13,7 @@ set_xmakever("3.0.0")
 
 -- set project constants
 set_project("ShipNavPanel")
-set_version("1.2.0")
+set_version("1.2.10")
 set_license("GPL-3.0-or-later")
 
 set_arch("x64")
